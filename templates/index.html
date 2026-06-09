@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Nursery Tracker</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #fdf6ee;
+      color: #3b2f2f;
+      min-height: 100vh;
+      padding: 16px;
+    }
+    h1 {
+      text-align: center;
+      font-size: 1.4rem;
+      margin-bottom: 6px;
+      color: #7a4f3a;
+    }
+    .date {
+      text-align: center;
+      font-size: 0.85rem;
+      color: #9c7c6a;
+      margin-bottom: 18px;
+    }
+    .counts {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      margin-bottom: 20px;
+    }
+    .count-card {
+      background: #fff;
+      border-radius: 14px;
+      padding: 14px;
+      text-align: center;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+    }
+    .count-card .num {
+      font-size: 2.4rem;
+      font-weight: 700;
+      line-height: 1;
+    }
+    .count-card .label { font-size: 0.8rem; color: #9c7c6a; margin-top: 4px; }
+    .wet .num { color: #4a9fd4; }
+    .dirty .num { color: #c0813a; }
+    .both .num { color: #8e6abf; }
+    .feed .num { color: #5aaa72; }
+
+    .buttons {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      margin-bottom: 20px;
+    }
+    button {
+      border: none;
+      border-radius: 14px;
+      padding: 18px 10px;
+      font-size: 1.1rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: transform 0.1s, opacity 0.1s;
+      color: #fff;
+    }
+    button:active { transform: scale(0.96); opacity: 0.85; }
+    .btn-wet    { background: #4a9fd4; }
+    .btn-dirty  { background: #c0813a; }
+    .btn-both   { background: #8e6abf; }
+    .btn-feed   { background: #5aaa72; }
+
+    .toast {
+      position: fixed;
+      top: 16px; left: 50%; transform: translateX(-50%);
+      background: #3b2f2f; color: #fff;
+      padding: 10px 20px; border-radius: 20px;
+      font-size: 0.9rem; opacity: 0;
+      transition: opacity 0.3s;
+      pointer-events: none;
+      white-space: nowrap;
+    }
+    .toast.show { opacity: 1; }
+
+    h2 { font-size: 1rem; margin-bottom: 10px; color: #7a4f3a; }
+    .history {
+      background: #fff;
+      border-radius: 14px;
+      overflow: hidden;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+      max-height: 45vh;
+      overflow-y: auto;
+    }
+    .entry {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 10px 14px;
+      border-bottom: 1px solid #f5ece4;
+      font-size: 0.9rem;
+    }
+    .entry:last-child { border-bottom: none; }
+    .entry .type { font-weight: 600; }
+    .entry .time { color: #9c7c6a; font-size: 0.8rem; }
+    .type-wet   { color: #4a9fd4; }
+    .type-dirty { color: #c0813a; }
+    .type-both  { color: #8e6abf; }
+    .type-feed  { color: #5aaa72; }
+    .empty { text-align: center; padding: 20px; color: #9c7c6a; font-size: 0.9rem; }
+  </style>
+</head>
+<body>
+  <h1>👶 Nursery Tracker</h1>
+  <p class="date" id="dateLabel"></p>
+
+  <div class="counts" id="counts">
+    <div class="count-card wet">
+      <div class="num" id="cnt-Wet">{{ counts.Wet }}</div>
+      <div class="label">Wet</div>
+    </div>
+    <div class="count-card dirty">
+      <div class="num" id="cnt-Dirty">{{ counts.Dirty }}</div>
+      <div class="label">Dirty</div>
+    </div>
+    <div class="count-card both">
+      <div class="num" id="cnt-Both">{{ counts.Both }}</div>
+      <div class="label">Both</div>
+    </div>
+    <div class="count-card feed">
+      <div class="num" id="cnt-Feed">{{ counts.Feed }}</div>
+      <div class="label">Feed</div>
+    </div>
+  </div>
+
+  <div class="buttons">
+    <button class="btn-wet"   onclick="logEvent('Wet')">💧 Wet</button>
+    <button class="btn-dirty" onclick="logEvent('Dirty')">💩 Dirty</button>
+    <button class="btn-both"  onclick="logEvent('Both')">🔄 Both</button>
+    <button class="btn-feed"  onclick="logEvent('Feed')">🍼 Feed</button>
+  </div>
+
+  <h2>History</h2>
+  <div class="history" id="history">
+    {% if recent %}
+      {% for e in recent %}
+      <div class="entry">
+        <span class="type type-{{ e.type | lower }}">{{ e.type }}</span>
+        <span class="time">{{ e.time[:16] | replace("T", " ") }}</span>
+      </div>
+      {% endfor %}
+    {% else %}
+      <div class="empty">No entries yet today.</div>
+    {% endif %}
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <script>
+    function pad(n) { return n.toString().padStart(2, "0"); }
+    function updateDate() {
+      const d = new Date();
+      document.getElementById("dateLabel").textContent =
+        d.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
+    }
+    updateDate();
+
+    function showToast(msg) {
+      const t = document.getElementById("toast");
+      t.textContent = msg;
+      t.classList.add("show");
+      setTimeout(() => t.classList.remove("show"), 1800);
+    }
+
+    async function logEvent(type) {
+      try {
+        await fetch("/log", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ type })
+        });
+        showToast("Logged: " + type);
+        refresh();
+      } catch (e) {
+        showToast("Error logging");
+      }
+    }
+
+    async function refresh() {
+      try {
+        const res = await fetch("/data");
+        const data = await res.json();
+        ["Wet", "Dirty", "Both", "Feed"].forEach(k => {
+          document.getElementById("cnt-" + k).textContent = data.counts[k];
+        });
+        const h = document.getElementById("history");
+        h.replaceChildren();
+        if (data.recent.length === 0) {
+          const empty = document.createElement("div");
+          empty.className = "empty";
+          empty.textContent = "No entries yet today.";
+          h.appendChild(empty);
+        } else {
+          for (const e of data.recent) {
+            const row = document.createElement("div");
+            row.className = "entry";
+
+            const typeSpan = document.createElement("span");
+            const safeType = ["Wet", "Dirty", "Both", "Feed"].includes(e.type) ? e.type : "?";
+            typeSpan.className = "type type-" + safeType.toLowerCase();
+            typeSpan.textContent = safeType;
+
+            const timeSpan = document.createElement("span");
+            timeSpan.className = "time";
+            timeSpan.textContent = e.time.replace("T", " ").slice(0, 16);
+
+            row.appendChild(typeSpan);
+            row.appendChild(timeSpan);
+            h.appendChild(row);
+          }
+        }
+      } catch (_) {}
+    }
+
+    setInterval(refresh, 8000);
+  </script>
+</body>
+</html>
