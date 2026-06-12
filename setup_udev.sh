@@ -8,9 +8,17 @@ RULE_FILE=/etc/udev/rules.d/99-nursery-keypad.rules
 
 echo "==> Looking for a keypad with KEY_F13 capability..."
 
-KEYPAD_PATH=$(python3 - <<'PYEOF'
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+VENV_PYTHON="$SCRIPT_DIR/venv/bin/python"
+if [ ! -x "$VENV_PYTHON" ]; then
+    echo "ERROR: venv not found at $SCRIPT_DIR/venv. Run install.sh first."
+    exit 1
+fi
+
+KEYPAD_PATH=$("$VENV_PYTHON" - <<'PYEOF'
+import sys
 try:
-    import evdev, sys
+    import evdev
     full_kb = {evdev.ecodes.KEY_A, evdev.ecodes.KEY_Z, evdev.ecodes.KEY_SPACE}
     for path in evdev.list_devices():
         try:
