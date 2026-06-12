@@ -15,16 +15,10 @@ python3 -m venv venv
 source venv/bin/activate
 pip install --quiet flask evdev
 
-echo "==> Adding udev rule so /dev/input/event* is group-readable..."
-sudo tee /etc/udev/rules.d/99-nursery-keypad.rules > /dev/null <<'EOF'
-# Allow members of the input group to read all input devices
-KERNEL=="event*", SUBSYSTEM=="input", GROUP="input", MODE="0660"
-EOF
-sudo udevadm control --reload-rules
-sudo udevadm trigger
-
 echo "==> Making sure $USER is in the input group..."
 sudo usermod -aG input "$USER"
+echo "    NOTE: run 'bash setup_udev.sh' once with the keypad plugged in"
+echo "          to create a device-specific udev rule (recommended)."
 
 echo "==> Installing systemd service..."
 SERVICE_FILE=/etc/systemd/system/nursery-tracker.service
@@ -61,7 +55,9 @@ echo ""
 echo "==> Done!"
 echo ""
 echo "    Dashboard:  http://$(hostname).local:5000"
-echo "    Debug:      http://$(hostname).local:5000/devices"
 echo "    Logs:       sudo journalctl -u nursery-tracker -f"
 echo ""
-echo "Plug in the keypad, then check /devices to confirm it's detected."
+echo "Next steps:"
+echo "  1. Plug in the keypad"
+echo "  2. Run: bash setup_udev.sh   (creates a scoped device rule)"
+echo "  3. Run: bash find_device.sh  (confirms the keypad is detected)"

@@ -51,12 +51,22 @@ def add_entry(event_type):
 
 
 def find_keypad():
-    """Find the keypad by looking for any device that reports KEY_F13."""
+    """Find the keypad: must have KEY_F13 and must NOT have alphanumeric keys.
+
+    The second guard prevents accidentally grabbing a real keyboard that
+    happens to report F13 (e.g. an Apple extended keyboard).
+    """
+    # Keys present on any general-purpose keyboard — a 4-key pad won't have these.
+    full_keyboard_markers = {
+        evdev.ecodes.KEY_A,
+        evdev.ecodes.KEY_Z,
+        evdev.ecodes.KEY_SPACE,
+    }
     for path in evdev.list_devices():
         try:
             dev = evdev.InputDevice(path)
-            keys = dev.capabilities().get(evdev.ecodes.EV_KEY, [])
-            if evdev.ecodes.KEY_F13 in keys:
+            keys = set(dev.capabilities().get(evdev.ecodes.EV_KEY, []))
+            if evdev.ecodes.KEY_F13 in keys and keys.isdisjoint(full_keyboard_markers):
                 return dev
         except Exception:
             continue
@@ -139,7 +149,10 @@ def get_data():
 
 @app.route("/devices")
 def list_devices():
-    """Debug: list all input devices the server can see."""
+    """Debug endpoint — only active when NURSERY_DEBUG=1 is set in the environment."""
+    if not os.environ.get("NURSERY_DEBUG"):
+        from flask import abort
+        abort(404)
     if not EVDEV_AVAILABLE:
         return jsonify({"error": "evdev not available"}), 500
     result = []
