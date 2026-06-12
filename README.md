@@ -99,7 +99,7 @@ sudo journalctl -u nursery-tracker -f
 Open the dashboard on your phone:
 
 ```
-http://raspberrypi.local:5000
+http://raspberrypi.local:8080
 ```
 
 Bookmark it to your home screen for one-tap access.
@@ -140,7 +140,7 @@ sudo systemctl status nursery-tracker
 
 **Debug: see all input devices the app can see**
 
-Set `NURSERY_DEBUG=1` in the service environment, then visit `http://raspberrypi.local:5000/devices`. Remove it when done.
+Set `NURSERY_DEBUG=1` in the service environment, then visit `http://raspberrypi.local:8080/devices`. Remove it when done.
 
 ```bash
 # Add to service temporarily

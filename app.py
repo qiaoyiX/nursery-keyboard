@@ -174,4 +174,4 @@ if __name__ == "__main__":
     if EVDEV_AVAILABLE:
         t = threading.Thread(target=keypad_listener, daemon=True)
         t.start()
-    app.run(host="0.0.0.0", port=5000)
+    app.run(host="0.0.0.0", port=8080)
