@@ -2,8 +2,6 @@
 # Run once with the keypad plugged in.
 # Detects the keypad's USB vendor/product ID and writes a udev rule
 # that grants the input group access to ONLY that device.
-set -e
-
 RULE_FILE=/etc/udev/rules.d/99-nursery-keypad.rules
 
 echo "==> Looking for a keypad with KEY_F13 capability..."
@@ -19,26 +17,28 @@ KEYPAD_PATH=$("$VENV_PYTHON" - <<'PYEOF'
 import sys
 try:
     import evdev
-    full_kb = {evdev.ecodes.KEY_A, evdev.ecodes.KEY_Z, evdev.ecodes.KEY_SPACE}
-    for path in evdev.list_devices():
-        try:
-            dev = evdev.InputDevice(path)
-            keys = set(dev.capabilities().get(evdev.ecodes.EV_KEY, []))
-            if evdev.ecodes.KEY_F13 in keys and keys.isdisjoint(full_kb):
-                print(path)
-                sys.exit(0)
-        except Exception:
-            pass
-    sys.exit(1)
 except ImportError:
     print("ERROR: evdev not installed. Run install.sh first.", file=sys.stderr)
-    sys.exit(2)
+    sys.exit(1)
+
+full_kb = {evdev.ecodes.KEY_A, evdev.ecodes.KEY_Z, evdev.ecodes.KEY_SPACE}
+for path in evdev.list_devices():
+    try:
+        dev = evdev.InputDevice(path)
+        keys = set(dev.capabilities().get(evdev.ecodes.EV_KEY, []))
+        if evdev.ecodes.KEY_F13 in keys and keys.isdisjoint(full_kb):
+            print(path)
+            sys.exit(0)
+    except Exception:
+        pass
+# print nothing on failure — bash checks for empty output
 PYEOF
 )
 
 if [ -z "$KEYPAD_PATH" ]; then
-    echo "ERROR: No keypad found. Make sure it is plugged in and programmed"
-    echo "       at SayoDevice.com with keys F13, F14, F15, F16."
+    echo "ERROR: No keypad found with KEY_F13 capability."
+    echo "       Make sure the keypad is plugged in AND programmed at"
+    echo "       SayoDevice.com with keys set to F13 / F14 / F15 / F16."
     exit 1
 fi
 
