@@ -27,7 +27,7 @@ DEFAULT_SETTINGS = {"feed_interval_minutes": 180}
 KEYPAD_KEYS = {
     "KEY_SPACE":  "Wet",
     "KEY_PAGEUP": "Dirty",
-    "KEY_DOWN":   "Both",
+    "KEY_DOWN":   "Play",
     "KEY_UP":     "Feed",
 }
 
@@ -143,7 +143,7 @@ def keypad_listener():
 def today_stats(entries):
     today = datetime.now().date().isoformat()
     today_entries = [e for e in entries if e["time"].startswith(today)]
-    counts = {label: 0 for label in ["Wet", "Dirty", "Both", "Feed"]}
+    counts = {label: 0 for label in ["Wet", "Dirty", "Play", "Feed"]}
     for e in today_entries:
         if e["type"] in counts:
             counts[e["type"]] += 1
@@ -155,7 +155,7 @@ def daily_stats(entries, days=7):
     result = []
     for i in range(days - 1, -1, -1):
         d = (today - timedelta(days=i)).isoformat()
-        counts = {label: 0 for label in ["Wet", "Dirty", "Both", "Feed"]}
+        counts = {label: 0 for label in ["Wet", "Dirty", "Play", "Feed"]}
         for e in entries:
             if e["time"].startswith(d) and e["type"] in counts:
                 counts[e["type"]] += 1
@@ -165,13 +165,13 @@ def daily_stats(entries, days=7):
 
 def hourly_stats(entries):
     today = datetime.now().date().isoformat()
-    result = [{"hour": h, "Wet": 0, "Dirty": 0, "Both": 0, "Feed": 0} for h in range(24)]
+    result = [{"hour": h, "Wet": 0, "Dirty": 0, "Play": 0, "Feed": 0} for h in range(24)]
     for e in entries:
         if not e["time"].startswith(today):
             continue
         try:
             h = datetime.fromisoformat(e["time"]).hour
-            if e["type"] in ("Wet", "Dirty", "Both", "Feed"):
+            if e["type"] in ("Wet", "Dirty", "Play", "Feed"):
                 result[h][e["type"]] += 1
         except Exception:
             pass
@@ -225,7 +225,7 @@ def clear_log():
 def log_event():
     data = request.get_json(silent=True) or {}
     event_type = data.get("type")
-    if event_type not in ["Wet", "Dirty", "Both", "Feed"]:
+    if event_type not in ["Wet", "Dirty", "Play", "Feed"]:
         return jsonify({"error": "invalid type"}), 400
     add_entry(event_type)
     return jsonify({"ok": True})
