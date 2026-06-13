@@ -1,5 +1,5 @@
 #!/bin/bash
-# Run this to confirm the keypad is visible and shows KEY_F13 capability.
+# Run this to confirm the keypad is visible and ready.
 # Usage: bash find_device.sh
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 VENV_PYTHON="$SCRIPT_DIR/venv/bin/python"
@@ -12,7 +12,7 @@ for dev in /dev/input/event*; do
 done
 
 echo ""
-echo "Checking for F13 key capability (indicates programmed SayoDevice)..."
+echo "Checking for SayoDevice keypad..."
 
 if [ ! -x "$VENV_PYTHON" ]; then
     echo "evdev not installed yet. Run install.sh first."
@@ -27,35 +27,26 @@ except ImportError:
     print("evdev not installed. Run install.sh first.")
     sys.exit(1)
 
-full_kb = {evdev.ecodes.KEY_A, evdev.ecodes.KEY_Z, evdev.ecodes.KEY_SPACE}
 found = False
-sayo_devices = []
-
 for path in evdev.list_devices():
     try:
         dev = evdev.InputDevice(path)
         keys = set(dev.capabilities().get(evdev.ecodes.EV_KEY, []))
         is_sayo = "sayodevice" in dev.name.lower()
-        has_f13 = evdev.ecodes.KEY_F13 in keys
-        is_full_kb = not keys.isdisjoint(full_kb)
+        has_space = evdev.ecodes.KEY_SPACE in keys
+        no_alpha = evdev.ecodes.KEY_A not in keys
 
-        if is_sayo:
-            sayo_devices.append((path, dev.name, has_f13))
-
-        if has_f13 and not is_full_kb:
+        if is_sayo and has_space and no_alpha:
             print(f"  READY: {path}  =>  {dev.name}")
             found = True
+        elif is_sayo:
+            print(f"  FOUND (not matched): {path}  =>  {dev.name}")
     except Exception:
         pass
 
 if not found:
-    if sayo_devices:
-        print("  SayoDevice is plugged in but NOT yet programmed to F13-F16:")
-        for path, name, has_f13 in sayo_devices:
-            print(f"    {path}  =>  {name}")
-        print()
-        print("  Fix: unplug the keypad, plug into your Mac/PC, open")
-        print("  SayoDevice.com in Chrome, and set keys to F13/F14/F15/F16.")
-    else:
-        print("  No SayoDevice found. Make sure the keypad is plugged in.")
+    sayo = [p for p in evdev.list_devices()
+            if "sayodevice" in (evdev.InputDevice(p).name.lower() if True else "")]
+    print("  No ready SayoDevice keypad found.")
+    print("  Make sure the keypad is plugged into the Pi.")
 PYEOF

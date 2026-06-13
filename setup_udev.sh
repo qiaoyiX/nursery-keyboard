@@ -21,12 +21,15 @@ except ImportError:
     print("ERROR: evdev not installed. Run install.sh first.", file=sys.stderr)
     sys.exit(1)
 
-full_kb = {evdev.ecodes.KEY_A, evdev.ecodes.KEY_Z, evdev.ecodes.KEY_SPACE}
 for path in evdev.list_devices():
     try:
         dev = evdev.InputDevice(path)
         keys = set(dev.capabilities().get(evdev.ecodes.EV_KEY, []))
-        if evdev.ecodes.KEY_F13 in keys and keys.isdisjoint(full_kb):
+        if (
+            "sayodevice" in dev.name.lower()
+            and evdev.ecodes.KEY_SPACE in keys
+            and evdev.ecodes.KEY_A not in keys
+        ):
             print(path)
             sys.exit(0)
     except Exception:
@@ -36,9 +39,8 @@ PYEOF
 )
 
 if [ -z "$KEYPAD_PATH" ]; then
-    echo "ERROR: No keypad found with KEY_F13 capability."
-    echo "       Make sure the keypad is plugged in AND programmed at"
-    echo "       SayoDevice.com with keys set to F13 / F14 / F15 / F16."
+    echo "ERROR: No SayoDevice keypad found."
+    echo "       Make sure the keypad is plugged into the Pi."
     exit 1
 fi
 

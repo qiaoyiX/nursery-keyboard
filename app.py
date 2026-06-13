@@ -22,10 +22,10 @@ app = Flask(__name__)
 
 DATA_FILE = os.path.join(os.path.dirname(__file__), "log.json")
 KEYPAD_KEYS = {
-    "KEY_F13": "Wet",
-    "KEY_F14": "Dirty",
-    "KEY_F15": "Both",
-    "KEY_F16": "Feed",
+    "KEY_SPACE":  "Wet",
+    "KEY_PAGEUP": "Dirty",
+    "KEY_DOWN":   "Both",
+    "KEY_UP":     "Feed",
 }
 
 log_lock = threading.Lock()
@@ -51,22 +51,21 @@ def add_entry(event_type):
 
 
 def find_keypad():
-    """Find the keypad: must have KEY_F13 and must NOT have alphanumeric keys.
+    """Find the SayoDevice keypad by name + key capability.
 
-    The second guard prevents accidentally grabbing a real keyboard that
-    happens to report F13 (e.g. an Apple extended keyboard).
+    Matches on 'sayodevice' in the device name, presence of KEY_SPACE
+    (one of the mapped keys), and absence of KEY_A (rules out any real
+    keyboard that might share the SayoDevice USB VID/PID).
     """
-    # Keys present on any general-purpose keyboard — a 4-key pad won't have these.
-    full_keyboard_markers = {
-        evdev.ecodes.KEY_A,
-        evdev.ecodes.KEY_Z,
-        evdev.ecodes.KEY_SPACE,
-    }
     for path in evdev.list_devices():
         try:
             dev = evdev.InputDevice(path)
             keys = set(dev.capabilities().get(evdev.ecodes.EV_KEY, []))
-            if evdev.ecodes.KEY_F13 in keys and keys.isdisjoint(full_keyboard_markers):
+            if (
+                "sayodevice" in dev.name.lower()
+                and evdev.ecodes.KEY_SPACE in keys
+                and evdev.ecodes.KEY_A not in keys
+            ):
                 return dev
         except Exception:
             continue

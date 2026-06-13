@@ -8,25 +8,7 @@ A Raspberry Pi web app for logging diaper changes and feeds using a 4-key USB ke
 
 ---
 
-## Step 1 — Program the keypad
-
-Do this on any Mac/Windows/Linux computer with Chrome or Edge.
-
-1. Go to **[SayoDevice.com](https://sayodevice.com)** in Chrome or Edge
-2. Plug the keypad into your computer via USB
-3. Click **Connect** and select the keypad from the browser prompt
-4. Set each key:
-   - Key 1 → `F13`
-   - Key 2 → `F14`
-   - Key 3 → `F15`
-   - Key 4 → `F16`
-5. Click **Save** — the config is stored on the device itself
-
-The keypad is now plug-and-play. You only need to do this once.
-
----
-
-## Step 2 — Flash the Raspberry Pi SD card
+## Step 1 — Flash the Raspberry Pi SD card
 
 On your Mac:
 
@@ -44,7 +26,7 @@ On your Mac:
 
 ---
 
-## Step 3 — Boot the Pi and connect
+## Step 2 — Boot the Pi and connect
 
 1. Insert the SD card into the Pi and plug in power
 2. Wait ~60 seconds for first boot (green LED will flicker)
@@ -58,7 +40,7 @@ Enter your password when prompted. If `raspberrypi.local` doesn't resolve, check
 
 ---
 
-## Step 4 — Install the tracker
+## Step 3 — Install the tracker
 
 From the SSH session on the Pi:
 
@@ -72,7 +54,7 @@ This installs Python dependencies, sets up a systemd service (auto-starts on boo
 
 ---
 
-## Step 5 — Set up keypad permissions
+## Step 4 — Set up keypad permissions
 
 Plug the keypad into a Pi USB port, then run:
 
@@ -86,7 +68,7 @@ Unplug and replug the keypad after it finishes.
 
 ---
 
-## Step 6 — Verify everything works
+## Step 5 — Verify everything works
 
 ```bash
 # Confirm the keypad is detected by the app
@@ -108,12 +90,12 @@ Bookmark it to your home screen for one-tap access.
 
 ## Key layout
 
-| Key | Action |
-|-----|--------|
-| 1   | Wet    |
-| 2   | Dirty  |
-| 3   | Both   |
-| 4   | Feed   |
+| Key | Mapped to | Action |
+|-----|-----------|--------|
+| 1   | Space     | Wet    |
+| 2   | PageUp    | Dirty  |
+| 3   | Down ↓    | Both   |
+| 4   | Up ↑      | Feed   |
 
 The on-screen buttons also work as a backup if the keypad isn't nearby.
 
@@ -125,7 +107,7 @@ The on-screen buttons also work as a backup if the keypad isn't nearby.
 Wait 2 more minutes, or find the Pi's IP in your router's device list and SSH to that directly.
 
 **`find_device.sh` reports no keypad found**
-Make sure the keypad was programmed at SayoDevice.com with keys set to F13/F14/F15/F16, then unplug and replug it.
+Make sure the keypad is plugged into the Pi. Unplug and replug it, then run `bash find_device.sh` again.
 
 **Keypad is plugged in but nothing logs**
 ```bash
