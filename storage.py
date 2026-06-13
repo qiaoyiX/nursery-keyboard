@@ -19,19 +19,18 @@ DATA_FILE        = os.path.join(os.path.dirname(__file__), "log.json")
 SETTINGS_FILE    = os.path.join(os.path.dirname(__file__), "settings.json")
 SLEEP_FILE       = os.path.join(os.path.dirname(__file__), "sleep_sessions.json")
 SLEEP_STATE_FILE = os.path.join(os.path.dirname(__file__), "sleep_state.json")
-BACKGROUND_FILE  = os.path.join(os.path.dirname(__file__), "crib_background.npy")
 CALIBRATE_FLAG   = os.path.join(os.path.dirname(__file__), "calibrate.flag")
 
 DEFAULT_SETTINGS = {
     "feed_interval_minutes":    180,
     "camera_rtsp_url":          "",
-    "sleep_motion_threshold":   0.02,
+    "sleep_motion_threshold":   0.5,   # mean optical flow magnitude (px/frame)
     "sleep_min_minutes":        10,
     "sleep_wake_seconds":       20,
     "huckleberry_email":        "",
     "huckleberry_password":     "",
     "huckleberry_child_index":  0,
-    "sleep_presence_threshold": 0.05,
+    "sleep_presence_threshold": 0.08,  # min foreground blob as fraction of frame
 }
 
 log_lock      = threading.Lock()

@@ -1,25 +1,25 @@
 """
 Sleep monitoring daemon — runs as a separate systemd service (nursery-sleep-monitor).
 
-Two-stage detection per frame:
-  1. Presence:  compare frame vs saved empty-crib background
-               → baby is in crib if enough pixels differ from background
-  2. Motion:    compare frame vs previous frame
-               → baby is awake if pixels are changing
+Algorithm (two signals per frame):
+  1. Presence  — MOG2 background subtractor with state-dependent learning rate
+                 + morphological blob filtering (baby-sized blob in foreground = present)
+  2. Motion    — Farneback optical flow mean magnitude
+                 (actual motion vectors, not raw pixel differences)
 
 States: AWAY (not in crib) → AWAKE (in crib, moving) → ASLEEP (in crib, still)
 
-Background management:
-  - Auto-captured from first 15 frames on startup (assumes crib empty at boot)
-  - Auto-refreshed after 5 min in AWAY state (handles day/night lighting changes)
-  - Force-refresh: press "Crib is empty" in dashboard → creates calibrate.flag
+Why MOG2 with state-dependent learning rate:
+  ASLEEP → lr=0.0   frozen: sleeping baby never gets absorbed into background
+  AWAY   → lr=0.05  fast: empty-crib scene learned within ~20 frames
+  AWAKE  → lr=-1    auto: standard adaptation
 
 Configuration (settings.json):
   camera_rtsp_url          — rtsp://user:pass@IP:554/stream2
-  sleep_motion_threshold   — frame-to-frame diff fraction (default 0.02)
-  sleep_presence_threshold — vs-background diff fraction (default 0.05)
+  sleep_motion_threshold   — mean optical flow magnitude in px/frame (default 0.5)
+  sleep_presence_threshold — min foreground blob as fraction of frame (default 0.08)
   sleep_min_minutes        — stillness minutes before marking asleep (default 10)
-  sleep_wake_seconds       — motion seconds before marking awake (default 20)
+  sleep_wake_seconds       — sustained motion seconds before marking awake (default 20)
 """
 
 import logging
@@ -31,7 +31,6 @@ import cv2
 import numpy as np
 
 from storage import (
-    BACKGROUND_FILE,
     CALIBRATE_FLAG,
     end_sleep_session,
     get_open_sleep_session,
@@ -55,42 +54,49 @@ STATE_AWAY   = "away"
 STATE_AWAKE  = "awake"
 STATE_ASLEEP = "asleep"
 
-PIXEL_THRESHOLD   = 25    # per-pixel brightness change to count as "different"
-LIGHTING_CEILING  = 0.80  # fraction above which we assume IR/light toggle, not motion
-FRAME_INTERVAL    = 1.0   # seconds between sampled frames (~1 fps)
-WARMUP_FRAMES     = 15    # frames averaged to build initial background
-BG_SAVE_INTERVAL  = 30    # seconds between background persistence to disk
+LIGHTING_CEILING = 0.80   # frame-diff fraction above which we assume IR toggle, not motion
+FRAME_INTERVAL   = 1.0    # seconds between sampled frames (~1 fps)
+WARMUP_FRAMES    = 30     # frames fed at lr=1.0 to init/re-init MOG2 (~30 s)
+
+MORPH_KERNEL = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
 
 
-# ── Frame helpers ─────────────────────────────────────────────────────────────
+# ── MOG2 factory ──────────────────────────────────────────────────────────────
 
-def compute_diff_fraction(frame_a, frame_b):
-    """Fraction of pixels that differ by more than PIXEL_THRESHOLD."""
+def create_mog2():
+    return cv2.createBackgroundSubtractorMOG2(
+        history=500,        # frames used for background model
+        varThreshold=40,    # higher = less sensitive to small changes
+        detectShadows=False
+    )
+
+
+# ── Per-frame signal functions ────────────────────────────────────────────────
+
+def frame_diff_fraction(frame_a, frame_b, pixel_thresh=25):
+    """Fraction of pixels that differ by more than pixel_thresh (for lighting guard only)."""
     diff = cv2.absdiff(frame_a, frame_b)
-    _, thresh = cv2.threshold(diff, PIXEL_THRESHOLD, 1, cv2.THRESH_BINARY)
+    _, thresh = cv2.threshold(diff, pixel_thresh, 1, cv2.THRESH_BINARY)
     return float(thresh.sum()) / float(thresh.size)
 
 
-def is_lighting_change(fraction):
-    """IR night-vision switches and sudden light-on events change nearly every pixel."""
-    return fraction > LIGHTING_CEILING
+def compute_presence(curr_gray, mog2, lr, min_blob_pixels):
+    """True if MOG2 foreground contains a blob at least min_blob_pixels in area."""
+    fg = mog2.apply(curr_gray, learningRate=lr)
+    fg = cv2.morphologyEx(fg, cv2.MORPH_CLOSE, MORPH_KERNEL)
+    contours, _ = cv2.findContours(fg, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    return any(cv2.contourArea(c) > min_blob_pixels for c in contours)
 
 
-# ── Background management ─────────────────────────────────────────────────────
-
-def load_background():
-    if os.path.exists(BACKGROUND_FILE):
-        return np.load(BACKGROUND_FILE).astype(np.float32)
-    return None
-
-
-def save_background(gray_frame):
-    np.save(BACKGROUND_FILE, gray_frame.astype(np.float32))
-    logging.info("Background frame saved to %s", BACKGROUND_FILE)
-
-
-def background_to_uint8(background):
-    return np.clip(background, 0, 255).astype(np.uint8)
+def compute_optical_flow(prev_gray, curr_gray):
+    """Mean optical flow magnitude (pixels/frame). 0 = no motion."""
+    flow = cv2.calcOpticalFlowFarneback(
+        prev_gray, curr_gray, None,
+        pyr_scale=0.5, levels=3, winsize=15,
+        iterations=3, poly_n=5, poly_sigma=1.2, flags=0
+    )
+    mag, _ = cv2.cartToPolar(flow[..., 0], flow[..., 1])
+    return float(mag.mean())
 
 
 # ── RTSP capture ──────────────────────────────────────────────────────────────
@@ -110,6 +116,17 @@ def read_frame_gray(cap):
     return cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
 
 
+def warmup_mog2(cap, mog2, n_frames=WARMUP_FRAMES):
+    """Feed n_frames at learningRate=1.0 to quickly build background model."""
+    for i in range(n_frames):
+        f = read_frame_gray(cap)
+        if f is None:
+            return False
+        mog2.apply(f, learningRate=1.0)
+        time.sleep(FRAME_INTERVAL)
+    return True
+
+
 # ── State machine ─────────────────────────────────────────────────────────────
 
 def run_state_machine(rtsp_url, motion_threshold, presence_threshold,
@@ -121,24 +138,17 @@ def run_state_machine(rtsp_url, motion_threshold, presence_threshold,
 
     logging.info("RTSP stream opened: %s", rtsp_url)
 
-    # ── Background warmup ─────────────────────────────────────────────────────
-    background = load_background()
-    if background is None:
-        logging.info("No background found — collecting %d warmup frames (crib should be empty)…",
-                     WARMUP_FRAMES)
-        warmup = []
-        while len(warmup) < WARMUP_FRAMES:
-            frame = read_frame_gray(cap)
-            if frame is None:
-                cap.release()
-                return
-            warmup.append(frame.astype(np.float32))
-            time.sleep(FRAME_INTERVAL)
-        background = np.mean(warmup, axis=0)
-        save_background(background)
-        logging.info("Initial background captured from %d frames", WARMUP_FRAMES)
+    # min foreground blob in pixels (presence_threshold is fraction of 320×240)
+    min_blob_pixels = int(presence_threshold * 320 * 240)
 
-    bg_uint8 = background_to_uint8(background)
+    # ── MOG2 warmup ───────────────────────────────────────────────────────────
+    mog2 = create_mog2()
+    logging.info("Initializing background model (%d warmup frames, ~%ds)…",
+                 WARMUP_FRAMES, WARMUP_FRAMES)
+    if not warmup_mog2(cap, mog2):
+        cap.release()
+        return
+    logging.info("Background model ready — starting state machine")
 
     # ── Resume open session from DB (daemon restart) ──────────────────────────
     open_session = get_open_sleep_session()
@@ -154,11 +164,10 @@ def run_state_machine(rtsp_url, motion_threshold, presence_threshold,
         current_session_id  = None
         current_sleep_start = None
 
-    still_since   = None
-    motion_since  = None
-    away_since    = datetime.now() if state == STATE_AWAY else None
-    prev_gray     = None
-    last_bg_save  = datetime.now()
+    still_since  = None
+    motion_since = None
+    away_since   = datetime.now() if state == STATE_AWAY else None
+    prev_gray    = None
 
     try:
         while True:
@@ -173,11 +182,11 @@ def run_state_machine(rtsp_url, motion_threshold, presence_threshold,
             if os.path.exists(CALIBRATE_FLAG):
                 try:
                     os.remove(CALIBRATE_FLAG)
-                    save_background(curr_gray)
-                    background = curr_gray.astype(np.float32)
-                    bg_uint8   = background_to_uint8(background)
-                    logging.info("Background updated via calibration request")
-                    # Reset to AWAY since crib is declared empty
+                    logging.info("Calibration requested — re-initializing MOG2 (%d frames)…",
+                                 WARMUP_FRAMES)
+                    mog2 = create_mog2()
+                    warmup_mog2(cap, mog2)
+                    logging.info("MOG2 re-initialized via calibration")
                     if state == STATE_ASLEEP and current_session_id:
                         end_sleep_session(current_session_id, datetime.now())
                         current_session_id  = None
@@ -186,6 +195,10 @@ def run_state_machine(rtsp_url, motion_threshold, presence_threshold,
                     still_since  = None
                     motion_since = None
                     away_since   = datetime.now()
+                    prev_gray    = None
+                    curr_gray    = read_frame_gray(cap)
+                    if curr_gray is None:
+                        break
                 except Exception as e:
                     logging.warning("Calibration error: %s", e)
 
@@ -193,31 +206,35 @@ def run_state_machine(rtsp_url, motion_threshold, presence_threshold,
 
             # ── Lighting-change guard (skip IR toggle frames) ─────────────────
             if prev_gray is not None:
-                frame_diff = compute_diff_fraction(prev_gray, curr_gray)
-                if is_lighting_change(frame_diff):
+                if frame_diff_fraction(prev_gray, curr_gray) > LIGHTING_CEILING:
                     prev_gray = curr_gray
                     write_sleep_heartbeat(state)
                     time.sleep(max(0.0, FRAME_INTERVAL - (time.monotonic() - loop_start)))
                     continue
 
-            # ── Presence detection ────────────────────────────────────────────
-            presence_fraction = compute_diff_fraction(curr_gray, bg_uint8)
-            baby_present      = presence_fraction > presence_threshold
-
-            # ── Motion detection (frame-to-frame) ────────────────────────────
-            if prev_gray is not None:
-                motion_fraction = compute_diff_fraction(prev_gray, curr_gray)
-                is_motion       = motion_fraction > motion_threshold
+            # ── Presence detection (MOG2 + blob filter) ───────────────────────
+            if state == STATE_ASLEEP:
+                mog2_lr = 0.0    # frozen: sleeping baby never absorbed into background
+            elif state == STATE_AWAY:
+                mog2_lr = 0.05   # fast: learn current empty-crib scene quickly
             else:
+                mog2_lr = -1     # auto: standard MOG2 adaptation
+
+            baby_present = compute_presence(curr_gray, mog2, mog2_lr, min_blob_pixels)
+
+            # ── Motion detection (optical flow) ───────────────────────────────
+            if prev_gray is not None:
+                flow_mag  = compute_optical_flow(prev_gray, curr_gray)
+                is_motion = flow_mag > motion_threshold
+            else:
+                flow_mag  = 0.0
                 is_motion = False
                 prev_gray = curr_gray
 
             # ── State transitions ─────────────────────────────────────────────
 
             if not baby_present:
-                # Baby not in frame
                 if state == STATE_ASLEEP and current_session_id is not None:
-                    # Baby was picked up while sleeping — close the session now
                     end_sleep_session(current_session_id, now)
                     if HUCKLEBERRY_AVAILABLE and current_sleep_start:
                         push_sleep(current_sleep_start, now)
@@ -235,13 +252,12 @@ def run_state_machine(rtsp_url, motion_threshold, presence_threshold,
                     away_since = now
 
             else:
-                # Baby is present
                 away_since = None
 
                 if state == STATE_AWAY:
                     state       = STATE_AWAKE
                     still_since = None
-                    logging.info("Baby detected in frame — AWAKE")
+                    logging.info("Baby detected — AWAKE")
 
                 if state == STATE_AWAKE:
                     if not is_motion:
@@ -280,25 +296,6 @@ def run_state_machine(rtsp_url, motion_threshold, presence_threshold,
                         motion_since = None
 
             write_sleep_heartbeat(state)
-
-            # Adaptive background update — rate depends on state
-            if state == STATE_AWAY:
-                bg_alpha = 0.02      # fast: syncs to current empty-crib lighting in ~1 min
-            elif state == STATE_AWAKE:
-                bg_alpha = 0.0005    # slow: lighting drift only
-            else:                    # STATE_ASLEEP
-                bg_alpha = 0.0001    # very slow: allows self-healing if background is wrong
-                                     # (e.g. background was captured with baby in crib)
-                                     # ~4.7 hr half-life → normal naps safe, deadlock breaks
-
-            if bg_alpha > 0:
-                background = (1 - bg_alpha) * background + bg_alpha * curr_gray.astype(np.float32)
-                bg_uint8   = background_to_uint8(background)
-
-            if (now - last_bg_save).total_seconds() >= BG_SAVE_INTERVAL:
-                save_background(background)
-                last_bg_save = now
-
             prev_gray = curr_gray
             elapsed   = time.monotonic() - loop_start
             time.sleep(max(0.0, FRAME_INTERVAL - elapsed))
@@ -321,8 +318,8 @@ def main():
             time.sleep(30)
             continue
 
-        motion_threshold   = float(settings.get("sleep_motion_threshold",   0.02))
-        presence_threshold = float(settings.get("sleep_presence_threshold", 0.05))
+        motion_threshold   = float(settings.get("sleep_motion_threshold",   0.5))
+        presence_threshold = float(settings.get("sleep_presence_threshold", 0.08))
         sleep_min_seconds  = int(settings.get("sleep_min_minutes",          10)) * 60
         wake_seconds       = int(settings.get("sleep_wake_seconds",         20))
 
