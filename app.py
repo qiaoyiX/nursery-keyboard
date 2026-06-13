@@ -7,8 +7,12 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta
 from flask import Flask, render_template, jsonify, request
 
-import psycopg2
-from psycopg2.extras import RealDictCursor
+try:
+    import psycopg2
+    from psycopg2.extras import RealDictCursor
+    PSYCOPG2_AVAILABLE = True
+except ImportError:
+    PSYCOPG2_AVAILABLE = False
 
 logging.basicConfig(
     level=logging.INFO,
@@ -24,11 +28,14 @@ except ImportError:
 
 app = Flask(__name__)
 
-# Set DATABASE_URL in the systemd unit (see README).
+# Optional: set DATABASE_URL in the systemd unit to use Neon Postgres.
+# Without it the app falls back to a local log.json file.
 # Schema: CREATE TABLE events (id BIGSERIAL PRIMARY KEY, type VARCHAR(10) NOT NULL,
 #           time TIMESTAMP NOT NULL); CREATE INDEX ON events (time);
 DATABASE_URL = os.environ.get("DATABASE_URL")
+USE_DB = bool(DATABASE_URL and PSYCOPG2_AVAILABLE)
 
+DATA_FILE = os.path.join(os.path.dirname(__file__), "log.json")
 SETTINGS_FILE = os.path.join(os.path.dirname(__file__), "settings.json")
 DEFAULT_SETTINGS = {"feed_interval_minutes": 180}
 
@@ -39,15 +46,14 @@ KEYPAD_KEYS = {
     "KEY_UP":     "Feed",
 }
 
+log_lock = threading.Lock()
 settings_lock = threading.Lock()
 
 
-# ── Database ──────────────────────────────────────────────────────────────────
+# ── Storage — Postgres path ───────────────────────────────────────────────────
 
 @contextmanager
 def db():
-    if not DATABASE_URL:
-        raise RuntimeError("DATABASE_URL environment variable not set")
     conn = psycopg2.connect(DATABASE_URL)
     try:
         yield conn
@@ -59,21 +65,89 @@ def db():
         conn.close()
 
 
-def get_entries():
-    """Return all events as list of {"id": int, "type": str, "time": str} dicts, oldest first."""
+def _pg_get_entries():
     with db() as conn:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute("SELECT id, type, time FROM events ORDER BY time")
             return [{"id": r["id"], "type": r["type"], "time": r["time"].isoformat()} for r in cur.fetchall()]
 
 
-def add_entry(event_type):
+def _pg_add_entry(event_type):
     with db() as conn:
         with conn.cursor() as cur:
-            cur.execute(
-                "INSERT INTO events (type, time) VALUES (%s, %s)",
-                (event_type, datetime.now()),
-            )
+            cur.execute("INSERT INTO events (type, time) VALUES (%s, %s)", (event_type, datetime.now()))
+
+
+def _pg_clear_today():
+    today = datetime.now().date()
+    with db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM events WHERE time::date = %s", (today,))
+
+
+def _pg_delete_entry(entry_id):
+    with db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM events WHERE id = %s", (entry_id,))
+            return cur.rowcount
+
+
+# ── Storage — JSON fallback path ──────────────────────────────────────────────
+
+def _json_load():
+    if os.path.exists(DATA_FILE):
+        with open(DATA_FILE) as f:
+            return json.load(f)
+    return []
+
+
+def _json_save(entries):
+    with open(DATA_FILE, "w") as f:
+        json.dump(entries, f)
+
+
+def _json_get_entries():
+    with log_lock:
+        entries = _json_load()
+    # Assign a stable pseudo-id based on list position for delete compatibility
+    return [{"id": i, "type": e["type"], "time": e["time"]} for i, e in enumerate(entries)]
+
+
+def _json_add_entry(event_type):
+    with log_lock:
+        entries = _json_load()
+        entries.append({"type": event_type, "time": datetime.now().isoformat()})
+        _json_save(entries)
+
+
+def _json_clear_today():
+    today = datetime.now().date().isoformat()
+    with log_lock:
+        entries = _json_load()
+        _json_save([e for e in entries if not e["time"].startswith(today)])
+
+
+def _json_delete_entry(entry_id):
+    with log_lock:
+        entries = _json_load()
+        if not (0 <= entry_id < len(entries)):
+            return 0
+        entries.pop(entry_id)
+        _json_save(entries)
+    return 1
+
+
+# ── Public storage API (dispatches to Postgres or JSON) ──────────────────────
+
+def get_entries():
+    return _pg_get_entries() if USE_DB else _json_get_entries()
+
+
+def add_entry(event_type):
+    if USE_DB:
+        _pg_add_entry(event_type)
+    else:
+        _json_add_entry(event_type)
 
 
 # ── Settings (local file — tiny, no backup needed) ───────────────────────────
@@ -247,10 +321,10 @@ def update_settings():
 
 @app.route("/log/today", methods=["DELETE"])
 def clear_today():
-    today = datetime.now().date()
-    with db() as conn:
-        with conn.cursor() as cur:
-            cur.execute("DELETE FROM events WHERE time::date = %s", (today,))
+    if USE_DB:
+        _pg_clear_today()
+    else:
+        _json_clear_today()
     return jsonify({"ok": True})
 
 
@@ -260,10 +334,7 @@ def delete_entry():
     entry_id = data.get("id")
     if not isinstance(entry_id, int):
         return jsonify({"error": "missing id"}), 400
-    with db() as conn:
-        with conn.cursor() as cur:
-            cur.execute("DELETE FROM events WHERE id = %s", (entry_id,))
-            deleted = cur.rowcount
+    deleted = _pg_delete_entry(entry_id) if USE_DB else _json_delete_entry(entry_id)
     if deleted == 0:
         return jsonify({"error": "not found"}), 404
     return jsonify({"ok": True})
@@ -323,6 +394,7 @@ def list_devices():
 
 
 if __name__ == "__main__":
+    logging.info("Storage: %s", "Neon Postgres" if USE_DB else "local log.json (set DATABASE_URL to use Postgres)")
     if EVDEV_AVAILABLE:
         t = threading.Thread(target=keypad_listener, daemon=True)
         t.start()
