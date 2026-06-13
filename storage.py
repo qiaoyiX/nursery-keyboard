@@ -149,8 +149,12 @@ def delete_entry(entry_id):
 
 def load_settings():
     if os.path.exists(SETTINGS_FILE):
-        with open(SETTINGS_FILE) as f:
-            return {**DEFAULT_SETTINGS, **json.load(f)}
+        try:
+            with open(SETTINGS_FILE) as f:
+                return {**DEFAULT_SETTINGS, **json.load(f)}
+        except json.JSONDecodeError as e:
+            logging.warning("settings.json is corrupt (%s) — using defaults and resetting file", e)
+            save_settings(dict(DEFAULT_SETTINGS))
     return dict(DEFAULT_SETTINGS)
 
 
