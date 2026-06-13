@@ -13,6 +13,13 @@ from storage import (
     get_sleep_sessions_today, get_open_sleep_session, read_sleep_status,
 )
 
+try:
+    from huckleberry_sync import push_event
+    HUCKLEBERRY_AVAILABLE = True
+except ImportError:
+    HUCKLEBERRY_AVAILABLE = False
+    logging.warning("huckleberry_sync not available — Huckleberry sync disabled")
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(message)s",
@@ -73,6 +80,8 @@ def listen_one_interface(dev):
                                 try:
                                     add_entry(label)
                                     logging.info("Logged: %s", label)
+                                    if HUCKLEBERRY_AVAILABLE:
+                                        push_event(label, datetime.now())
                                 except Exception as db_err:
                                     logging.error("DB write failed for %s: %s — event dropped", label, db_err)
             finally:
@@ -251,6 +260,8 @@ def log_event():
     if event_type not in ["Wet", "Dirty", "Play", "Feed"]:
         return jsonify({"error": "invalid type"}), 400
     add_entry(event_type)
+    if HUCKLEBERRY_AVAILABLE:
+        push_event(event_type, datetime.now())
     return jsonify({"ok": True})
 
 

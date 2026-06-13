@@ -28,6 +28,12 @@ from storage import (
     write_sleep_heartbeat,
 )
 
+try:
+    from huckleberry_sync import push_sleep
+    HUCKLEBERRY_AVAILABLE = True
+except ImportError:
+    HUCKLEBERRY_AVAILABLE = False
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s [sleep_monitor] %(message)s",
@@ -93,9 +99,10 @@ def run_state_machine(rtsp_url, motion_threshold, sleep_min_seconds, wake_second
         state = STATE_AWAKE
         current_session_id = None
 
-    still_since  = None   # datetime when continuous stillness streak began
-    motion_since = None   # datetime when continuous motion streak began
-    prev_gray    = None
+    still_since         = None   # datetime when continuous stillness streak began
+    motion_since        = None   # datetime when continuous motion streak began
+    current_sleep_start = None   # backdated start of current sleep session
+    prev_gray           = None
 
     try:
         while True:
@@ -131,11 +138,12 @@ def run_state_machine(rtsp_url, motion_threshold, sleep_min_seconds, wake_second
                         motion_since = None
                     elif (now - still_since).total_seconds() >= sleep_min_seconds:
                         # Backdate sleep start to when stillness actually began
-                        current_session_id = start_sleep_session(still_since)
-                        state       = STATE_ASLEEP
-                        still_since = None
+                        current_sleep_start = still_since
+                        current_session_id  = start_sleep_session(still_since)
+                        state               = STATE_ASLEEP
+                        still_since         = None
                         logging.info("ASLEEP — session %s started at %s",
-                                     current_session_id, still_since)
+                                     current_session_id, current_sleep_start)
                 else:
                     still_since = None  # any motion resets the stillness streak
 
@@ -146,12 +154,16 @@ def run_state_machine(rtsp_url, motion_threshold, sleep_min_seconds, wake_second
                         still_since  = None
                     elif (now - motion_since).total_seconds() >= wake_seconds:
                         # Backdate wake time to when motion actually started
-                        wake_time          = motion_since
-                        ended_id           = current_session_id
+                        wake_time           = motion_since
+                        ended_id            = current_session_id
+                        sleep_start_for_hb  = current_sleep_start
                         end_sleep_session(ended_id, wake_time)
-                        state              = STATE_AWAKE
-                        current_session_id = None
-                        motion_since       = None
+                        if HUCKLEBERRY_AVAILABLE and sleep_start_for_hb:
+                            push_sleep(sleep_start_for_hb, wake_time)
+                        state               = STATE_AWAKE
+                        current_session_id  = None
+                        current_sleep_start = None
+                        motion_since        = None
                         logging.info("AWAKE — session %s ended at %s",
                                      ended_id, wake_time.isoformat())
                 else:

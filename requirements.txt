@@ -3,3 +3,5 @@ evdev
 psycopg2-binary
 opencv-python-headless
 numpy
+py-huckleberry-api
+aiohttp

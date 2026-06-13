@@ -21,11 +21,14 @@ SLEEP_FILE      = os.path.join(os.path.dirname(__file__), "sleep_sessions.json")
 SLEEP_STATE_FILE = os.path.join(os.path.dirname(__file__), "sleep_state.json")
 
 DEFAULT_SETTINGS = {
-    "feed_interval_minutes": 180,
-    "camera_rtsp_url":       "",
-    "sleep_motion_threshold": 0.02,
-    "sleep_min_minutes":     10,
-    "sleep_wake_seconds":    20,
+    "feed_interval_minutes":    180,
+    "camera_rtsp_url":          "",
+    "sleep_motion_threshold":   0.02,
+    "sleep_min_minutes":        10,
+    "sleep_wake_seconds":       20,
+    "huckleberry_email":        "",
+    "huckleberry_password":     "",
+    "huckleberry_child_index":  0,
 }
 
 log_lock      = threading.Lock()
