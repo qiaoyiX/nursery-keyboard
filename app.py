@@ -21,6 +21,9 @@ except ImportError:
 app = Flask(__name__)
 
 DATA_FILE = os.path.join(os.path.dirname(__file__), "log.json")
+SETTINGS_FILE = os.path.join(os.path.dirname(__file__), "settings.json")
+DEFAULT_SETTINGS = {"feed_interval_minutes": 180}
+
 KEYPAD_KEYS = {
     "KEY_SPACE":  "Wet",
     "KEY_PAGEUP": "Dirty",
@@ -29,6 +32,19 @@ KEYPAD_KEYS = {
 }
 
 log_lock = threading.Lock()
+settings_lock = threading.Lock()
+
+
+def load_settings():
+    if os.path.exists(SETTINGS_FILE):
+        with open(SETTINGS_FILE) as f:
+            return {**DEFAULT_SETTINGS, **json.load(f)}
+    return dict(DEFAULT_SETTINGS)
+
+
+def save_settings(s):
+    with open(SETTINGS_FILE, "w") as f:
+        json.dump(s, f)
 
 
 def load_log():
@@ -162,6 +178,14 @@ def hourly_stats(entries):
     return result
 
 
+def next_feed_iso(entries, interval_minutes):
+    feed_entries = [e for e in entries if e["type"] == "Feed"]
+    if not feed_entries:
+        return None
+    last_dt = datetime.fromisoformat(max(feed_entries, key=lambda e: e["time"])["time"])
+    return (last_dt + timedelta(minutes=interval_minutes)).isoformat()
+
+
 @app.route("/")
 def index():
     with log_lock:
@@ -169,6 +193,25 @@ def index():
     counts = today_stats(entries)
     recent = list(reversed(entries[-50:]))
     return render_template("index.html", counts=counts, recent=recent)
+
+
+@app.route("/settings", methods=["GET"])
+def get_settings():
+    with settings_lock:
+        return jsonify(load_settings())
+
+
+@app.route("/settings", methods=["POST"])
+def update_settings():
+    data = request.get_json(silent=True) or {}
+    interval = data.get("feed_interval_minutes")
+    if not isinstance(interval, int) or interval % 15 != 0 or not (15 <= interval <= 720):
+        return jsonify({"error": "feed_interval_minutes must be a multiple of 15 between 15 and 720"}), 400
+    with settings_lock:
+        s = load_settings()
+        s["feed_interval_minutes"] = interval
+        save_settings(s)
+    return jsonify({"ok": True})
 
 
 @app.route("/log", methods=["DELETE"])
@@ -192,11 +235,21 @@ def log_event():
 def get_data():
     with log_lock:
         entries = load_log()
+    with settings_lock:
+        settings = load_settings()
+    interval = settings["feed_interval_minutes"]
     counts = today_stats(entries)
     recent = list(reversed(entries[-50:]))
     daily = daily_stats(entries)
     hourly = hourly_stats(entries)
-    return jsonify({"counts": counts, "recent": recent, "daily": daily, "hourly": hourly})
+    return jsonify({
+        "counts": counts,
+        "recent": recent,
+        "daily": daily,
+        "hourly": hourly,
+        "feed_interval_minutes": interval,
+        "next_feed_iso": next_feed_iso(entries, interval),
+    })
 
 
 @app.route("/devices")

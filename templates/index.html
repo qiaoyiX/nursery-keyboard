@@ -131,6 +131,49 @@
     .type-feed  { color: #5aaa72; }
     .empty { text-align: center; padding: 20px; color: #9c7c6a; font-size: 0.9rem; }
 
+    .next-feed-card {
+      background: #fff;
+      border-radius: 14px;
+      padding: 16px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+      margin-bottom: 20px;
+      text-align: center;
+    }
+    .next-feed-card .nf-title {
+      font-size: 0.8rem;
+      color: #9c7c6a;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 6px;
+    }
+    .next-feed-card .nf-time {
+      font-size: 1.5rem;
+      font-weight: 700;
+      line-height: 1.2;
+    }
+    .nf-ok   { color: #5aaa72; }
+    .nf-soon { color: #c89a10; }
+    .nf-late { color: #c0513a; }
+    .nf-neutral { color: #9c7c6a; font-weight: 400; font-size: 0.95rem; }
+    .next-feed-card .nf-interval {
+      margin-top: 10px;
+      font-size: 0.82rem;
+      color: #9c7c6a;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+    }
+    .next-feed-card select {
+      border: 1px solid #e5d5c8;
+      border-radius: 8px;
+      background: #fdf6ee;
+      color: #3b2f2f;
+      font-size: 0.82rem;
+      padding: 3px 6px;
+      cursor: pointer;
+    }
+
     .chart-card {
       background: #fff;
       border-radius: 14px;
@@ -165,6 +208,15 @@
     <div class="count-card feed">
       <div class="num" id="cnt-Feed">{{ counts.Feed }}</div>
       <div class="label">Feed</div>
+    </div>
+  </div>
+
+  <div class="next-feed-card">
+    <div class="nf-title">🍼 Next Feed</div>
+    <div class="nf-time nf-neutral" id="nextFeedDisplay">—</div>
+    <div class="nf-interval">
+      <span>Every</span>
+      <select id="feedIntervalSel" onchange="saveInterval(+this.value)"></select>
     </div>
   </div>
 
@@ -213,6 +265,55 @@
   <div class="toast" id="toast"></div>
 
   <script>
+    // --- Feeding window ---
+
+    function fmtInterval(mins) {
+      const h = Math.floor(mins / 60), m = mins % 60;
+      return h && m ? `${h}h ${m}m` : h ? `${h}h` : `${m}m`;
+    }
+
+    (function buildIntervalOptions() {
+      const sel = document.getElementById("feedIntervalSel");
+      for (let m = 15; m <= 720; m += 15) {
+        const opt = document.createElement("option");
+        opt.value = m;
+        opt.textContent = fmtInterval(m);
+        sel.appendChild(opt);
+      }
+    })();
+
+    function updateNextFeed(data) {
+      const sel = document.getElementById("feedIntervalSel");
+      sel.value = data.feed_interval_minutes;
+
+      const el = document.getElementById("nextFeedDisplay");
+      const nextIso = data.next_feed_iso;
+      if (!nextIso) {
+        el.textContent = "No feed logged yet";
+        el.className = "nf-time nf-neutral";
+        return;
+      }
+      const diff = Math.round((new Date(nextIso) - Date.now()) / 60000);
+      const absMin = Math.abs(diff);
+      const hms = diff >= 0 ? `in ${fmtInterval(absMin)}` : `${fmtInterval(absMin)} overdue`;
+      const clock = new Date(nextIso).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
+      el.textContent = `${hms} · around ${clock}`;
+      el.className = "nf-time " + (diff > 15 ? "nf-ok" : diff >= 0 ? "nf-soon" : "nf-late");
+    }
+
+    async function saveInterval(mins) {
+      try {
+        await fetch("/settings", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ feed_interval_minutes: mins }),
+        });
+        refresh();
+      } catch (e) {
+        showToast("Error saving interval");
+      }
+    }
+
     const TYPES = ["Wet", "Dirty", "Both", "Feed"];
     const COLORS = { Wet: "#4a9fd4", Dirty: "#c0813a", Both: "#8e6abf", Feed: "#5aaa72" };
 
@@ -378,6 +479,7 @@
           document.getElementById("cnt-" + k).textContent = data.counts[k];
         });
         updateHistory(data.recent);
+        updateNextFeed(data);
         updateCharts(data);
       } catch (_) {}
     }
