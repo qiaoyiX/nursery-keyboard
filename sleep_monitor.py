@@ -286,8 +286,10 @@ def run_state_machine(rtsp_url, motion_threshold, presence_threshold,
                 bg_alpha = 0.02      # fast: syncs to current empty-crib lighting in ~1 min
             elif state == STATE_AWAKE:
                 bg_alpha = 0.0005    # slow: lighting drift only
-            else:                    # STATE_ASLEEP — freeze so baby doesn't enter background
-                bg_alpha = 0.0
+            else:                    # STATE_ASLEEP
+                bg_alpha = 0.0001    # very slow: allows self-healing if background is wrong
+                                     # (e.g. background was captured with baby in crib)
+                                     # ~4.7 hr half-life → normal naps safe, deadlock breaks
 
             if bg_alpha > 0:
                 background = (1 - bg_alpha) * background + bg_alpha * curr_gray.astype(np.float32)
