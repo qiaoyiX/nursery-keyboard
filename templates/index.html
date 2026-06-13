@@ -570,7 +570,7 @@
         delBtn.className = "btn-delete-entry";
         delBtn.textContent = "✕";
         delBtn.setAttribute("aria-label", "Delete entry");
-        delBtn.onclick = () => deleteEntry(e.time, row);
+        delBtn.onclick = () => deleteEntry(e.id, row);
 
         row.appendChild(typeSpan);
         row.appendChild(timeSpan);
@@ -579,13 +579,13 @@
       }
     }
 
-    async function deleteEntry(time, row) {
+    async function deleteEntry(id, row) {
       row.style.opacity = "0.4";
       try {
         await fetch("/log/entry", {
           method: "DELETE",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ time }),
+          body: JSON.stringify({ id }),
         });
         refresh();
       } catch (_) {

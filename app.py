@@ -60,11 +60,11 @@ def db():
 
 
 def get_entries():
-    """Return all events as list of {"type": str, "time": str} dicts, oldest first."""
+    """Return all events as list of {"id": int, "type": str, "time": str} dicts, oldest first."""
     with db() as conn:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SELECT type, time FROM events ORDER BY time")
-            return [{"type": r["type"], "time": r["time"].isoformat()} for r in cur.fetchall()]
+            cur.execute("SELECT id, type, time FROM events ORDER BY time")
+            return [{"id": r["id"], "type": r["type"], "time": r["time"].isoformat()} for r in cur.fetchall()]
 
 
 def add_entry(event_type):
@@ -127,8 +127,11 @@ def listen_one_interface(dev):
                             logging.info("[%s] Key event raw: %s", dev.path, key_name)
                             label = KEYPAD_KEYS.get(key_name)
                             if label:
-                                add_entry(label)
-                                logging.info("Logged: %s", label)
+                                try:
+                                    add_entry(label)
+                                    logging.info("Logged: %s", label)
+                                except Exception as db_err:
+                                    logging.error("DB write failed for %s: %s — event dropped", label, db_err)
             finally:
                 try:
                     dev.ungrab()
@@ -254,18 +257,15 @@ def clear_today():
 @app.route("/log/entry", methods=["DELETE"])
 def delete_entry():
     data = request.get_json(silent=True) or {}
-    ts = data.get("time")
-    if not ts:
-        return jsonify({"error": "missing time"}), 400
-    try:
-        dt = datetime.fromisoformat(ts)
-    except ValueError:
-        return jsonify({"error": "invalid time format"}), 400
+    entry_id = data.get("id")
+    if not isinstance(entry_id, int):
+        return jsonify({"error": "missing id"}), 400
     with db() as conn:
         with conn.cursor() as cur:
-            cur.execute("DELETE FROM events WHERE time = %s", (dt,))
-            if cur.rowcount == 0:
-                return jsonify({"error": "not found"}), 404
+            cur.execute("DELETE FROM events WHERE id = %s", (entry_id,))
+            deleted = cur.rowcount
+    if deleted == 0:
+        return jsonify({"error": "not found"}), 404
     return jsonify({"ok": True})
 
 
@@ -326,4 +326,4 @@ if __name__ == "__main__":
     if EVDEV_AVAILABLE:
         t = threading.Thread(target=keypad_listener, daemon=True)
         t.start()
-    app.run(host="0.0.0.0", port=8080)
+    app.run(host="0.0.0.0", port=8080, threaded=True)
