@@ -214,10 +214,27 @@ def update_settings():
     return jsonify({"ok": True})
 
 
-@app.route("/log", methods=["DELETE"])
-def clear_log():
+@app.route("/log/today", methods=["DELETE"])
+def clear_today():
+    today = datetime.now().date().isoformat()
     with log_lock:
-        save_log([])
+        entries = load_log()
+        save_log([e for e in entries if not e["time"].startswith(today)])
+    return jsonify({"ok": True})
+
+
+@app.route("/log/entry", methods=["DELETE"])
+def delete_entry():
+    data = request.get_json(silent=True) or {}
+    ts = data.get("time")
+    if not ts:
+        return jsonify({"error": "missing time"}), 400
+    with log_lock:
+        entries = load_log()
+        new_entries = [e for e in entries if e["time"] != ts]
+        if len(new_entries) == len(entries):
+            return jsonify({"error": "not found"}), 404
+        save_log(new_entries)
     return jsonify({"ok": True})
 
 

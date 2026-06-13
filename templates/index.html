@@ -125,6 +125,13 @@
     .entry:last-child { border-bottom: none; }
     .entry .type { font-weight: 600; }
     .entry .time { color: #9c7c6a; font-size: 0.8rem; }
+    .btn-delete-entry {
+      background: none; border: none; color: #c0513a;
+      font-size: 0.75rem; padding: 2px 6px; border-radius: 6px;
+      opacity: 0.2; cursor: pointer; transition: opacity 0.15s;
+      line-height: 1; flex-shrink: 0;
+    }
+    .entry:hover .btn-delete-entry { opacity: 1; }
     .type-wet   { color: #4a9fd4; }
     .type-dirty { color: #c0813a; }
     .type-play  { color: #8e6abf; }
@@ -228,7 +235,7 @@
   </div>
 
   <div class="clear-wrap">
-    <button class="btn-clear" onclick="clearData()">Clear all data</button>
+    <button class="btn-clear" onclick="clearData()">Clear today</button>
   </div>
 
   <h2>History</h2>
@@ -345,10 +352,10 @@
     }
 
     async function clearData() {
-      if (!confirm("Delete all logged entries? This cannot be undone.")) return;
+      if (!confirm("Delete all of today's entries? This cannot be undone.")) return;
       try {
-        await fetch("/log", { method: "DELETE" });
-        showToast("All data cleared");
+        await fetch("/log/today", { method: "DELETE" });
+        showToast("Today's data cleared");
         refresh();
       } catch (e) {
         showToast("Error clearing data");
@@ -463,9 +470,31 @@
         timeSpan.className = "time";
         timeSpan.textContent = e.time.replace("T", " ").slice(0, 16);
 
+        const delBtn = document.createElement("button");
+        delBtn.className = "btn-delete-entry";
+        delBtn.textContent = "✕";
+        delBtn.setAttribute("aria-label", "Delete entry");
+        delBtn.onclick = () => deleteEntry(e.time, row);
+
         row.appendChild(typeSpan);
         row.appendChild(timeSpan);
+        row.appendChild(delBtn);
         h.appendChild(row);
+      }
+    }
+
+    async function deleteEntry(time, row) {
+      row.style.opacity = "0.4";
+      try {
+        await fetch("/log/entry", {
+          method: "DELETE",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ time }),
+        });
+        refresh();
+      } catch (_) {
+        row.style.opacity = "1";
+        showToast("Error deleting entry");
       }
     }
 
