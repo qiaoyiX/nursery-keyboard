@@ -55,11 +55,11 @@ STATE_AWAY   = "away"
 STATE_AWAKE  = "awake"
 STATE_ASLEEP = "asleep"
 
-PIXEL_THRESHOLD      = 25     # per-pixel brightness change to count as "different"
-LIGHTING_CEILING     = 0.80   # fraction above which we assume IR/light toggle, not motion
-FRAME_INTERVAL       = 1.0    # seconds between sampled frames (~1 fps)
-WARMUP_FRAMES        = 15     # frames averaged to build initial background
-AWAY_UPDATE_SECONDS  = 300    # re-save background after 5 min in AWAY state
+PIXEL_THRESHOLD   = 25    # per-pixel brightness change to count as "different"
+LIGHTING_CEILING  = 0.80  # fraction above which we assume IR/light toggle, not motion
+FRAME_INTERVAL    = 1.0   # seconds between sampled frames (~1 fps)
+WARMUP_FRAMES     = 15    # frames averaged to build initial background
+BG_SAVE_INTERVAL  = 30    # seconds between background persistence to disk
 
 
 # ── Frame helpers ─────────────────────────────────────────────────────────────
@@ -154,10 +154,11 @@ def run_state_machine(rtsp_url, motion_threshold, presence_threshold,
         current_session_id  = None
         current_sleep_start = None
 
-    still_since  = None
-    motion_since = None
-    away_since   = datetime.now() if state == STATE_AWAY else None
-    prev_gray    = None
+    still_since   = None
+    motion_since  = None
+    away_since    = datetime.now() if state == STATE_AWAY else None
+    prev_gray     = None
+    last_bg_save  = datetime.now()
 
     try:
         while True:
@@ -233,13 +234,6 @@ def run_state_machine(rtsp_url, motion_threshold, presence_threshold,
                 if away_since is None:
                     away_since = now
 
-                # Auto-refresh background after sustained absence
-                if (now - away_since).total_seconds() > AWAY_UPDATE_SECONDS:
-                    save_background(curr_gray)
-                    background = curr_gray.astype(np.float32)
-                    bg_uint8   = background_to_uint8(background)
-                    away_since = now  # reset so we refresh every 5 min during absence
-
             else:
                 # Baby is present
                 away_since = None
@@ -286,6 +280,23 @@ def run_state_machine(rtsp_url, motion_threshold, presence_threshold,
                         motion_since = None
 
             write_sleep_heartbeat(state)
+
+            # Adaptive background update — rate depends on state
+            if state == STATE_AWAY:
+                bg_alpha = 0.02      # fast: syncs to current empty-crib lighting in ~1 min
+            elif state == STATE_AWAKE:
+                bg_alpha = 0.0005    # slow: lighting drift only
+            else:                    # STATE_ASLEEP — freeze so baby doesn't enter background
+                bg_alpha = 0.0
+
+            if bg_alpha > 0:
+                background = (1 - bg_alpha) * background + bg_alpha * curr_gray.astype(np.float32)
+                bg_uint8   = background_to_uint8(background)
+
+            if (now - last_bg_save).total_seconds() >= BG_SAVE_INTERVAL:
+                save_background(background)
+                last_bg_save = now
+
             prev_gray = curr_gray
             elapsed   = time.monotonic() - loop_start
             time.sleep(max(0.0, FRAME_INTERVAL - elapsed))
