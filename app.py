@@ -3,8 +3,12 @@ import json
 import logging
 import os
 import time
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 from flask import Flask, render_template, jsonify, request
+
+import psycopg2
+from psycopg2.extras import RealDictCursor
 
 logging.basicConfig(
     level=logging.INFO,
@@ -20,7 +24,11 @@ except ImportError:
 
 app = Flask(__name__)
 
-DATA_FILE = os.path.join(os.path.dirname(__file__), "log.json")
+# Set DATABASE_URL in the systemd unit (see README).
+# Schema: CREATE TABLE events (id BIGSERIAL PRIMARY KEY, type VARCHAR(10) NOT NULL,
+#           time TIMESTAMP NOT NULL); CREATE INDEX ON events (time);
+DATABASE_URL = os.environ.get("DATABASE_URL")
+
 SETTINGS_FILE = os.path.join(os.path.dirname(__file__), "settings.json")
 DEFAULT_SETTINGS = {"feed_interval_minutes": 180}
 
@@ -31,9 +39,44 @@ KEYPAD_KEYS = {
     "KEY_UP":     "Feed",
 }
 
-log_lock = threading.Lock()
 settings_lock = threading.Lock()
 
+
+# ── Database ──────────────────────────────────────────────────────────────────
+
+@contextmanager
+def db():
+    if not DATABASE_URL:
+        raise RuntimeError("DATABASE_URL environment variable not set")
+    conn = psycopg2.connect(DATABASE_URL)
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def get_entries():
+    """Return all events as list of {"type": str, "time": str} dicts, oldest first."""
+    with db() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("SELECT type, time FROM events ORDER BY time")
+            return [{"type": r["type"], "time": r["time"].isoformat()} for r in cur.fetchall()]
+
+
+def add_entry(event_type):
+    with db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO events (type, time) VALUES (%s, %s)",
+                (event_type, datetime.now()),
+            )
+
+
+# ── Settings (local file — tiny, no backup needed) ───────────────────────────
 
 def load_settings():
     if os.path.exists(SETTINGS_FILE):
@@ -47,24 +90,7 @@ def save_settings(s):
         json.dump(s, f)
 
 
-def load_log():
-    if os.path.exists(DATA_FILE):
-        with open(DATA_FILE) as f:
-            return json.load(f)
-    return []
-
-
-def save_log(entries):
-    with open(DATA_FILE, "w") as f:
-        json.dump(entries, f)
-
-
-def add_entry(event_type):
-    with log_lock:
-        entries = load_log()
-        entries.append({"type": event_type, "time": datetime.now().isoformat()})
-        save_log(entries)
-
+# ── Keypad listener ───────────────────────────────────────────────────────────
 
 def find_all_sayodevices():
     """Return all /dev/input/event* nodes belonging to any SayoDevice interface."""
@@ -133,12 +159,13 @@ def keypad_listener():
             t.start()
             threads.append(t)
 
-        # Re-scan when all interface threads die (e.g. device unplugged)
         for t in threads:
             t.join()
         logging.info("All SayoDevice interfaces died — rescanning in 2s")
         time.sleep(2)
 
+
+# ── Stats helpers (operate on in-memory entry list, unchanged) ────────────────
 
 def today_stats(entries):
     today = datetime.now().date().isoformat()
@@ -186,10 +213,11 @@ def next_feed_iso(entries, interval_minutes):
     return (last_dt + timedelta(minutes=interval_minutes)).isoformat()
 
 
+# ── Routes ────────────────────────────────────────────────────────────────────
+
 @app.route("/")
 def index():
-    with log_lock:
-        entries = load_log()
+    entries = get_entries()
     counts = today_stats(entries)
     recent = list(reversed(entries[-50:]))
     return render_template("index.html", counts=counts, recent=recent)
@@ -216,10 +244,10 @@ def update_settings():
 
 @app.route("/log/today", methods=["DELETE"])
 def clear_today():
-    today = datetime.now().date().isoformat()
-    with log_lock:
-        entries = load_log()
-        save_log([e for e in entries if not e["time"].startswith(today)])
+    today = datetime.now().date()
+    with db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM events WHERE time::date = %s", (today,))
     return jsonify({"ok": True})
 
 
@@ -229,12 +257,15 @@ def delete_entry():
     ts = data.get("time")
     if not ts:
         return jsonify({"error": "missing time"}), 400
-    with log_lock:
-        entries = load_log()
-        new_entries = [e for e in entries if e["time"] != ts]
-        if len(new_entries) == len(entries):
-            return jsonify({"error": "not found"}), 404
-        save_log(new_entries)
+    try:
+        dt = datetime.fromisoformat(ts)
+    except ValueError:
+        return jsonify({"error": "invalid time format"}), 400
+    with db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM events WHERE time = %s", (dt,))
+            if cur.rowcount == 0:
+                return jsonify({"error": "not found"}), 404
     return jsonify({"ok": True})
 
 
@@ -250,8 +281,7 @@ def log_event():
 
 @app.route("/data")
 def get_data():
-    with log_lock:
-        entries = load_log()
+    entries = get_entries()
     with settings_lock:
         settings = load_settings()
     interval = settings["feed_interval_minutes"]
