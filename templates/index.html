@@ -20,6 +20,7 @@
       --play:  #8e6abf;  --play-a:  rgba(142,106,191,.10);
       --feed:  #5aaa72;  --feed-a:  rgba(90,170,114,.10);
       --danger: #c0513a;
+      --sleep:   #5c7fa3;  --sleep-a: rgba(92,127,163,.13);  --sleep-2: rgba(92,127,163,.35);
       --shadow-card: 0 1px 3px rgba(61,43,31,.07), 0 6px 18px rgba(61,43,31,.07);
       --r: 18px;
     }
@@ -145,6 +146,77 @@
       cursor: pointer;
       outline: none;
       -webkit-appearance: auto;
+    }
+
+    /* ── Sleep cards ────────────────────── */
+    .sleep-card {
+      border-radius: var(--r);
+      padding: 18px 16px 14px;
+      box-shadow: var(--shadow-card);
+      margin-bottom: 14px;
+      background: linear-gradient(150deg, #fff 50%, var(--sleep-a));
+    }
+    .sleep-card-title {
+      font-size: 0.68rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.09em;
+      color: var(--brown-muted);
+      margin-bottom: 8px;
+    }
+    .sleep-state-text {
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: 1.2rem;
+      font-weight: normal;
+      line-height: 1.3;
+      margin-bottom: 4px;
+    }
+    .sleep-state-text.is-sleeping { color: var(--sleep); }
+    .sleep-state-text.is-awake    { color: var(--brown-mid); }
+    .sleep-state-text.is-unknown  {
+      color: var(--brown-muted);
+      font-style: italic;
+      font-family: inherit;
+      font-size: 0.9rem;
+    }
+    .sleep-summary-text {
+      font-size: 0.78rem;
+      color: var(--brown-muted);
+    }
+
+    /* ── Sleep timeline ──────────────────── */
+    .sleep-timeline-card {
+      border-radius: var(--r);
+      padding: 18px 16px 14px;
+      box-shadow: var(--shadow-card);
+      background: #fff;
+      margin-bottom: 14px;
+    }
+    .sleep-timeline-track {
+      position: relative;
+      height: 20px;
+      border-radius: 10px;
+      background: var(--cream-2);
+      margin-bottom: 6px;
+      overflow: hidden;
+    }
+    .sleep-block {
+      position: absolute;
+      top: 0; bottom: 0;
+      border-radius: 10px;
+      background: var(--sleep-2);
+      border: 1.5px solid var(--sleep);
+      min-width: 4px;
+    }
+    .sleep-block.is-open {
+      background: linear-gradient(90deg, var(--sleep-2) 70%, rgba(92,127,163,.05) 100%);
+    }
+    .sleep-timeline-labels {
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.62rem;
+      color: var(--brown-muted);
+      padding: 0 2px;
     }
 
     /* ── Action buttons ──────────────────── */
@@ -322,6 +394,23 @@
     </div>
   </div>
 
+  <!-- Sleep Status Card -->
+  <div class="sleep-card" id="sleepCard">
+    <div class="sleep-card-title">😴 Sleep</div>
+    <div class="sleep-state-text is-unknown" id="sleepStateText">⋯ Camera offline</div>
+    <div class="sleep-summary-text" id="sleepSummaryText"></div>
+  </div>
+
+  <!-- Sleep Timeline -->
+  <div class="sleep-timeline-card">
+    <div class="sleep-card-title" style="margin-bottom:10px">Today's Timeline</div>
+    <div class="sleep-timeline-track" id="sleepTrack"></div>
+    <div class="sleep-timeline-labels">
+      <span>12a</span><span>3a</span><span>6a</span><span>9a</span>
+      <span>12p</span><span>3p</span><span>6p</span><span>9p</span><span>12a</span>
+    </div>
+  </div>
+
   <div class="buttons">
     <button class="action-btn btn-wet"   onclick="logEvent('Wet')">💧 Wet</button>
     <button class="action-btn btn-dirty" onclick="logEvent('Dirty')">💩 Dirty</button>
@@ -421,7 +510,7 @@
     }
 
     const TYPES  = ["Wet", "Dirty", "Play", "Feed"];
-    const COLORS = { Wet: "#4a9fd4", Dirty: "#c0813a", Play: "#8e6abf", Feed: "#5aaa72" };
+    const COLORS = { Wet: "#4a9fd4", Dirty: "#c0813a", Play: "#8e6abf", Feed: "#5aaa72", Sleep: "#5c7fa3" };
 
     function updateDate() {
       document.getElementById("dateLabel").textContent =
@@ -594,6 +683,78 @@
       }
     }
 
+    // --- Sleep monitoring ---
+
+    function fmtElapsed(isoStr) {
+      const mins = Math.round((Date.now() - new Date(isoStr)) / 60000);
+      return fmtInterval(Math.max(0, mins)) + " ago";
+    }
+
+    function minuteOfDay(isoStr) {
+      const d = new Date(isoStr);
+      return d.getHours() * 60 + d.getMinutes();
+    }
+
+    function updateSleepCard(sleep) {
+      const stateEl   = document.getElementById("sleepStateText");
+      const summaryEl = document.getElementById("sleepSummaryText");
+      const { status, current_start_iso, total_sleep_minutes, nap_count } = sleep;
+
+      stateEl.className = "sleep-state-text";
+      if (status === "sleeping" && current_start_iso) {
+        const startClock = new Date(current_start_iso).toLocaleTimeString("en-US",
+          { hour: "numeric", minute: "2-digit" });
+        stateEl.textContent = `😴 Sleeping · started at ${startClock}`;
+        stateEl.classList.add("is-sleeping");
+      } else if (status === "awake") {
+        const ended = (sleep.sessions_today || []).filter(s => !s.is_open);
+        if (ended.length > 0) {
+          const last = ended[ended.length - 1];
+          stateEl.textContent = `👁 Awake · last nap ${fmtElapsed(last.end_iso)}`;
+        } else {
+          stateEl.textContent = "👁 Awake · no naps yet today";
+        }
+        stateEl.classList.add("is-awake");
+      } else {
+        stateEl.textContent = "⋯ Camera offline";
+        stateEl.classList.add("is-unknown");
+      }
+
+      if (nap_count > 0) {
+        summaryEl.textContent =
+          `${fmtInterval(Math.round(total_sleep_minutes))} across ${nap_count} nap${nap_count !== 1 ? "s" : ""} today`;
+      } else {
+        summaryEl.textContent = "";
+      }
+    }
+
+    function updateSleepTimeline(sessions) {
+      const track = document.getElementById("sleepTrack");
+      track.replaceChildren();
+      const MINS_IN_DAY = 1440;
+      const nowMins = new Date().getHours() * 60 + new Date().getMinutes();
+
+      for (const s of sessions) {
+        const startMins = minuteOfDay(s.start_iso);
+        const rawEnd    = s.is_open ? nowMins : minuteOfDay(s.end_iso);
+        const endMins   = Math.min(Math.max(rawEnd, startMins), MINS_IN_DAY);
+        const durMins   = Math.max(endMins - startMins, 1);
+
+        const block = document.createElement("div");
+        block.className = "sleep-block" + (s.is_open ? " is-open" : "");
+        block.style.left  = (startMins / MINS_IN_DAY * 100).toFixed(2) + "%";
+        block.style.width = (durMins   / MINS_IN_DAY * 100).toFixed(2) + "%";
+
+        const fmt = iso => new Date(iso).toLocaleTimeString("en-US",
+          { hour: "numeric", minute: "2-digit" });
+        block.title = s.is_open
+          ? `${fmt(s.start_iso)} – now`
+          : `${fmt(s.start_iso)} – ${fmt(s.end_iso)}`;
+
+        track.appendChild(block);
+      }
+    }
+
     // --- Polling ---
 
     async function refresh() {
@@ -606,6 +767,10 @@
         updateHistory(data.recent);
         updateNextFeed(data);
         updateCharts(data);
+        if (data.sleep) {
+          updateSleepCard(data.sleep);
+          updateSleepTimeline(data.sleep.sessions_today || []);
+        }
       } catch (_) {}
     }
 

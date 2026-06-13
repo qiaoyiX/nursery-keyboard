@@ -1,18 +1,17 @@
 import threading
-import json
 import logging
 import os
 import time
-from contextlib import contextmanager
 from datetime import datetime, timedelta
 from flask import Flask, render_template, jsonify, request
 
-try:
-    import psycopg2
-    from psycopg2.extras import RealDictCursor
-    PSYCOPG2_AVAILABLE = True
-except ImportError:
-    PSYCOPG2_AVAILABLE = False
+from storage import (
+    USE_DB,
+    log_lock, settings_lock, sleep_lock,
+    get_entries, add_entry, clear_today, delete_entry,
+    load_settings, save_settings,
+    get_sleep_sessions_today, get_open_sleep_session, read_sleep_status,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -28,17 +27,6 @@ except ImportError:
 
 app = Flask(__name__)
 
-# Optional: set DATABASE_URL in the systemd unit to use Neon Postgres.
-# Without it the app falls back to a local log.json file.
-# Schema: CREATE TABLE events (id BIGSERIAL PRIMARY KEY, type VARCHAR(10) NOT NULL,
-#           time TIMESTAMP NOT NULL); CREATE INDEX ON events (time);
-DATABASE_URL = os.environ.get("DATABASE_URL")
-USE_DB = bool(DATABASE_URL and PSYCOPG2_AVAILABLE)
-
-DATA_FILE = os.path.join(os.path.dirname(__file__), "log.json")
-SETTINGS_FILE = os.path.join(os.path.dirname(__file__), "settings.json")
-DEFAULT_SETTINGS = {"feed_interval_minutes": 180}
-
 KEYPAD_KEYS = {
     "KEY_SPACE":  "Wet",
     "KEY_PAGEUP": "Dirty",
@@ -46,128 +34,10 @@ KEYPAD_KEYS = {
     "KEY_UP":     "Feed",
 }
 
-log_lock = threading.Lock()
-settings_lock = threading.Lock()
-
-
-# ── Storage — Postgres path ───────────────────────────────────────────────────
-
-@contextmanager
-def db():
-    conn = psycopg2.connect(DATABASE_URL)
-    try:
-        yield conn
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
-
-
-def _pg_get_entries():
-    with db() as conn:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SELECT id, type, time FROM events ORDER BY time")
-            return [{"id": r["id"], "type": r["type"], "time": r["time"].isoformat()} for r in cur.fetchall()]
-
-
-def _pg_add_entry(event_type):
-    with db() as conn:
-        with conn.cursor() as cur:
-            cur.execute("INSERT INTO events (type, time) VALUES (%s, %s)", (event_type, datetime.now()))
-
-
-def _pg_clear_today():
-    today = datetime.now().date()
-    with db() as conn:
-        with conn.cursor() as cur:
-            cur.execute("DELETE FROM events WHERE time::date = %s", (today,))
-
-
-def _pg_delete_entry(entry_id):
-    with db() as conn:
-        with conn.cursor() as cur:
-            cur.execute("DELETE FROM events WHERE id = %s", (entry_id,))
-            return cur.rowcount
-
-
-# ── Storage — JSON fallback path ──────────────────────────────────────────────
-
-def _json_load():
-    if os.path.exists(DATA_FILE):
-        with open(DATA_FILE) as f:
-            return json.load(f)
-    return []
-
-
-def _json_save(entries):
-    with open(DATA_FILE, "w") as f:
-        json.dump(entries, f)
-
-
-def _json_get_entries():
-    with log_lock:
-        entries = _json_load()
-    # Assign a stable pseudo-id based on list position for delete compatibility
-    return [{"id": i, "type": e["type"], "time": e["time"]} for i, e in enumerate(entries)]
-
-
-def _json_add_entry(event_type):
-    with log_lock:
-        entries = _json_load()
-        entries.append({"type": event_type, "time": datetime.now().isoformat()})
-        _json_save(entries)
-
-
-def _json_clear_today():
-    today = datetime.now().date().isoformat()
-    with log_lock:
-        entries = _json_load()
-        _json_save([e for e in entries if not e["time"].startswith(today)])
-
-
-def _json_delete_entry(entry_id):
-    with log_lock:
-        entries = _json_load()
-        if not (0 <= entry_id < len(entries)):
-            return 0
-        entries.pop(entry_id)
-        _json_save(entries)
-    return 1
-
-
-# ── Public storage API (dispatches to Postgres or JSON) ──────────────────────
-
-def get_entries():
-    return _pg_get_entries() if USE_DB else _json_get_entries()
-
-
-def add_entry(event_type):
-    if USE_DB:
-        _pg_add_entry(event_type)
-    else:
-        _json_add_entry(event_type)
-
-
-# ── Settings (local file — tiny, no backup needed) ───────────────────────────
-
-def load_settings():
-    if os.path.exists(SETTINGS_FILE):
-        with open(SETTINGS_FILE) as f:
-            return {**DEFAULT_SETTINGS, **json.load(f)}
-    return dict(DEFAULT_SETTINGS)
-
-
-def save_settings(s):
-    with open(SETTINGS_FILE, "w") as f:
-        json.dump(s, f)
-
 
 # ── Keypad listener ───────────────────────────────────────────────────────────
 
 def find_all_sayodevices():
-    """Return all /dev/input/event* nodes belonging to any SayoDevice interface."""
     devices = []
     for path in evdev.list_devices():
         try:
@@ -180,7 +50,6 @@ def find_all_sayodevices():
 
 
 def listen_one_interface(dev):
-    """Read key events from a single evdev device, retrying on disconnect."""
     while True:
         try:
             logging.info("Listening on: %s at %s", dev.name, dev.path)
@@ -242,7 +111,7 @@ def keypad_listener():
         time.sleep(2)
 
 
-# ── Stats helpers (operate on in-memory entry list, unchanged) ────────────────
+# ── Stats helpers ─────────────────────────────────────────────────────────────
 
 def today_stats(entries):
     today = datetime.now().date().isoformat()
@@ -290,6 +159,44 @@ def next_feed_iso(entries, interval_minutes):
     return (last_dt + timedelta(minutes=interval_minutes)).isoformat()
 
 
+def today_sleep_stats(sessions):
+    """Summarise today's sleep sessions for the /data endpoint."""
+    now = datetime.now()
+    total_minutes = 0.0
+    sessions_out = []
+
+    for s in sessions:
+        start_raw = s["start_time"]
+        start = start_raw if isinstance(start_raw, datetime) else datetime.fromisoformat(str(start_raw))
+
+        end_raw = s.get("end_time")
+        if end_raw is None:
+            end = now
+            is_open = True
+        elif isinstance(end_raw, datetime):
+            end = end_raw
+            is_open = False
+        else:
+            end = datetime.fromisoformat(str(end_raw))
+            is_open = False
+
+        dur = (end - start).total_seconds() / 60
+        total_minutes += dur
+        sessions_out.append({
+            "id":               s["id"],
+            "start_iso":        start.isoformat(),
+            "end_iso":          None if is_open else end.isoformat(),
+            "duration_minutes": round(dur, 1),
+            "is_open":          is_open,
+        })
+
+    return {
+        "sessions":            sessions_out,
+        "total_sleep_minutes": round(total_minutes, 1),
+        "nap_count":           len(sessions_out),
+    }
+
+
 # ── Routes ────────────────────────────────────────────────────────────────────
 
 @app.route("/")
@@ -320,21 +227,18 @@ def update_settings():
 
 
 @app.route("/log/today", methods=["DELETE"])
-def clear_today():
-    if USE_DB:
-        _pg_clear_today()
-    else:
-        _json_clear_today()
+def clear_today_route():
+    clear_today()
     return jsonify({"ok": True})
 
 
 @app.route("/log/entry", methods=["DELETE"])
-def delete_entry():
+def delete_entry_route():
     data = request.get_json(silent=True) or {}
     entry_id = data.get("id")
     if not isinstance(entry_id, int):
         return jsonify({"error": "missing id"}), 400
-    deleted = _pg_delete_entry(entry_id) if USE_DB else _json_delete_entry(entry_id)
+    deleted = delete_entry(entry_id)
     if deleted == 0:
         return jsonify({"error": "not found"}), 404
     return jsonify({"ok": True})
@@ -356,23 +260,41 @@ def get_data():
     with settings_lock:
         settings = load_settings()
     interval = settings["feed_interval_minutes"]
-    counts = today_stats(entries)
-    recent = list(reversed(entries[-50:]))
-    daily = daily_stats(entries)
-    hourly = hourly_stats(entries)
+    counts   = today_stats(entries)
+    recent   = list(reversed(entries[-50:]))
+    daily    = daily_stats(entries)
+    hourly   = hourly_stats(entries)
+
+    sessions_today = get_sleep_sessions_today()
+    sleep_summary  = today_sleep_stats(sessions_today)
+    sleep_status   = read_sleep_status()
+
+    current_start_iso = None
+    if sleep_status == "sleeping":
+        open_s = get_open_sleep_session()
+        if open_s:
+            t = open_s["start_time"]
+            current_start_iso = t.isoformat() if isinstance(t, datetime) else str(t)
+
     return jsonify({
-        "counts": counts,
-        "recent": recent,
-        "daily": daily,
-        "hourly": hourly,
+        "counts":                counts,
+        "recent":                recent,
+        "daily":                 daily,
+        "hourly":                hourly,
         "feed_interval_minutes": interval,
-        "next_feed_iso": next_feed_iso(entries, interval),
+        "next_feed_iso":         next_feed_iso(entries, interval),
+        "sleep": {
+            "status":              sleep_status,
+            "current_start_iso":   current_start_iso,
+            "total_sleep_minutes": sleep_summary["total_sleep_minutes"],
+            "nap_count":           sleep_summary["nap_count"],
+            "sessions_today":      sleep_summary["sessions"],
+        },
     })
 
 
 @app.route("/devices")
 def list_devices():
-    """Debug endpoint — only active when NURSERY_DEBUG=1 is set in the environment."""
     if not os.environ.get("NURSERY_DEBUG"):
         from flask import abort
         abort(404)

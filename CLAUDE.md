@@ -34,17 +34,27 @@ The service is installed by `install.sh` and runs `python app.py` from a venv at
 
 ## Architecture
 
-Everything lives in two files:
+Three files form the core:
+
+**`storage.py`** — Shared storage layer imported by both `app.py` and `sleep_monitor.py`.
+- Dual-mode: `USE_DB = bool(DATABASE_URL and PSYCOPG2_AVAILABLE)`. `_pg_*` functions use Neon Postgres; `_json_*` functions use local files.
+- Public API: `get_entries()`, `add_entry()`, `clear_today()`, `delete_entry()`, `load_settings()`, `save_settings()`.
+- Sleep API: `start_sleep_session()`, `end_sleep_session()`, `get_sleep_sessions_today()`, `get_open_sleep_session()`, `write_sleep_heartbeat()`, `read_sleep_status()`.
 
 **`app.py`** — Flask backend + keypad listener in one process.
 - **Keypad thread**: `keypad_listener()` scans for all SayoDevice `/dev/input/event*` interfaces, spawns a `listen_one_interface()` thread per interface, grabs them exclusively, and calls `add_entry()` on key-down events. Runs as a daemon thread alongside Flask.
-- **Storage layer**: dual-mode, selected at startup by `USE_DB = bool(DATABASE_URL and PSYCOPG2_AVAILABLE)`. `_pg_*` functions use Neon Postgres (psycopg2); `_json_*` functions use `log.json` on disk. Public API: `get_entries()`, `add_entry()`. All stat helpers (`today_stats`, `daily_stats`, `hourly_stats`, `next_feed_iso`) accept a plain list of `{"id", "type", "time"}` dicts and are storage-agnostic.
-- **Settings**: always `settings.json` (local file, not backed up to Postgres). Stores `feed_interval_minutes`.
+- **Stat helpers** (`today_stats`, `daily_stats`, `hourly_stats`, `next_feed_iso`, `today_sleep_stats`) accept in-memory lists and are storage-agnostic.
+- **Settings**: always `settings.json` (local file, not backed up to Postgres).
+
+**`sleep_monitor.py`** — Standalone sleep detection daemon (second systemd service).
+- Reads RTSP stream from TAPO C110 at ~1fps using OpenCV.
+- Frame differencing state machine: AWAKE ↔ ASLEEP with hysteresis on both transitions.
+- Writes sleep sessions via `storage.py`; writes heartbeat file so Flask can detect if daemon is offline.
 
 **`templates/index.html`** — Single-page dashboard. Pure HTML/CSS/JS, no build step.
-- Polls `GET /data` every 8 seconds; `refresh()` updates counts, history, next-feed card, and all three Chart.js charts in one pass.
+- Polls `GET /data` every 8 seconds; `refresh()` updates counts, history, next-feed card, sleep cards, and all three Chart.js charts in one pass.
 - Chart.js 4.5.1 loaded from CDN with SHA-384 SRI.
-- Event type colors are defined as CSS custom properties in `:root` and must match `COLORS` in the JS `<script>` block.
+- Event type colors and sleep color are defined as CSS custom properties in `:root` and must match `COLORS` in the JS `<script>` block.
 
 ## Key mapping
 
@@ -62,18 +72,43 @@ To add or rename an event type, update `KEYPAD_KEYS`, the validation list in `lo
 ## Storage backends
 
 **JSON (default — no config needed)**
-- Data lives in `log.json` at the repo root.
-- `_json_delete_entry` uses list index as `id`; indices shift after any deletion, but the client always gets a fresh list from `/data` before showing delete buttons, so this is safe.
+- Events in `log.json`, sleep sessions in `sleep_sessions.json`, daemon heartbeat in `sleep_state.json`.
+- `_json_delete_entry` uses list index as `id`; indices shift after any deletion, but the client always gets a fresh list before showing delete buttons, so this is safe.
 
 **Postgres (Neon)**
 - Set `DATABASE_URL=postgresql://...` in the systemd unit (`sudo systemctl edit nursery-tracker`, add `Environment=DATABASE_URL=...` under `[Service]`).
+- Also set it in `nursery-sleep-monitor.service` the same way.
 - Required schema:
   ```sql
   CREATE TABLE events (id BIGSERIAL PRIMARY KEY, type VARCHAR(10) NOT NULL, time TIMESTAMP NOT NULL);
   CREATE INDEX ON events (time);
+  CREATE TABLE sleep_sessions (
+      id BIGSERIAL PRIMARY KEY, start_time TIMESTAMP NOT NULL,
+      end_time TIMESTAMP, duration_minutes NUMERIC(8,2));
+  CREATE INDEX ON sleep_sessions (start_time);
   ```
 - `migrate_log.py` imports an existing `log.json` into Postgres (idempotent).
-- `db()` context manager: commits on clean exit, rolls back on exception, always closes.
+- `db()` context manager in `storage.py`: commits on clean exit, rolls back on exception, always closes.
+
+## Sleep monitoring
+
+`sleep_monitor.py` is a standalone daemon that detects baby sleep via camera motion analysis.
+
+**Service management:**
+```bash
+sudo systemctl status | start | stop | restart nursery-sleep-monitor
+sudo journalctl -u nursery-sleep-monitor -f
+```
+
+**Configuration (in `settings.json`):**
+| Key | Default | Description |
+|-----|---------|-------------|
+| `camera_rtsp_url` | `""` | `rtsp://user:pass@IP:554/stream2` — TAPO camera account credentials |
+| `sleep_motion_threshold` | `0.02` | Fraction of pixels that must change to count as motion |
+| `sleep_min_minutes` | `10` | Stillness minutes before marking asleep |
+| `sleep_wake_seconds` | `20` | Sustained motion seconds before marking awake |
+
+**How it works:** AWAKE → (still ≥ `sleep_min_minutes`) → ASLEEP → (motion ≥ `sleep_wake_seconds`) → AWAKE. Start/end times are backdated to when each streak began. Lighting-change guard: diffs > 80% of pixels (IR night-vision flip) are skipped. Heartbeat written every frame cycle; Flask shows "Camera offline" if heartbeat is stale > 60s.
 
 ## API routes
 
