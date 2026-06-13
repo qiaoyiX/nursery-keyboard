@@ -50,60 +50,78 @@ def add_entry(event_type):
         save_log(entries)
 
 
-def find_keypad():
-    """Find the SayoDevice keyboard interface by name.
-
-    Matches 'sayodevice' + 'keyboard' in the device name so we get the
-    keyboard HID interface (e.g. 'SayoDevice 1x4P Keyboard') and not the
-    mouse or raw interfaces. Avoids capability checks because SayoDevice
-    doesn't advertise its keys in the HID descriptor capabilities list.
-    """
+def find_all_sayodevices():
+    """Return all /dev/input/event* nodes belonging to any SayoDevice interface."""
+    devices = []
     for path in evdev.list_devices():
         try:
             dev = evdev.InputDevice(path)
-            name = dev.name.lower()
-            if "sayodevice" in name and "keyboard" in name:
-                return dev
+            if "sayodevice" in dev.name.lower():
+                devices.append(dev)
         except Exception:
             continue
-    return None
+    return devices
 
 
-def keypad_listener():
-    if not EVDEV_AVAILABLE:
-        return
+def listen_one_interface(dev):
+    """Read key events from a single evdev device, retrying on disconnect."""
     while True:
         try:
-            keypad = find_keypad()
-            if keypad is None:
-                logging.info("Keypad not found, retrying in 5s...")
-                time.sleep(5)
-                continue
-
-            logging.info("Keypad found: %s at %s", keypad.name, keypad.path)
-            keypad.grab()  # exclusively capture — F13-F16 won't reach the OS
+            logging.info("Listening on: %s at %s", dev.name, dev.path)
             try:
-                for event in keypad.read_loop():
+                dev.grab()
+                logging.info("Grabbed %s", dev.path)
+            except Exception as e:
+                logging.warning("Could not grab %s: %s — listening without grab", dev.path, e)
+
+            try:
+                for event in dev.read_loop():
                     if event.type == evdev.ecodes.EV_KEY:
                         key_event = evdev.categorize(event)
                         if key_event.keystate == evdev.KeyEvent.key_down:
                             key_name = key_event.keycode
                             if isinstance(key_name, list):
                                 key_name = key_name[0]
-                            logging.info("Key event raw: %s", key_name)
+                            logging.info("[%s] Key event raw: %s", dev.path, key_name)
                             label = KEYPAD_KEYS.get(key_name)
                             if label:
                                 add_entry(label)
                                 logging.info("Logged: %s", label)
             finally:
                 try:
-                    keypad.ungrab()
+                    dev.ungrab()
                 except Exception:
                     pass
 
         except Exception as e:
-            logging.error("Keypad error: %s", e)
+            logging.error("Error on %s: %s — retrying in 2s", dev.path, e)
             time.sleep(2)
+
+
+def keypad_listener():
+    if not EVDEV_AVAILABLE:
+        return
+    while True:
+        devices = find_all_sayodevices()
+        if not devices:
+            logging.info("No SayoDevice found, retrying in 5s...")
+            time.sleep(5)
+            continue
+
+        logging.info("Found %d SayoDevice interface(s): %s",
+                     len(devices), [d.path for d in devices])
+
+        threads = []
+        for dev in devices:
+            t = threading.Thread(target=listen_one_interface, args=(dev,), daemon=True)
+            t.start()
+            threads.append(t)
+
+        # Re-scan when all interface threads die (e.g. device unplugged)
+        for t in threads:
+            t.join()
+        logging.info("All SayoDevice interfaces died — rescanning in 2s")
+        time.sleep(2)
 
 
 def today_stats(entries):
