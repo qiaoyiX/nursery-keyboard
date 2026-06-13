@@ -3,5 +3,5 @@ evdev
 psycopg2-binary
 opencv-python-headless
 numpy
-py-huckleberry-api
+git+https://github.com/Woyken/py-huckleberry-api.git
 aiohttp
