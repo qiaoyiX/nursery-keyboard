@@ -4,6 +4,9 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Nursery Tracker</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.1/dist/chart.umd.min.js"
+          integrity="sha384-jb8JQMbMoBUzgWatfe6COACi2ljcDdZQ2OxczGA3bGNeWe+6DChMTBJemed7ZnvJ"
+          crossorigin="anonymous"></script>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -53,7 +56,7 @@
       display: grid;
       grid-template-columns: 1fr 1fr;
       gap: 12px;
-      margin-bottom: 20px;
+      margin-bottom: 14px;
     }
     button {
       border: none;
@@ -71,6 +74,23 @@
     .btn-both   { background: #8e6abf; }
     .btn-feed   { background: #5aaa72; }
 
+    .clear-wrap {
+      text-align: center;
+      margin-bottom: 20px;
+    }
+    .btn-clear {
+      background: transparent;
+      border: 1px solid #e8b5b5;
+      color: #c0513a;
+      font-size: 0.78rem;
+      font-weight: 500;
+      padding: 6px 18px;
+      border-radius: 20px;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    .btn-clear:active { background: #fdf0ef; }
+
     .toast {
       position: fixed;
       top: 16px; left: 50%; transform: translateX(-50%);
@@ -84,13 +104,15 @@
     .toast.show { opacity: 1; }
 
     h2 { font-size: 1rem; margin-bottom: 10px; color: #7a4f3a; }
+
     .history {
       background: #fff;
       border-radius: 14px;
       overflow: hidden;
       box-shadow: 0 2px 8px rgba(0,0,0,0.08);
-      max-height: 45vh;
+      max-height: 38vh;
       overflow-y: auto;
+      margin-bottom: 20px;
     }
     .entry {
       display: flex;
@@ -108,13 +130,26 @@
     .type-both  { color: #8e6abf; }
     .type-feed  { color: #5aaa72; }
     .empty { text-align: center; padding: 20px; color: #9c7c6a; font-size: 0.9rem; }
+
+    .chart-card {
+      background: #fff;
+      border-radius: 14px;
+      padding: 16px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+      margin-bottom: 16px;
+    }
+    .doughnut-wrap {
+      max-width: 220px;
+      margin: 0 auto;
+    }
+    canvas { display: block; }
   </style>
 </head>
 <body>
   <h1>👶 Nursery Tracker</h1>
   <p class="date" id="dateLabel"></p>
 
-  <div class="counts" id="counts">
+  <div class="counts">
     <div class="count-card wet">
       <div class="num" id="cnt-Wet">{{ counts.Wet }}</div>
       <div class="label">Wet</div>
@@ -140,6 +175,10 @@
     <button class="btn-feed"  onclick="logEvent('Feed')">🍼 Feed</button>
   </div>
 
+  <div class="clear-wrap">
+    <button class="btn-clear" onclick="clearData()">Clear all data</button>
+  </div>
+
   <h2>History</h2>
   <div class="history" id="history">
     {% if recent %}
@@ -154,14 +193,32 @@
     {% endif %}
   </div>
 
+  <div class="chart-card">
+    <h2>Today's Breakdown</h2>
+    <div class="doughnut-wrap">
+      <canvas id="chartDoughnut" height="200"></canvas>
+    </div>
+  </div>
+
+  <div class="chart-card">
+    <h2>Today by Hour</h2>
+    <canvas id="chartHourly" height="160"></canvas>
+  </div>
+
+  <div class="chart-card">
+    <h2>Last 7 Days</h2>
+    <canvas id="chartDaily" height="160"></canvas>
+  </div>
+
   <div class="toast" id="toast"></div>
 
   <script>
-    function pad(n) { return n.toString().padStart(2, "0"); }
+    const TYPES = ["Wet", "Dirty", "Both", "Feed"];
+    const COLORS = { Wet: "#4a9fd4", Dirty: "#c0813a", Both: "#8e6abf", Feed: "#5aaa72" };
+
     function updateDate() {
-      const d = new Date();
       document.getElementById("dateLabel").textContent =
-        d.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
+        new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
     }
     updateDate();
 
@@ -186,42 +243,146 @@
       }
     }
 
+    async function clearData() {
+      if (!confirm("Delete all logged entries? This cannot be undone.")) return;
+      try {
+        await fetch("/log", { method: "DELETE" });
+        showToast("All data cleared");
+        refresh();
+      } catch (e) {
+        showToast("Error clearing data");
+      }
+    }
+
+    // --- Charts ---
+
+    const chartOpts = {
+      animation: false,
+      responsive: true,
+      maintainAspectRatio: false,
+    };
+
+    const chartDoughnut = new Chart(document.getElementById("chartDoughnut"), {
+      type: "doughnut",
+      data: {
+        labels: TYPES,
+        datasets: [{ data: [0, 0, 0, 0], backgroundColor: TYPES.map(t => COLORS[t]), borderWidth: 0 }]
+      },
+      options: {
+        ...chartOpts,
+        cutout: "62%",
+        plugins: { legend: { position: "bottom", labels: { boxWidth: 12, font: { size: 11 } } } },
+      }
+    });
+
+    const chartHourly = new Chart(document.getElementById("chartHourly"), {
+      type: "bar",
+      data: {
+        labels: Array.from({ length: 24 }, (_, i) => i + "h"),
+        datasets: TYPES.map(t => ({
+          label: t,
+          data: new Array(24).fill(0),
+          backgroundColor: COLORS[t],
+          stack: "s",
+          borderRadius: 2,
+        }))
+      },
+      options: {
+        ...chartOpts,
+        scales: {
+          x: { stacked: true, grid: { display: false }, ticks: { font: { size: 10 } } },
+          y: { stacked: true, beginAtZero: true, ticks: { stepSize: 1, font: { size: 10 } } }
+        },
+        plugins: { legend: { display: false } },
+      }
+    });
+
+    const chartDaily = new Chart(document.getElementById("chartDaily"), {
+      type: "bar",
+      data: {
+        labels: [],
+        datasets: TYPES.map(t => ({
+          label: t,
+          data: [],
+          backgroundColor: COLORS[t],
+          borderRadius: 3,
+        }))
+      },
+      options: {
+        ...chartOpts,
+        scales: {
+          x: { grid: { display: false }, ticks: { font: { size: 11 } } },
+          y: { beginAtZero: true, ticks: { stepSize: 1, font: { size: 10 } } }
+        },
+        plugins: { legend: { position: "bottom", labels: { boxWidth: 12, font: { size: 11 } } } },
+      }
+    });
+
+    function updateCharts(data) {
+      // Doughnut
+      chartDoughnut.data.datasets[0].data = TYPES.map(t => data.counts[t]);
+      chartDoughnut.update();
+
+      // Hourly stacked bar
+      TYPES.forEach((t, i) => {
+        chartHourly.data.datasets[i].data = data.hourly.map(h => h[t]);
+      });
+      chartHourly.update();
+
+      // 7-day grouped bar
+      chartDaily.data.labels = data.daily.map(d => d.date.slice(5));
+      TYPES.forEach((t, i) => {
+        chartDaily.data.datasets[i].data = data.daily.map(d => d[t]);
+      });
+      chartDaily.update();
+    }
+
+    // --- History ---
+
+    function updateHistory(recent) {
+      const h = document.getElementById("history");
+      h.replaceChildren();
+      if (recent.length === 0) {
+        const empty = document.createElement("div");
+        empty.className = "empty";
+        empty.textContent = "No entries yet today.";
+        h.appendChild(empty);
+        return;
+      }
+      for (const e of recent) {
+        const row = document.createElement("div");
+        row.className = "entry";
+
+        const typeSpan = document.createElement("span");
+        const safeType = TYPES.includes(e.type) ? e.type : "?";
+        typeSpan.className = "type type-" + safeType.toLowerCase();
+        typeSpan.textContent = safeType;
+
+        const timeSpan = document.createElement("span");
+        timeSpan.className = "time";
+        timeSpan.textContent = e.time.replace("T", " ").slice(0, 16);
+
+        row.appendChild(typeSpan);
+        row.appendChild(timeSpan);
+        h.appendChild(row);
+      }
+    }
+
+    // --- Polling ---
+
     async function refresh() {
       try {
         const res = await fetch("/data");
         const data = await res.json();
-        ["Wet", "Dirty", "Both", "Feed"].forEach(k => {
+        TYPES.forEach(k => {
           document.getElementById("cnt-" + k).textContent = data.counts[k];
         });
-        const h = document.getElementById("history");
-        h.replaceChildren();
-        if (data.recent.length === 0) {
-          const empty = document.createElement("div");
-          empty.className = "empty";
-          empty.textContent = "No entries yet today.";
-          h.appendChild(empty);
-        } else {
-          for (const e of data.recent) {
-            const row = document.createElement("div");
-            row.className = "entry";
-
-            const typeSpan = document.createElement("span");
-            const safeType = ["Wet", "Dirty", "Both", "Feed"].includes(e.type) ? e.type : "?";
-            typeSpan.className = "type type-" + safeType.toLowerCase();
-            typeSpan.textContent = safeType;
-
-            const timeSpan = document.createElement("span");
-            timeSpan.className = "time";
-            timeSpan.textContent = e.time.replace("T", " ").slice(0, 16);
-
-            row.appendChild(typeSpan);
-            row.appendChild(timeSpan);
-            h.appendChild(row);
-          }
-        }
+        updateHistory(data.recent);
+        updateCharts(data);
       } catch (_) {}
     }
 
+    refresh();
     setInterval(refresh, 8000);
   </script>
 </body>

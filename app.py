@@ -3,7 +3,7 @@ import json
 import logging
 import os
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from flask import Flask, render_template, jsonify, request
 
 logging.basicConfig(
@@ -134,6 +134,34 @@ def today_stats(entries):
     return counts
 
 
+def daily_stats(entries, days=7):
+    today = datetime.now().date()
+    result = []
+    for i in range(days - 1, -1, -1):
+        d = (today - timedelta(days=i)).isoformat()
+        counts = {label: 0 for label in ["Wet", "Dirty", "Both", "Feed"]}
+        for e in entries:
+            if e["time"].startswith(d) and e["type"] in counts:
+                counts[e["type"]] += 1
+        result.append({"date": d, **counts})
+    return result
+
+
+def hourly_stats(entries):
+    today = datetime.now().date().isoformat()
+    result = [{"hour": h, "Wet": 0, "Dirty": 0, "Both": 0, "Feed": 0} for h in range(24)]
+    for e in entries:
+        if not e["time"].startswith(today):
+            continue
+        try:
+            h = datetime.fromisoformat(e["time"]).hour
+            if e["type"] in ("Wet", "Dirty", "Both", "Feed"):
+                result[h][e["type"]] += 1
+        except Exception:
+            pass
+    return result
+
+
 @app.route("/")
 def index():
     with log_lock:
@@ -141,6 +169,13 @@ def index():
     counts = today_stats(entries)
     recent = list(reversed(entries[-50:]))
     return render_template("index.html", counts=counts, recent=recent)
+
+
+@app.route("/log", methods=["DELETE"])
+def clear_log():
+    with log_lock:
+        save_log([])
+    return jsonify({"ok": True})
 
 
 @app.route("/log", methods=["POST"])
@@ -159,7 +194,9 @@ def get_data():
         entries = load_log()
     counts = today_stats(entries)
     recent = list(reversed(entries[-50:]))
-    return jsonify({"counts": counts, "recent": recent})
+    daily = daily_stats(entries)
+    hourly = hourly_stats(entries)
+    return jsonify({"counts": counts, "recent": recent, "daily": daily, "hourly": hourly})
 
 
 @app.route("/devices")
