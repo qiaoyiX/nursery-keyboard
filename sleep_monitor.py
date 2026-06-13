@@ -1,15 +1,25 @@
 """
 Sleep monitoring daemon — runs as a separate systemd service (nursery-sleep-monitor).
 
-Reads the RTSP stream from a TAPO C110/C210 camera at ~1fps, detects motion via
-frame differencing, and maintains a sleep/awake state machine. Sleep sessions are
-written to the shared storage layer (Postgres or sleep_sessions.json).
+Two-stage detection per frame:
+  1. Presence:  compare frame vs saved empty-crib background
+               → baby is in crib if enough pixels differ from background
+  2. Motion:    compare frame vs previous frame
+               → baby is awake if pixels are changing
+
+States: AWAY (not in crib) → AWAKE (in crib, moving) → ASLEEP (in crib, still)
+
+Background management:
+  - Auto-captured from first 15 frames on startup (assumes crib empty at boot)
+  - Auto-refreshed after 5 min in AWAY state (handles day/night lighting changes)
+  - Force-refresh: press "Crib is empty" in dashboard → creates calibrate.flag
 
 Configuration (settings.json):
-  camera_rtsp_url        — rtsp://user:pass@IP:554/stream2
-  sleep_motion_threshold — fraction of pixels that must change (default 0.02)
-  sleep_min_minutes      — stillness minutes before marking asleep (default 10)
-  sleep_wake_seconds     — sustained motion seconds before marking awake (default 20)
+  camera_rtsp_url          — rtsp://user:pass@IP:554/stream2
+  sleep_motion_threshold   — frame-to-frame diff fraction (default 0.02)
+  sleep_presence_threshold — vs-background diff fraction (default 0.05)
+  sleep_min_minutes        — stillness minutes before marking asleep (default 10)
+  sleep_wake_seconds       — motion seconds before marking awake (default 20)
 """
 
 import logging
@@ -21,6 +31,8 @@ import cv2
 import numpy as np
 
 from storage import (
+    BACKGROUND_FILE,
+    CALIBRATE_FLAG,
     end_sleep_session,
     get_open_sleep_session,
     load_settings,
@@ -39,31 +51,51 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s [sleep_monitor] %(message)s",
 )
 
+STATE_AWAY   = "away"
 STATE_AWAKE  = "awake"
 STATE_ASLEEP = "asleep"
 
-PIXEL_THRESHOLD   = 25    # per-pixel diff to count as "changed"
-LIGHTING_CEILING  = 0.80  # fraction above which we assume IR/light toggle, not real motion
-FRAME_INTERVAL    = 1.0   # seconds between sampled frames
+PIXEL_THRESHOLD      = 25     # per-pixel brightness change to count as "different"
+LIGHTING_CEILING     = 0.80   # fraction above which we assume IR/light toggle, not motion
+FRAME_INTERVAL       = 1.0    # seconds between sampled frames (~1 fps)
+WARMUP_FRAMES        = 15     # frames averaged to build initial background
+AWAY_UPDATE_SECONDS  = 300    # re-save background after 5 min in AWAY state
 
 
-# ── Motion analysis ───────────────────────────────────────────────────────────
+# ── Frame helpers ─────────────────────────────────────────────────────────────
 
-def compute_motion_fraction(prev_gray, curr_gray):
-    diff = cv2.absdiff(prev_gray, curr_gray)
+def compute_diff_fraction(frame_a, frame_b):
+    """Fraction of pixels that differ by more than PIXEL_THRESHOLD."""
+    diff = cv2.absdiff(frame_a, frame_b)
     _, thresh = cv2.threshold(diff, PIXEL_THRESHOLD, 1, cv2.THRESH_BINARY)
     return float(thresh.sum()) / float(thresh.size)
 
 
 def is_lighting_change(fraction):
-    """IR night-vision switches and sudden lamp-on events flip nearly every pixel."""
+    """IR night-vision switches and sudden light-on events change nearly every pixel."""
     return fraction > LIGHTING_CEILING
+
+
+# ── Background management ─────────────────────────────────────────────────────
+
+def load_background():
+    if os.path.exists(BACKGROUND_FILE):
+        return np.load(BACKGROUND_FILE).astype(np.float32)
+    return None
+
+
+def save_background(gray_frame):
+    np.save(BACKGROUND_FILE, gray_frame.astype(np.float32))
+    logging.info("Background frame saved to %s", BACKGROUND_FILE)
+
+
+def background_to_uint8(background):
+    return np.clip(background, 0, 255).astype(np.uint8)
 
 
 # ── RTSP capture ──────────────────────────────────────────────────────────────
 
 def open_capture(rtsp_url):
-    # Force TCP transport to avoid UDP packet loss on a home LAN
     os.environ.setdefault("OPENCV_FFMPEG_CAPTURE_OPTIONS", "rtsp_transport;tcp")
     cap = cv2.VideoCapture(rtsp_url, cv2.CAP_FFMPEG)
     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
@@ -80,7 +112,8 @@ def read_frame_gray(cap):
 
 # ── State machine ─────────────────────────────────────────────────────────────
 
-def run_state_machine(rtsp_url, motion_threshold, sleep_min_seconds, wake_seconds):
+def run_state_machine(rtsp_url, motion_threshold, presence_threshold,
+                      sleep_min_seconds, wake_seconds):
     cap = open_capture(rtsp_url)
     if cap is None:
         logging.warning("Could not open RTSP stream: %s", rtsp_url)
@@ -88,21 +121,43 @@ def run_state_machine(rtsp_url, motion_threshold, sleep_min_seconds, wake_second
 
     logging.info("RTSP stream opened: %s", rtsp_url)
 
-    # Resume an open session if the daemon was restarted mid-sleep
+    # ── Background warmup ─────────────────────────────────────────────────────
+    background = load_background()
+    if background is None:
+        logging.info("No background found — collecting %d warmup frames (crib should be empty)…",
+                     WARMUP_FRAMES)
+        warmup = []
+        while len(warmup) < WARMUP_FRAMES:
+            frame = read_frame_gray(cap)
+            if frame is None:
+                cap.release()
+                return
+            warmup.append(frame.astype(np.float32))
+            time.sleep(FRAME_INTERVAL)
+        background = np.mean(warmup, axis=0)
+        save_background(background)
+        logging.info("Initial background captured from %d frames", WARMUP_FRAMES)
+
+    bg_uint8 = background_to_uint8(background)
+
+    # ── Resume open session from DB (daemon restart) ──────────────────────────
     open_session = get_open_sleep_session()
     if open_session:
         state = STATE_ASLEEP
-        current_session_id = open_session["id"]
+        current_session_id  = open_session["id"]
+        t = open_session["start_time"]
+        current_sleep_start = t if isinstance(t, datetime) else datetime.fromisoformat(str(t))
         logging.info("Resuming open sleep session id=%s started %s",
-                     current_session_id, open_session["start_time"])
+                     current_session_id, current_sleep_start)
     else:
-        state = STATE_AWAKE
-        current_session_id = None
+        state               = STATE_AWAY
+        current_session_id  = None
+        current_sleep_start = None
 
-    still_since         = None   # datetime when continuous stillness streak began
-    motion_since        = None   # datetime when continuous motion streak began
-    current_sleep_start = None   # backdated start of current sleep session
-    prev_gray           = None
+    still_since  = None
+    motion_since = None
+    away_since   = datetime.now() if state == STATE_AWAY else None
+    prev_gray    = None
 
     try:
         while True:
@@ -113,62 +168,124 @@ def run_state_machine(rtsp_url, motion_threshold, sleep_min_seconds, wake_second
                 logging.warning("Frame read failed — RTSP connection dropped")
                 break
 
-            write_sleep_heartbeat()
-
-            if prev_gray is None:
-                prev_gray = curr_gray
-                time.sleep(max(0.0, FRAME_INTERVAL - (time.monotonic() - loop_start)))
-                continue
-
-            fraction  = compute_motion_fraction(prev_gray, curr_gray)
-
-            if is_lighting_change(fraction):
-                # Skip lighting transients; don't reset hysteresis streaks
-                prev_gray = curr_gray
-                time.sleep(max(0.0, FRAME_INTERVAL - (time.monotonic() - loop_start)))
-                continue
-
-            is_motion = fraction > motion_threshold
-            now = datetime.now()
-
-            if state == STATE_AWAKE:
-                if not is_motion:
-                    if still_since is None:
-                        still_since  = now
-                        motion_since = None
-                    elif (now - still_since).total_seconds() >= sleep_min_seconds:
-                        # Backdate sleep start to when stillness actually began
-                        current_sleep_start = still_since
-                        current_session_id  = start_sleep_session(still_since)
-                        state               = STATE_ASLEEP
-                        still_since         = None
-                        logging.info("ASLEEP — session %s started at %s",
-                                     current_session_id, current_sleep_start)
-                else:
-                    still_since = None  # any motion resets the stillness streak
-
-            elif state == STATE_ASLEEP:
-                if is_motion:
-                    if motion_since is None:
-                        motion_since = now
-                        still_since  = None
-                    elif (now - motion_since).total_seconds() >= wake_seconds:
-                        # Backdate wake time to when motion actually started
-                        wake_time           = motion_since
-                        ended_id            = current_session_id
-                        sleep_start_for_hb  = current_sleep_start
-                        end_sleep_session(ended_id, wake_time)
-                        if HUCKLEBERRY_AVAILABLE and sleep_start_for_hb:
-                            push_sleep(sleep_start_for_hb, wake_time)
-                        state               = STATE_AWAKE
+            # ── Calibration flag (user pressed "Crib is empty" button) ────────
+            if os.path.exists(CALIBRATE_FLAG):
+                try:
+                    os.remove(CALIBRATE_FLAG)
+                    save_background(curr_gray)
+                    background = curr_gray.astype(np.float32)
+                    bg_uint8   = background_to_uint8(background)
+                    logging.info("Background updated via calibration request")
+                    # Reset to AWAY since crib is declared empty
+                    if state == STATE_ASLEEP and current_session_id:
+                        end_sleep_session(current_session_id, datetime.now())
                         current_session_id  = None
                         current_sleep_start = None
-                        motion_since        = None
-                        logging.info("AWAKE — session %s ended at %s",
-                                     ended_id, wake_time.isoformat())
-                else:
-                    motion_since = None  # stillness resets the motion streak
+                    state        = STATE_AWAY
+                    still_since  = None
+                    motion_since = None
+                    away_since   = datetime.now()
+                except Exception as e:
+                    logging.warning("Calibration error: %s", e)
 
+            now = datetime.now()
+
+            # ── Lighting-change guard (skip IR toggle frames) ─────────────────
+            if prev_gray is not None:
+                frame_diff = compute_diff_fraction(prev_gray, curr_gray)
+                if is_lighting_change(frame_diff):
+                    prev_gray = curr_gray
+                    write_sleep_heartbeat(state)
+                    time.sleep(max(0.0, FRAME_INTERVAL - (time.monotonic() - loop_start)))
+                    continue
+
+            # ── Presence detection ────────────────────────────────────────────
+            presence_fraction = compute_diff_fraction(curr_gray, bg_uint8)
+            baby_present      = presence_fraction > presence_threshold
+
+            # ── Motion detection (frame-to-frame) ────────────────────────────
+            if prev_gray is not None:
+                motion_fraction = compute_diff_fraction(prev_gray, curr_gray)
+                is_motion       = motion_fraction > motion_threshold
+            else:
+                is_motion = False
+                prev_gray = curr_gray
+
+            # ── State transitions ─────────────────────────────────────────────
+
+            if not baby_present:
+                # Baby not in frame
+                if state == STATE_ASLEEP and current_session_id is not None:
+                    # Baby was picked up while sleeping — close the session now
+                    end_sleep_session(current_session_id, now)
+                    if HUCKLEBERRY_AVAILABLE and current_sleep_start:
+                        push_sleep(current_sleep_start, now)
+                    logging.info("Baby left frame — ended sleep session %s at %s",
+                                 current_session_id, now.isoformat())
+                    current_session_id  = None
+                    current_sleep_start = None
+
+                if state != STATE_AWAY:
+                    logging.info("Baby not detected — AWAY")
+                state        = STATE_AWAY
+                still_since  = None
+                motion_since = None
+                if away_since is None:
+                    away_since = now
+
+                # Auto-refresh background after sustained absence
+                if (now - away_since).total_seconds() > AWAY_UPDATE_SECONDS:
+                    save_background(curr_gray)
+                    background = curr_gray.astype(np.float32)
+                    bg_uint8   = background_to_uint8(background)
+                    away_since = now  # reset so we refresh every 5 min during absence
+
+            else:
+                # Baby is present
+                away_since = None
+
+                if state == STATE_AWAY:
+                    state       = STATE_AWAKE
+                    still_since = None
+                    logging.info("Baby detected in frame — AWAKE")
+
+                if state == STATE_AWAKE:
+                    if not is_motion:
+                        if still_since is None:
+                            still_since  = now
+                            motion_since = None
+                        elif (now - still_since).total_seconds() >= sleep_min_seconds:
+                            current_sleep_start = still_since
+                            current_session_id  = start_sleep_session(still_since)
+                            state               = STATE_ASLEEP
+                            still_since         = None
+                            logging.info("ASLEEP — session %s started at %s",
+                                         current_session_id, current_sleep_start)
+                    else:
+                        still_since = None
+
+                elif state == STATE_ASLEEP:
+                    if is_motion:
+                        if motion_since is None:
+                            motion_since = now
+                            still_since  = None
+                        elif (now - motion_since).total_seconds() >= wake_seconds:
+                            wake_time          = motion_since
+                            ended_id           = current_session_id
+                            sleep_start_for_hb = current_sleep_start
+                            end_sleep_session(ended_id, wake_time)
+                            if HUCKLEBERRY_AVAILABLE and sleep_start_for_hb:
+                                push_sleep(sleep_start_for_hb, wake_time)
+                            state               = STATE_AWAKE
+                            current_session_id  = None
+                            current_sleep_start = None
+                            motion_since        = None
+                            logging.info("AWAKE — session %s ended at %s",
+                                         ended_id, wake_time.isoformat())
+                    else:
+                        motion_since = None
+
+            write_sleep_heartbeat(state)
             prev_gray = curr_gray
             elapsed   = time.monotonic() - loop_start
             time.sleep(max(0.0, FRAME_INTERVAL - elapsed))
@@ -183,20 +300,22 @@ def main():
     RECONNECT_DELAY = 10
 
     while True:
-        settings       = load_settings()
-        rtsp_url       = settings.get("camera_rtsp_url", "")
+        settings = load_settings()
+        rtsp_url = settings.get("camera_rtsp_url", "")
 
         if not rtsp_url:
-            logging.info("No camera_rtsp_url in settings.json — set it and restart. Retrying in 30s.")
+            logging.info("No camera_rtsp_url in settings.json — retrying in 30s.")
             time.sleep(30)
             continue
 
-        motion_threshold  = float(settings.get("sleep_motion_threshold", 0.02))
-        sleep_min_seconds = int(settings.get("sleep_min_minutes", 10)) * 60
-        wake_seconds      = int(settings.get("sleep_wake_seconds", 20))
+        motion_threshold   = float(settings.get("sleep_motion_threshold",   0.02))
+        presence_threshold = float(settings.get("sleep_presence_threshold", 0.05))
+        sleep_min_seconds  = int(settings.get("sleep_min_minutes",          10)) * 60
+        wake_seconds       = int(settings.get("sleep_wake_seconds",         20))
 
         try:
-            run_state_machine(rtsp_url, motion_threshold, sleep_min_seconds, wake_seconds)
+            run_state_machine(rtsp_url, motion_threshold, presence_threshold,
+                              sleep_min_seconds, wake_seconds)
         except Exception as exc:
             logging.error("Unexpected error: %s", exc, exc_info=True)
 

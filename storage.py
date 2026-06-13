@@ -15,10 +15,12 @@ except ImportError:
 DATABASE_URL = os.environ.get("DATABASE_URL")
 USE_DB = bool(DATABASE_URL and PSYCOPG2_AVAILABLE)
 
-DATA_FILE       = os.path.join(os.path.dirname(__file__), "log.json")
-SETTINGS_FILE   = os.path.join(os.path.dirname(__file__), "settings.json")
-SLEEP_FILE      = os.path.join(os.path.dirname(__file__), "sleep_sessions.json")
+DATA_FILE        = os.path.join(os.path.dirname(__file__), "log.json")
+SETTINGS_FILE    = os.path.join(os.path.dirname(__file__), "settings.json")
+SLEEP_FILE       = os.path.join(os.path.dirname(__file__), "sleep_sessions.json")
 SLEEP_STATE_FILE = os.path.join(os.path.dirname(__file__), "sleep_state.json")
+BACKGROUND_FILE  = os.path.join(os.path.dirname(__file__), "crib_background.npy")
+CALIBRATE_FLAG   = os.path.join(os.path.dirname(__file__), "calibrate.flag")
 
 DEFAULT_SETTINGS = {
     "feed_interval_minutes":    180,
@@ -29,6 +31,7 @@ DEFAULT_SETTINGS = {
     "huckleberry_email":        "",
     "huckleberry_password":     "",
     "huckleberry_child_index":  0,
+    "sleep_presence_threshold": 0.05,
 }
 
 log_lock      = threading.Lock()
@@ -303,24 +306,23 @@ def get_open_sleep_session():
 
 # ── Heartbeat (daemon liveness) ───────────────────────────────────────────────
 
-def write_sleep_heartbeat():
+def write_sleep_heartbeat(daemon_state="awake"):
+    """daemon_state: 'away' | 'awake' | 'asleep'"""
     tmp = SLEEP_STATE_FILE + ".tmp"
     with open(tmp, "w") as f:
-        json.dump({"heartbeat": datetime.now().isoformat()}, f)
+        json.dump({"heartbeat": datetime.now().isoformat(), "state": daemon_state}, f)
     os.replace(tmp, SLEEP_STATE_FILE)
 
 
 def read_sleep_status():
-    """Returns 'sleeping', 'awake', or 'unknown'. Called by Flask."""
+    """Returns 'away' | 'awake' | 'asleep' | 'unknown'. Called by Flask."""
     if not os.path.exists(SLEEP_STATE_FILE):
         return "unknown"
     try:
         with open(SLEEP_STATE_FILE) as f:
             data = json.load(f)
-        last_beat = datetime.fromisoformat(data["heartbeat"])
-        if (datetime.now() - last_beat).total_seconds() > 60:
+        if (datetime.now() - datetime.fromisoformat(data["heartbeat"])).total_seconds() > 60:
             return "unknown"
-        open_session = get_open_sleep_session()
-        return "sleeping" if open_session else "awake"
+        return data.get("state", "unknown")
     except Exception:
         return "unknown"

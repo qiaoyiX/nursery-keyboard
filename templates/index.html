@@ -173,12 +173,26 @@
     }
     .sleep-state-text.is-sleeping { color: var(--sleep); }
     .sleep-state-text.is-awake    { color: var(--brown-mid); }
+    .sleep-state-text.is-away     { color: var(--brown-muted); }
     .sleep-state-text.is-unknown  {
       color: var(--brown-muted);
       font-style: italic;
       font-family: inherit;
       font-size: 0.9rem;
     }
+    .btn-calibrate {
+      margin-top: 10px;
+      font-size: 0.72rem;
+      background: none;
+      border: 1px solid var(--cream-2);
+      border-radius: 20px;
+      color: var(--brown-muted);
+      padding: 4px 14px;
+      cursor: pointer;
+      display: none;
+    }
+    .btn-calibrate:hover { border-color: var(--sleep); color: var(--sleep); }
+    .btn-calibrate.visible { display: inline-block; }
     .sleep-summary-text {
       font-size: 0.78rem;
       color: var(--brown-muted);
@@ -399,6 +413,7 @@
     <div class="sleep-card-title">😴 Sleep</div>
     <div class="sleep-state-text is-unknown" id="sleepStateText">⋯ Camera offline</div>
     <div class="sleep-summary-text" id="sleepSummaryText"></div>
+    <button class="btn-calibrate" id="btnCalibrate" onclick="calibrateSleep()">📷 Crib is empty</button>
   </div>
 
   <!-- Sleep Timeline -->
@@ -696,12 +711,15 @@
     }
 
     function updateSleepCard(sleep) {
-      const stateEl   = document.getElementById("sleepStateText");
-      const summaryEl = document.getElementById("sleepSummaryText");
+      const stateEl     = document.getElementById("sleepStateText");
+      const summaryEl   = document.getElementById("sleepSummaryText");
+      const calibrateEl = document.getElementById("btnCalibrate");
       const { status, current_start_iso, total_sleep_minutes, nap_count } = sleep;
 
       stateEl.className = "sleep-state-text";
-      if (status === "sleeping" && current_start_iso) {
+      calibrateEl.classList.remove("visible");
+
+      if (status === "asleep" && current_start_iso) {
         const startClock = new Date(current_start_iso).toLocaleTimeString("en-US",
           { hour: "numeric", minute: "2-digit" });
         stateEl.textContent = `😴 Sleeping · started at ${startClock}`;
@@ -715,6 +733,10 @@
           stateEl.textContent = "👁 Awake · no naps yet today";
         }
         stateEl.classList.add("is-awake");
+      } else if (status === "away") {
+        stateEl.textContent = "👼 Not in crib";
+        stateEl.classList.add("is-away");
+        calibrateEl.classList.add("visible");
       } else {
         stateEl.textContent = "⋯ Camera offline";
         stateEl.classList.add("is-unknown");
@@ -726,6 +748,11 @@
       } else {
         summaryEl.textContent = "";
       }
+    }
+
+    async function calibrateSleep() {
+      await fetch("/sleep/calibrate", { method: "POST" });
+      showToast("Background saved — crib calibrated as empty");
     }
 
     function updateSleepTimeline(sessions) {

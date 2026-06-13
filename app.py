@@ -7,6 +7,7 @@ from flask import Flask, render_template, jsonify, request
 
 from storage import (
     USE_DB,
+    CALIBRATE_FLAG,
     log_lock, settings_lock, sleep_lock,
     get_entries, add_entry, clear_today, delete_entry,
     load_settings, save_settings,
@@ -281,7 +282,7 @@ def get_data():
     sleep_status   = read_sleep_status()
 
     current_start_iso = None
-    if sleep_status == "sleeping":
+    if sleep_status == "asleep":
         open_s = get_open_sleep_session()
         if open_s:
             t = open_s["start_time"]
@@ -302,6 +303,13 @@ def get_data():
             "sessions_today":      sleep_summary["sessions"],
         },
     })
+
+
+@app.route("/sleep/calibrate", methods=["POST"])
+def sleep_calibrate():
+    with open(CALIBRATE_FLAG, "w") as f:
+        f.write(datetime.now().isoformat())
+    return jsonify({"ok": True})
 
 
 @app.route("/devices")
