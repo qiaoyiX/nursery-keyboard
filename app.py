@@ -90,6 +90,7 @@ def keypad_listener():
                             key_name = key_event.keycode
                             if isinstance(key_name, list):
                                 key_name = key_name[0]
+                            logging.info("Key event raw: %s", key_name)
                             label = KEYPAD_KEYS.get(key_name)
                             if label:
                                 add_entry(label)
