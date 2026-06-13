@@ -269,7 +269,8 @@
       box-shadow: var(--shadow-card);
       margin-bottom: 12px;
     }
-    .doughnut-wrap { max-width: 200px; margin: 0 auto; }
+    .doughnut-wrap { max-width: 200px; margin: 0 auto; position: relative; height: 200px; }
+    .chart-wrap { position: relative; height: 160px; }
     canvas { display: block; }
 
     /* ── Toast ───────────────────────────── */
@@ -349,18 +350,18 @@
   <div class="chart-card">
     <p class="section-label">Today's Breakdown</p>
     <div class="doughnut-wrap">
-      <canvas id="chartDoughnut" height="200"></canvas>
+      <canvas id="chartDoughnut"></canvas>
     </div>
   </div>
 
   <div class="chart-card">
     <p class="section-label">Today by Hour</p>
-    <canvas id="chartHourly" height="160"></canvas>
+    <div class="chart-wrap"><canvas id="chartHourly"></canvas></div>
   </div>
 
   <div class="chart-card">
     <p class="section-label">Last 7 Days</p>
-    <canvas id="chartDaily" height="160"></canvas>
+    <div class="chart-wrap"><canvas id="chartDaily"></canvas></div>
   </div>
 
   <div class="toast" id="toast"></div>
