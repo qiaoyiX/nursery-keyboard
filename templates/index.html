@@ -8,196 +8,290 @@
           integrity="sha384-jb8JQMbMoBUzgWatfe6COACi2ljcDdZQ2OxczGA3bGNeWe+6DChMTBJemed7ZnvJ"
           crossorigin="anonymous"></script>
   <style>
+    :root {
+      --cream:       #faf3e8;
+      --cream-2:     #f2e6d0;
+      --brown-deep:  #3d2b1f;
+      --brown-mid:   #7a4f35;
+      --brown-light: #a07858;
+      --brown-muted: #b8957a;
+      --wet:   #4a9fd4;  --wet-a:   rgba(74,159,212,.10);
+      --dirty: #c0813a;  --dirty-a: rgba(192,129,58,.10);
+      --play:  #8e6abf;  --play-a:  rgba(142,106,191,.10);
+      --feed:  #5aaa72;  --feed-a:  rgba(90,170,114,.10);
+      --danger: #c0513a;
+      --shadow-card: 0 1px 3px rgba(61,43,31,.07), 0 6px 18px rgba(61,43,31,.07);
+      --r: 18px;
+    }
+
     * { box-sizing: border-box; margin: 0; padding: 0; }
+
     body {
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      background: #fdf6ee;
-      color: #3b2f2f;
+      background: var(--cream);
+      color: var(--brown-deep);
       min-height: 100vh;
-      padding: 16px;
+      padding: 24px 16px 48px;
     }
+
+    /* ── Header ─────────────────────────── */
+    .header { text-align: center; margin-bottom: 28px; }
     h1 {
-      text-align: center;
-      font-size: 1.4rem;
-      margin-bottom: 6px;
-      color: #7a4f3a;
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: 1.65rem;
+      font-weight: normal;
+      color: var(--brown-mid);
+      letter-spacing: -0.01em;
+      margin-bottom: 4px;
     }
     .date {
-      text-align: center;
-      font-size: 0.85rem;
-      color: #9c7c6a;
-      margin-bottom: 18px;
+      font-size: 0.78rem;
+      color: var(--brown-muted);
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
     }
+
+    /* ── Count cards ─────────────────────── */
     .counts {
       display: grid;
       grid-template-columns: 1fr 1fr;
-      gap: 12px;
-      margin-bottom: 20px;
+      gap: 10px;
+      margin-bottom: 14px;
     }
     .count-card {
-      background: #fff;
-      border-radius: 14px;
-      padding: 14px;
+      border-radius: var(--r);
+      padding: 18px 12px 14px;
       text-align: center;
-      box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+      box-shadow: var(--shadow-card);
+      position: relative;
+      overflow: hidden;
     }
-    .count-card .num {
-      font-size: 2.4rem;
-      font-weight: 700;
-      line-height: 1;
+    .count-card::before {
+      content: '';
+      position: absolute; inset: 0;
     }
-    .count-card .label { font-size: 0.8rem; color: #9c7c6a; margin-top: 4px; }
-    .wet .num { color: #4a9fd4; }
-    .dirty .num { color: #c0813a; }
-    .play .num { color: #8e6abf; }
-    .feed .num { color: #5aaa72; }
+    .wet::before   { background: linear-gradient(145deg, #fff 35%, var(--wet-a)); }
+    .dirty::before { background: linear-gradient(145deg, #fff 35%, var(--dirty-a)); }
+    .play::before  { background: linear-gradient(145deg, #fff 35%, var(--play-a)); }
+    .feed::before  { background: linear-gradient(145deg, #fff 35%, var(--feed-a)); }
+    .count-card > * { position: relative; }
 
+    .count-card .num {
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: 2.8rem;
+      font-weight: normal;
+      line-height: 1;
+      margin-bottom: 5px;
+    }
+    .count-card .label {
+      font-size: 0.68rem;
+      color: var(--brown-muted);
+      letter-spacing: 0.07em;
+      text-transform: uppercase;
+    }
+    .wet .num   { color: var(--wet); }
+    .dirty .num { color: var(--dirty); }
+    .play .num  { color: var(--play); }
+    .feed .num  { color: var(--feed); }
+
+    /* ── Next feed card ──────────────────── */
+    .next-feed-card {
+      border-radius: var(--r);
+      padding: 18px 16px 14px;
+      box-shadow: var(--shadow-card);
+      margin-bottom: 14px;
+      text-align: center;
+      transition: background 0.5s;
+      background: linear-gradient(150deg, #fff 60%, var(--cream-2));
+    }
+    .next-feed-card.status-ok   { background: linear-gradient(150deg, #fff 50%, rgba(90,170,114,.13)); }
+    .next-feed-card.status-soon { background: linear-gradient(150deg, #fff 50%, rgba(200,154,16,.12)); }
+    .next-feed-card.status-late { background: linear-gradient(150deg, #fff 50%, rgba(192,81,58,.12)); }
+
+    .nf-title {
+      font-size: 0.68rem;
+      color: var(--brown-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.09em;
+      margin-bottom: 8px;
+    }
+    .nf-time {
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: 1.55rem;
+      font-weight: normal;
+      line-height: 1.25;
+    }
+    .nf-ok      { color: var(--feed); }
+    .nf-soon    { color: #9e7300; }
+    .nf-late    { color: var(--danger); }
+    .nf-neutral { color: var(--brown-muted); font-family: inherit; font-size: 0.9rem; }
+
+    .nf-interval {
+      margin-top: 12px;
+      font-size: 0.78rem;
+      color: var(--brown-muted);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 7px;
+    }
+    .nf-interval select {
+      border: 1px solid var(--cream-2);
+      border-radius: 8px;
+      background: var(--cream);
+      color: var(--brown-deep);
+      font-size: 0.78rem;
+      padding: 4px 8px;
+      cursor: pointer;
+      outline: none;
+      -webkit-appearance: auto;
+    }
+
+    /* ── Action buttons ──────────────────── */
     .buttons {
       display: grid;
       grid-template-columns: 1fr 1fr;
-      gap: 12px;
-      margin-bottom: 14px;
+      gap: 10px;
+      margin-bottom: 10px;
     }
-    button {
+    .action-btn {
       border: none;
-      border-radius: 14px;
-      padding: 18px 10px;
-      font-size: 1.1rem;
+      border-radius: var(--r);
+      padding: 20px 10px;
+      font-size: 1rem;
       font-weight: 600;
       cursor: pointer;
-      transition: transform 0.1s, opacity 0.1s;
       color: #fff;
+      letter-spacing: 0.01em;
+      transition: transform 0.12s cubic-bezier(.34,1.56,.64,1), box-shadow 0.12s;
+      box-shadow: 0 4px 14px rgba(0,0,0,.18), 0 1px 3px rgba(0,0,0,.1);
+      position: relative;
+      overflow: hidden;
     }
-    button:active { transform: scale(0.96); opacity: 0.85; }
-    .btn-wet    { background: #4a9fd4; }
-    .btn-dirty  { background: #c0813a; }
-    .btn-play   { background: #8e6abf; }
-    .btn-feed   { background: #5aaa72; }
+    .action-btn::after {
+      content: '';
+      position: absolute; inset: 0;
+      background: linear-gradient(175deg, rgba(255,255,255,.2) 0%, transparent 55%);
+      pointer-events: none;
+    }
+    .action-btn:active {
+      transform: scale(0.94);
+      box-shadow: 0 2px 6px rgba(0,0,0,.14);
+    }
+    .btn-wet   { background: linear-gradient(155deg, #5ab4e4 0%, #3a8dc0 100%); }
+    .btn-dirty { background: linear-gradient(155deg, #d08f4a 0%, #ab6c25 100%); }
+    .btn-play  { background: linear-gradient(155deg, #a07ad0 0%, #7852b0 100%); }
+    .btn-feed  { background: linear-gradient(155deg, #68bf80 0%, #47975c 100%); }
 
-    .clear-wrap {
-      text-align: center;
-      margin-bottom: 20px;
-    }
+    /* ── Clear button ────────────────────── */
+    .clear-wrap { text-align: center; margin-bottom: 26px; }
     .btn-clear {
       background: transparent;
-      border: 1px solid #e8b5b5;
-      color: #c0513a;
-      font-size: 0.78rem;
+      border: 1px solid rgba(192,81,58,.22);
+      color: rgba(192,81,58,.65);
+      font-size: 0.73rem;
       font-weight: 500;
       padding: 6px 18px;
       border-radius: 20px;
       cursor: pointer;
-      transition: background 0.15s;
+      letter-spacing: 0.03em;
+      transition: color 0.15s, border-color 0.15s;
     }
-    .btn-clear:active { background: #fdf0ef; }
+    .btn-clear:hover { color: var(--danger); border-color: rgba(192,81,58,.5); }
 
-    .toast {
-      position: fixed;
-      top: 16px; left: 50%; transform: translateX(-50%);
-      background: #3b2f2f; color: #fff;
-      padding: 10px 20px; border-radius: 20px;
-      font-size: 0.9rem; opacity: 0;
-      transition: opacity 0.3s;
-      pointer-events: none;
-      white-space: nowrap;
+    /* ── Section label ───────────────────── */
+    .section-label {
+      font-size: 0.68rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.09em;
+      color: var(--brown-muted);
+      margin-bottom: 10px;
     }
-    .toast.show { opacity: 1; }
 
-    h2 { font-size: 1rem; margin-bottom: 10px; color: #7a4f3a; }
-
+    /* ── History ─────────────────────────── */
     .history {
       background: #fff;
-      border-radius: 14px;
+      border-radius: var(--r);
       overflow: hidden;
-      box-shadow: 0 2px 8px rgba(0,0,0,0.08);
-      max-height: 38vh;
+      box-shadow: var(--shadow-card);
+      max-height: 36vh;
       overflow-y: auto;
       margin-bottom: 20px;
+      scrollbar-width: thin;
+      scrollbar-color: var(--cream-2) transparent;
     }
     .entry {
       display: flex;
-      justify-content: space-between;
       align-items: center;
+      gap: 10px;
       padding: 10px 14px;
-      border-bottom: 1px solid #f5ece4;
-      font-size: 0.9rem;
+      border-bottom: 1px solid #f5ede2;
     }
     .entry:last-child { border-bottom: none; }
-    .entry .type { font-weight: 600; }
-    .entry .time { color: #9c7c6a; font-size: 0.8rem; }
+
+    .type-pill {
+      font-size: 0.68rem;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      padding: 3px 9px;
+      border-radius: 20px;
+      flex-shrink: 0;
+    }
+    .type-pill.type-wet   { color: var(--wet);   background: var(--wet-a); }
+    .type-pill.type-dirty { color: var(--dirty); background: var(--dirty-a); }
+    .type-pill.type-play  { color: var(--play);  background: var(--play-a); }
+    .type-pill.type-feed  { color: var(--feed);  background: var(--feed-a); }
+
+    .entry .time { color: var(--brown-muted); font-size: 0.77rem; flex: 1; }
+
     .btn-delete-entry {
-      background: none; border: none; color: #c0513a;
-      font-size: 0.75rem; padding: 2px 6px; border-radius: 6px;
-      opacity: 0.2; cursor: pointer; transition: opacity 0.15s;
-      line-height: 1; flex-shrink: 0;
+      background: none; border: none; color: var(--danger);
+      font-size: 0.68rem; width: 22px; height: 22px;
+      border-radius: 50%; display: flex; align-items: center; justify-content: center;
+      opacity: 0; cursor: pointer; transition: opacity 0.15s, background 0.15s;
+      flex-shrink: 0;
     }
     .entry:hover .btn-delete-entry { opacity: 1; }
-    .type-wet   { color: #4a9fd4; }
-    .type-dirty { color: #c0813a; }
-    .type-play  { color: #8e6abf; }
-    .type-feed  { color: #5aaa72; }
-    .empty { text-align: center; padding: 20px; color: #9c7c6a; font-size: 0.9rem; }
+    .btn-delete-entry:hover { background: rgba(192,81,58,.1); }
 
-    .next-feed-card {
-      background: #fff;
-      border-radius: 14px;
-      padding: 16px;
-      box-shadow: 0 2px 8px rgba(0,0,0,0.08);
-      margin-bottom: 20px;
-      text-align: center;
-    }
-    .next-feed-card .nf-title {
-      font-size: 0.8rem;
-      color: #9c7c6a;
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-      margin-bottom: 6px;
-    }
-    .next-feed-card .nf-time {
-      font-size: 1.5rem;
-      font-weight: 700;
-      line-height: 1.2;
-    }
-    .nf-ok   { color: #5aaa72; }
-    .nf-soon { color: #c89a10; }
-    .nf-late { color: #c0513a; }
-    .nf-neutral { color: #9c7c6a; font-weight: 400; font-size: 0.95rem; }
-    .next-feed-card .nf-interval {
-      margin-top: 10px;
-      font-size: 0.82rem;
-      color: #9c7c6a;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: 6px;
-    }
-    .next-feed-card select {
-      border: 1px solid #e5d5c8;
-      border-radius: 8px;
-      background: #fdf6ee;
-      color: #3b2f2f;
-      font-size: 0.82rem;
-      padding: 3px 6px;
-      cursor: pointer;
+    .empty {
+      text-align: center; padding: 28px;
+      color: var(--brown-muted); font-size: 0.85rem;
     }
 
+    /* ── Chart cards ─────────────────────── */
     .chart-card {
       background: #fff;
-      border-radius: 14px;
-      padding: 16px;
-      box-shadow: 0 2px 8px rgba(0,0,0,0.08);
-      margin-bottom: 16px;
+      border-radius: var(--r);
+      padding: 18px 16px 14px;
+      box-shadow: var(--shadow-card);
+      margin-bottom: 12px;
     }
-    .doughnut-wrap {
-      max-width: 220px;
-      margin: 0 auto;
-    }
+    .doughnut-wrap { max-width: 200px; margin: 0 auto; }
     canvas { display: block; }
+
+    /* ── Toast ───────────────────────────── */
+    .toast {
+      position: fixed;
+      top: 20px; left: 50%;
+      transform: translateX(-50%) translateY(-6px);
+      background: var(--brown-deep); color: #fff;
+      padding: 10px 22px; border-radius: 24px;
+      font-size: 0.83rem; opacity: 0;
+      transition: opacity 0.22s, transform 0.22s;
+      pointer-events: none; white-space: nowrap;
+      box-shadow: 0 4px 18px rgba(61,43,31,.28);
+    }
+    .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
   </style>
 </head>
 <body>
-  <h1>👶 Nursery Tracker</h1>
-  <p class="date" id="dateLabel"></p>
+  <div class="header">
+    <h1>👶 Nursery Tracker</h1>
+    <p class="date" id="dateLabel"></p>
+  </div>
 
   <div class="counts">
     <div class="count-card wet">
@@ -218,7 +312,7 @@
     </div>
   </div>
 
-  <div class="next-feed-card">
+  <div class="next-feed-card" id="nextFeedCard">
     <div class="nf-title">🍼 Next Feed</div>
     <div class="nf-time nf-neutral" id="nextFeedDisplay">—</div>
     <div class="nf-interval">
@@ -228,44 +322,44 @@
   </div>
 
   <div class="buttons">
-    <button class="btn-wet"   onclick="logEvent('Wet')">💧 Wet</button>
-    <button class="btn-dirty" onclick="logEvent('Dirty')">💩 Dirty</button>
-    <button class="btn-play"  onclick="logEvent('Play')">🧸 Play</button>
-    <button class="btn-feed"  onclick="logEvent('Feed')">🍼 Feed</button>
+    <button class="action-btn btn-wet"   onclick="logEvent('Wet')">💧 Wet</button>
+    <button class="action-btn btn-dirty" onclick="logEvent('Dirty')">💩 Dirty</button>
+    <button class="action-btn btn-play"  onclick="logEvent('Play')">🧸 Play</button>
+    <button class="action-btn btn-feed"  onclick="logEvent('Feed')">🍼 Feed</button>
   </div>
 
   <div class="clear-wrap">
     <button class="btn-clear" onclick="clearData()">Clear today</button>
   </div>
 
-  <h2>History</h2>
+  <p class="section-label">History</p>
   <div class="history" id="history">
     {% if recent %}
       {% for e in recent %}
       <div class="entry">
-        <span class="type type-{{ e.type | lower }}">{{ e.type }}</span>
+        <span class="type-pill type-{{ e.type | lower }}">{{ e.type }}</span>
         <span class="time">{{ e.time[:16] | replace("T", " ") }}</span>
       </div>
       {% endfor %}
     {% else %}
-      <div class="empty">No entries yet today.</div>
+      <div class="empty">Nothing logged yet today.</div>
     {% endif %}
   </div>
 
   <div class="chart-card">
-    <h2>Today's Breakdown</h2>
+    <p class="section-label">Today's Breakdown</p>
     <div class="doughnut-wrap">
       <canvas id="chartDoughnut" height="200"></canvas>
     </div>
   </div>
 
   <div class="chart-card">
-    <h2>Today by Hour</h2>
+    <p class="section-label">Today by Hour</p>
     <canvas id="chartHourly" height="160"></canvas>
   </div>
 
   <div class="chart-card">
-    <h2>Last 7 Days</h2>
+    <p class="section-label">Last 7 Days</p>
     <canvas id="chartDaily" height="160"></canvas>
   </div>
 
@@ -293,19 +387,23 @@
       const sel = document.getElementById("feedIntervalSel");
       sel.value = data.feed_interval_minutes;
 
-      const el = document.getElementById("nextFeedDisplay");
+      const el   = document.getElementById("nextFeedDisplay");
+      const card = document.getElementById("nextFeedCard");
       const nextIso = data.next_feed_iso;
       if (!nextIso) {
         el.textContent = "No feed logged yet";
         el.className = "nf-time nf-neutral";
+        card.className = "next-feed-card";
         return;
       }
-      const diff = Math.round((new Date(nextIso) - Date.now()) / 60000);
+      const diff   = Math.round((new Date(nextIso) - Date.now()) / 60000);
       const absMin = Math.abs(diff);
-      const hms = diff >= 0 ? `in ${fmtInterval(absMin)}` : `${fmtInterval(absMin)} overdue`;
-      const clock = new Date(nextIso).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
+      const hms    = diff >= 0 ? `in ${fmtInterval(absMin)}` : `${fmtInterval(absMin)} overdue`;
+      const clock  = new Date(nextIso).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
       el.textContent = `${hms} · around ${clock}`;
-      el.className = "nf-time " + (diff > 15 ? "nf-ok" : diff >= 0 ? "nf-soon" : "nf-late");
+      const state = diff > 15 ? "ok" : diff >= 0 ? "soon" : "late";
+      el.className   = `nf-time nf-${state}`;
+      card.className = `next-feed-card status-${state}`;
     }
 
     async function saveInterval(mins) {
@@ -321,7 +419,7 @@
       }
     }
 
-    const TYPES = ["Wet", "Dirty", "Play", "Feed"];
+    const TYPES  = ["Wet", "Dirty", "Play", "Feed"];
     const COLORS = { Wet: "#4a9fd4", Dirty: "#c0813a", Play: "#8e6abf", Feed: "#5aaa72" };
 
     function updateDate() {
@@ -427,17 +525,14 @@
     });
 
     function updateCharts(data) {
-      // Doughnut
       chartDoughnut.data.datasets[0].data = TYPES.map(t => data.counts[t]);
       chartDoughnut.update();
 
-      // Hourly stacked bar
       TYPES.forEach((t, i) => {
         chartHourly.data.datasets[i].data = data.hourly.map(h => h[t]);
       });
       chartHourly.update();
 
-      // 7-day grouped bar
       chartDaily.data.labels = data.daily.map(d => d.date.slice(5));
       TYPES.forEach((t, i) => {
         chartDaily.data.datasets[i].data = data.daily.map(d => d[t]);
@@ -453,7 +548,7 @@
       if (recent.length === 0) {
         const empty = document.createElement("div");
         empty.className = "empty";
-        empty.textContent = "No entries yet today.";
+        empty.textContent = "Nothing logged yet today.";
         h.appendChild(empty);
         return;
       }
@@ -463,7 +558,7 @@
 
         const typeSpan = document.createElement("span");
         const safeType = TYPES.includes(e.type) ? e.type : "?";
-        typeSpan.className = "type type-" + safeType.toLowerCase();
+        typeSpan.className = "type-pill type-" + safeType.toLowerCase();
         typeSpan.textContent = safeType;
 
         const timeSpan = document.createElement("span");
@@ -502,7 +597,7 @@
 
     async function refresh() {
       try {
-        const res = await fetch("/data");
+        const res  = await fetch("/data");
         const data = await res.json();
         TYPES.forEach(k => {
           document.getElementById("cnt-" + k).textContent = data.counts[k];
