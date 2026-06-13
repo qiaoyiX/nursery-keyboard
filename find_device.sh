@@ -1,5 +1,5 @@
 #!/bin/bash
-# Run this to confirm the keypad is visible and ready.
+# Run this to confirm the keypad is visible and verify key mappings.
 # Usage: bash find_device.sh
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 VENV_PYTHON="$SCRIPT_DIR/venv/bin/python"
@@ -20,33 +20,45 @@ if [ ! -x "$VENV_PYTHON" ]; then
 fi
 
 "$VENV_PYTHON" - <<'PYEOF'
-import sys
+import sys, select, time
 try:
     import evdev
 except ImportError:
     print("evdev not installed. Run install.sh first.")
     sys.exit(1)
 
-found = False
+found = None
 for path in evdev.list_devices():
     try:
         dev = evdev.InputDevice(path)
-        keys = set(dev.capabilities().get(evdev.ecodes.EV_KEY, []))
-        is_sayo = "sayodevice" in dev.name.lower()
-        has_space = evdev.ecodes.KEY_SPACE in keys
-        no_alpha = evdev.ecodes.KEY_A not in keys
-
-        if is_sayo and has_space and no_alpha:
-            print(f"  READY: {path}  =>  {dev.name}")
-            found = True
-        elif is_sayo:
-            print(f"  FOUND (not matched): {path}  =>  {dev.name}")
+        name = dev.name.lower()
+        if "sayodevice" in name and "keyboard" in name:
+            found = dev
+            print(f"  READY: {dev.path}  =>  {dev.name}")
+            break
     except Exception:
         pass
 
 if not found:
-    sayo = [p for p in evdev.list_devices()
-            if "sayodevice" in (evdev.InputDevice(p).name.lower() if True else "")]
-    print("  No ready SayoDevice keypad found.")
+    # Show any SayoDevice interfaces that were seen
+    for path in evdev.list_devices():
+        try:
+            dev = evdev.InputDevice(path)
+            if "sayodevice" in dev.name.lower():
+                print(f"  FOUND (no keyboard interface): {dev.path}  =>  {dev.name}")
+        except Exception:
+            pass
+    print("\n  No SayoDevice keyboard interface found.")
     print("  Make sure the keypad is plugged into the Pi.")
+    sys.exit(1)
+
+print("\n  Press each key now to verify mappings (listening 8 seconds)...")
+deadline = time.time() + 8
+while time.time() < deadline:
+    r, _, _ = select.select([found.fd], [], [], deadline - time.time())
+    if r:
+        for event in found.read():
+            if event.type == evdev.ecodes.EV_KEY and event.value == 1:
+                kname = evdev.ecodes.KEY.get(event.code, str(event.code))
+                print(f"    key pressed: {kname}")
 PYEOF

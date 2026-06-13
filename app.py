@@ -51,21 +51,18 @@ def add_entry(event_type):
 
 
 def find_keypad():
-    """Find the SayoDevice keypad by name + key capability.
+    """Find the SayoDevice keyboard interface by name.
 
-    Matches on 'sayodevice' in the device name, presence of KEY_SPACE
-    (one of the mapped keys), and absence of KEY_A (rules out any real
-    keyboard that might share the SayoDevice USB VID/PID).
+    Matches 'sayodevice' + 'keyboard' in the device name so we get the
+    keyboard HID interface (e.g. 'SayoDevice 1x4P Keyboard') and not the
+    mouse or raw interfaces. Avoids capability checks because SayoDevice
+    doesn't advertise its keys in the HID descriptor capabilities list.
     """
     for path in evdev.list_devices():
         try:
             dev = evdev.InputDevice(path)
-            keys = set(dev.capabilities().get(evdev.ecodes.EV_KEY, []))
-            if (
-                "sayodevice" in dev.name.lower()
-                and evdev.ecodes.KEY_SPACE in keys
-                and evdev.ecodes.KEY_A not in keys
-            ):
+            name = dev.name.lower()
+            if "sayodevice" in name and "keyboard" in name:
                 return dev
         except Exception:
             continue

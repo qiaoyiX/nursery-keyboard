@@ -24,12 +24,8 @@ except ImportError:
 for path in evdev.list_devices():
     try:
         dev = evdev.InputDevice(path)
-        keys = set(dev.capabilities().get(evdev.ecodes.EV_KEY, []))
-        if (
-            "sayodevice" in dev.name.lower()
-            and evdev.ecodes.KEY_SPACE in keys
-            and evdev.ecodes.KEY_A not in keys
-        ):
+        name = dev.name.lower()
+        if "sayodevice" in name and "keyboard" in name:
             print(path)
             sys.exit(0)
     except Exception:
