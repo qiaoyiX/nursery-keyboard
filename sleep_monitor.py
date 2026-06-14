@@ -42,7 +42,7 @@ from storage import (
 try:
     from huckleberry_sync import push_sleep
     HUCKLEBERRY_AVAILABLE = True
-except ImportError:
+except Exception:
     HUCKLEBERRY_AVAILABLE = False
 
 logging.basicConfig(

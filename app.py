@@ -17,9 +17,9 @@ from storage import (
 try:
     from huckleberry_sync import push_event, test_connection
     HUCKLEBERRY_AVAILABLE = True
-except ImportError:
+except Exception:
     HUCKLEBERRY_AVAILABLE = False
-    logging.warning("huckleberry_sync not available — Huckleberry sync disabled")
+    logging.warning("huckleberry_sync not available — Huckleberry sync disabled", exc_info=True)
 
 logging.basicConfig(
     level=logging.INFO,
