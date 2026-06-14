@@ -307,6 +307,9 @@ def get_data():
 
 @app.route("/huckleberry/test")
 def huckleberry_test():
+    if not os.environ.get("NURSERY_DEBUG"):
+        from flask import abort
+        abort(404)
     if not HUCKLEBERRY_AVAILABLE:
         return jsonify({"ok": False, "error": "huckleberry_sync module not available (import failed)"}), 503
     with settings_lock:
@@ -315,9 +318,10 @@ def huckleberry_test():
         return jsonify({"ok": False, "error": "credentials not set — add huckleberry_email and huckleberry_password to settings.json"}), 400
     try:
         result = test_connection()
-        return jsonify(result)
-    except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 500
+        return jsonify({"ok": True, "child_count": result["child_count"]})
+    except Exception:
+        logging.exception("Huckleberry connection test failed")
+        return jsonify({"ok": False, "error": "connection test failed — check server logs"}), 500
 
 
 @app.route("/sleep/calibrate", methods=["POST"])

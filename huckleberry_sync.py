@@ -84,7 +84,7 @@ async def _test_connection_async() -> dict:
         api = HuckleberryAPI(email=email, password=password, websession=session)
         await api.authenticate()
         user = await api.get_user()
-        return {"ok": True, "children": [c.name for c in user.childList]}
+        return {"ok": True, "child_count": len(user.childList)}
 
 
 # ── Public API (non-blocking) ─────────────────────────────────────────────────
