@@ -14,6 +14,7 @@ import asyncio
 import logging
 import threading
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import aiohttp
 from huckleberry_api import HuckleberryAPI
@@ -21,6 +22,16 @@ from huckleberry_api import HuckleberryAPI
 from storage import load_settings
 
 _DIAPER_MODE = {"Wet": "pee", "Dirty": "poo"}
+
+
+def _make_api(settings, session):
+    tz = ZoneInfo(settings.get("huckleberry_timezone", "America/New_York"))
+    return HuckleberryAPI(
+        email=settings["huckleberry_email"],
+        password=settings["huckleberry_password"],
+        websession=session,
+        timezone=tz,
+    )
 
 
 def _run_async(coro):
@@ -41,7 +52,7 @@ async def _push_event_async(event_type: str, timestamp: datetime) -> None:
         return
 
     async with aiohttp.ClientSession() as session:
-        api = HuckleberryAPI(email=email, password=password, websession=session)
+        api = _make_api(settings, session)
         await api.authenticate()
         user  = await api.get_user()
         child = user.childList[int(settings.get("huckleberry_child_index", 0))].cid
@@ -65,7 +76,7 @@ async def _push_sleep_async(start_time: datetime, end_time: datetime) -> None:
         return
 
     async with aiohttp.ClientSession() as session:
-        api = HuckleberryAPI(email=email, password=password, websession=session)
+        api = _make_api(settings, session)
         await api.authenticate()
         user  = await api.get_user()
         child = user.childList[int(settings.get("huckleberry_child_index", 0))].cid
@@ -81,7 +92,7 @@ async def _test_connection_async() -> dict:
     if not email or not password:
         raise ValueError("huckleberry_email / huckleberry_password not set in settings.json")
     async with aiohttp.ClientSession() as session:
-        api = HuckleberryAPI(email=email, password=password, websession=session)
+        api = _make_api(settings, session)
         await api.authenticate()
         user = await api.get_user()
         return {"ok": True, "child_count": len(user.childList)}

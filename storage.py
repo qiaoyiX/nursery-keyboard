@@ -30,6 +30,7 @@ DEFAULT_SETTINGS = {
     "huckleberry_email":        "",
     "huckleberry_password":     "",
     "huckleberry_child_index":  0,
+    "huckleberry_timezone":     "America/New_York",
     "sleep_presence_threshold": 0.08,  # min foreground blob as fraction of frame
 }
 
