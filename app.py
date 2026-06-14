@@ -307,9 +307,6 @@ def get_data():
 
 @app.route("/huckleberry/test")
 def huckleberry_test():
-    if not os.environ.get("NURSERY_DEBUG"):
-        from flask import abort
-        abort(404)
     if not HUCKLEBERRY_AVAILABLE:
         return jsonify({"ok": False, "error": "huckleberry_sync module not available (import failed)"}), 503
     with settings_lock:
