@@ -47,10 +47,10 @@ async def _push_event_async(event_type: str, timestamp: datetime) -> None:
         child = user.childList[int(settings.get("huckleberry_child_index", 0))].cid
 
         if event_type in _DIAPER_MODE:
-            await api.log_diaper(child, mode=_DIAPER_MODE[event_type])
+            await api.log_diaper(child, mode=_DIAPER_MODE[event_type], start_time=timestamp)
             logging.info("Huckleberry: logged diaper %s", event_type)
         elif event_type == "Feed":
-            await api.log_bottle(child, amount=0, bottle_type="Breastmilk", units="ml")
+            await api.log_bottle(child, start_time=timestamp, amount=0, bottle_type="Breastmilk", units="ml")
             logging.info("Huckleberry: logged feed")
         elif event_type == "Play":
             await api.log_activity(child, mode="tummyTime", start_time=timestamp)
