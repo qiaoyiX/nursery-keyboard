@@ -74,6 +74,19 @@ async def _push_sleep_async(start_time: datetime, end_time: datetime) -> None:
                      start_time.isoformat(), end_time.isoformat())
 
 
+async def _test_connection_async() -> dict:
+    settings = load_settings()
+    email    = settings.get("huckleberry_email", "")
+    password = settings.get("huckleberry_password", "")
+    if not email or not password:
+        raise ValueError("huckleberry_email / huckleberry_password not set in settings.json")
+    async with aiohttp.ClientSession() as session:
+        api = HuckleberryAPI(email=email, password=password, websession=session)
+        await api.authenticate()
+        user = await api.get_user()
+        return {"ok": True, "children": [c.name for c in user.childList]}
+
+
 # ── Public API (non-blocking) ─────────────────────────────────────────────────
 
 def push_event(event_type: str, timestamp: datetime) -> None:
@@ -84,3 +97,8 @@ def push_event(event_type: str, timestamp: datetime) -> None:
 def push_sleep(start_time: datetime, end_time: datetime) -> None:
     """Push a completed sleep session to Huckleberry in the background."""
     _run_async(_push_sleep_async(start_time, end_time))
+
+
+def test_connection() -> dict:
+    """Blocking connection test. Returns {"ok": True, "children": [...]} or raises."""
+    return asyncio.run(_test_connection_async())

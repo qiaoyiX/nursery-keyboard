@@ -15,7 +15,7 @@ from storage import (
 )
 
 try:
-    from huckleberry_sync import push_event
+    from huckleberry_sync import push_event, test_connection
     HUCKLEBERRY_AVAILABLE = True
 except ImportError:
     HUCKLEBERRY_AVAILABLE = False
@@ -303,6 +303,21 @@ def get_data():
             "sessions_today":      sleep_summary["sessions"],
         },
     })
+
+
+@app.route("/huckleberry/test")
+def huckleberry_test():
+    if not HUCKLEBERRY_AVAILABLE:
+        return jsonify({"ok": False, "error": "huckleberry_sync module not available (import failed)"}), 503
+    with settings_lock:
+        s = load_settings()
+    if not s.get("huckleberry_email") or not s.get("huckleberry_password"):
+        return jsonify({"ok": False, "error": "credentials not set — add huckleberry_email and huckleberry_password to settings.json"}), 400
+    try:
+        result = test_connection()
+        return jsonify(result)
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
 
 
 @app.route("/sleep/calibrate", methods=["POST"])
