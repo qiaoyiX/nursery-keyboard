@@ -14,7 +14,6 @@ import asyncio
 import logging
 import threading
 from datetime import datetime
-from zoneinfo import ZoneInfo
 
 import aiohttp
 from huckleberry_api import HuckleberryAPI
@@ -25,7 +24,7 @@ _DIAPER_MODE = {"Wet": "pee", "Dirty": "poo"}
 
 
 def _make_api(settings, session):
-    tz = ZoneInfo(settings.get("huckleberry_timezone", "America/New_York"))
+    tz = settings.get("huckleberry_timezone", "America/New_York")
     return HuckleberryAPI(
         email=settings["huckleberry_email"],
         password=settings["huckleberry_password"],
