@@ -2,22 +2,22 @@
 Sleep monitoring daemon — runs as a separate systemd service (nursery-sleep-monitor).
 
 Algorithm (two signals per frame):
-  1. Presence  — MOG2 background subtractor with state-dependent learning rate
-                 + morphological blob filtering (baby-sized blob in foreground = present)
+  1. Presence  — reference frame differencing: compare against stored empty-crib baseline.
+                 Immune to still-object absorption (the fundamental MOG2 flaw for still babies).
+                 Press "Crib is empty" dashboard button to save/update the reference.
   2. Motion    — Farneback optical flow mean magnitude
                  (actual motion vectors, not raw pixel differences)
 
 States: AWAY (not in crib) → AWAKE (in crib, moving) → ASLEEP (in crib, still)
 
-Why MOG2 with state-dependent learning rate:
-  ASLEEP → lr=0.0   frozen: sleeping baby never gets absorbed into background
-  AWAY   → lr=0.05  fast: empty-crib scene learned within ~20 frames
-  AWAKE  → lr=-1    auto: standard adaptation
+Calibration: press the "📷 Crib is empty" button with an empty crib visible to save a
+reference frame (stored as reference_frame.npy). Without a reference frame the daemon
+conservatively assumes the baby is present.
 
 Configuration (settings.json):
   camera_rtsp_url          — rtsp://user:pass@IP:554/stream2
   sleep_motion_threshold   — mean optical flow magnitude in px/frame (default 0.5)
-  sleep_presence_threshold — min foreground blob as fraction of frame (default 0.08)
+  sleep_presence_threshold — fraction of frame that must differ from reference (default 0.03)
   sleep_min_minutes        — stillness minutes before marking asleep (default 10)
   sleep_wake_seconds       — sustained motion seconds before marking awake (default 20)
 """
@@ -54,38 +54,49 @@ STATE_AWAY   = "away"
 STATE_AWAKE  = "awake"
 STATE_ASLEEP = "asleep"
 
-LIGHTING_CEILING = 0.80   # frame-diff fraction above which we assume IR toggle, not motion
-FRAME_INTERVAL   = 1.0    # seconds between sampled frames (~1 fps)
-WARMUP_FRAMES    = 30     # frames fed at lr=1.0 to init/re-init MOG2 (~30 s)
+LIGHTING_CEILING      = 0.80  # frame-diff fraction above which we assume IR toggle
+FRAME_INTERVAL        = 1.0   # seconds between sampled frames (~1 fps)
+REFERENCE_FRAME_FILE  = os.path.join(os.path.dirname(__file__), "reference_frame.npy")
+PRESENCE_MORPH_KERNEL = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
 
-MORPH_KERNEL = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+
+# ── Reference frame I/O ───────────────────────────────────────────────────────
+
+def save_reference_frame(gray_frame):
+    np.save(REFERENCE_FRAME_FILE, gray_frame)
 
 
-# ── MOG2 factory ──────────────────────────────────────────────────────────────
-
-def create_mog2():
-    return cv2.createBackgroundSubtractorMOG2(
-        history=500,        # frames used for background model
-        varThreshold=40,    # higher = less sensitive to small changes
-        detectShadows=False
-    )
+def load_reference_frame():
+    if os.path.exists(REFERENCE_FRAME_FILE):
+        try:
+            return np.load(REFERENCE_FRAME_FILE)
+        except Exception:
+            return None
+    return None
 
 
 # ── Per-frame signal functions ────────────────────────────────────────────────
 
 def frame_diff_fraction(frame_a, frame_b, pixel_thresh=25):
-    """Fraction of pixels that differ by more than pixel_thresh (for lighting guard only)."""
+    """Fraction of pixels differing by more than pixel_thresh (for IR-toggle guard only)."""
     diff = cv2.absdiff(frame_a, frame_b)
     _, thresh = cv2.threshold(diff, pixel_thresh, 1, cv2.THRESH_BINARY)
     return float(thresh.sum()) / float(thresh.size)
 
 
-def compute_presence(curr_gray, mog2, lr, min_blob_pixels):
-    """True if MOG2 foreground contains a blob at least min_blob_pixels in area."""
-    fg = mog2.apply(curr_gray, learningRate=lr)
-    fg = cv2.morphologyEx(fg, cv2.MORPH_CLOSE, MORPH_KERNEL)
-    contours, _ = cv2.findContours(fg, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    return any(cv2.contourArea(c) > min_blob_pixels for c in contours)
+def compute_presence(curr_gray, reference_gray, diff_threshold=20, min_fraction=0.03):
+    """
+    True if curr_gray differs from the empty-crib reference frame enough to indicate a baby.
+    Uses absdiff against a stored baseline — immune to still-object absorption.
+    If no reference exists, returns True (conservative: assume baby is present).
+    """
+    if reference_gray is None:
+        return True
+    diff = cv2.absdiff(curr_gray, reference_gray)
+    _, mask = cv2.threshold(diff, diff_threshold, 255, cv2.THRESH_BINARY)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, PRESENCE_MORPH_KERNEL)
+    changed_fraction = float(mask.sum() / 255) / float(mask.size)
+    return changed_fraction > min_fraction
 
 
 def compute_optical_flow(prev_gray, curr_gray):
@@ -116,17 +127,6 @@ def read_frame_gray(cap):
     return cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
 
 
-def warmup_mog2(cap, mog2, n_frames=WARMUP_FRAMES):
-    """Feed n_frames at learningRate=1.0 to quickly build background model."""
-    for i in range(n_frames):
-        f = read_frame_gray(cap)
-        if f is None:
-            return False
-        mog2.apply(f, learningRate=1.0)
-        time.sleep(FRAME_INTERVAL)
-    return True
-
-
 # ── State machine ─────────────────────────────────────────────────────────────
 
 def run_state_machine(rtsp_url, motion_threshold, presence_threshold,
@@ -138,24 +138,20 @@ def run_state_machine(rtsp_url, motion_threshold, presence_threshold,
 
     logging.info("RTSP stream opened: %s", rtsp_url)
 
-    # min foreground blob in pixels (presence_threshold is fraction of 320×240)
-    min_blob_pixels = int(presence_threshold * 320 * 240)
-
-    # ── MOG2 warmup ───────────────────────────────────────────────────────────
-    mog2 = create_mog2()
-    logging.info("Initializing background model (%d warmup frames, ~%ds)…",
-                 WARMUP_FRAMES, WARMUP_FRAMES)
-    if not warmup_mog2(cap, mog2):
-        cap.release()
-        return
-    logging.info("Background model ready — starting state machine")
+    # ── Load reference frame (instant — no warmup needed) ─────────────────────
+    reference_gray = load_reference_frame()
+    if reference_gray is None:
+        logging.warning("No reference frame on disk — press 'Crib is empty' to calibrate. "
+                        "Treating baby as present until calibrated.")
+    else:
+        logging.info("Reference frame loaded — ready")
 
     # ── Resume open session from DB (daemon restart) ──────────────────────────
     open_session = get_open_sleep_session()
     if open_session:
-        state = STATE_ASLEEP
+        state               = STATE_ASLEEP
         current_session_id  = open_session["id"]
-        t = open_session["start_time"]
+        t                   = open_session["start_time"]
         current_sleep_start = t if isinstance(t, datetime) else datetime.fromisoformat(str(t))
         logging.info("Resuming open sleep session id=%s started %s",
                      current_session_id, current_sleep_start)
@@ -164,10 +160,12 @@ def run_state_machine(rtsp_url, motion_threshold, presence_threshold,
         current_session_id  = None
         current_sleep_start = None
 
-    still_since  = None
-    motion_since = None
-    away_since   = datetime.now() if state == STATE_AWAY else None
-    prev_gray    = None
+    still_since     = None
+    motion_since    = None
+    away_since      = datetime.now() if state == STATE_AWAY else None
+    prev_gray       = read_frame_gray(cap)  # seed optical flow
+    presence_streak = 0   # consecutive frames with baby detected
+    absence_streak  = 0   # consecutive frames without baby
 
     try:
         while True:
@@ -182,45 +180,47 @@ def run_state_machine(rtsp_url, motion_threshold, presence_threshold,
             if os.path.exists(CALIBRATE_FLAG):
                 try:
                     os.remove(CALIBRATE_FLAG)
-                    logging.info("Calibration requested — re-initializing MOG2 (%d frames)…",
-                                 WARMUP_FRAMES)
-                    mog2 = create_mog2()
-                    warmup_mog2(cap, mog2)
-                    logging.info("MOG2 re-initialized via calibration")
+                    save_reference_frame(curr_gray)
+                    reference_gray  = curr_gray
+                    logging.info("Reference frame saved — empty crib baseline updated")
                     if state == STATE_ASLEEP and current_session_id:
                         end_sleep_session(current_session_id, datetime.now())
                         current_session_id  = None
                         current_sleep_start = None
-                    state        = STATE_AWAY
-                    still_since  = None
-                    motion_since = None
-                    away_since   = datetime.now()
-                    prev_gray    = None
-                    curr_gray    = read_frame_gray(cap)
-                    if curr_gray is None:
-                        break
+                    state           = STATE_AWAY
+                    still_since     = None
+                    motion_since    = None
+                    away_since      = datetime.now()
+                    presence_streak = 0
+                    absence_streak  = 0
+                    prev_gray       = curr_gray
                 except Exception as e:
                     logging.warning("Calibration error: %s", e)
 
             now = datetime.now()
 
-            # ── Lighting-change guard (skip IR toggle frames) ─────────────────
+            # ── Lighting-change guard (skip IR-toggle frames entirely) ─────────
             if prev_gray is not None:
                 if frame_diff_fraction(prev_gray, curr_gray) > LIGHTING_CEILING:
                     prev_gray = curr_gray
                     write_sleep_heartbeat(state)
                     time.sleep(max(0.0, FRAME_INTERVAL - (time.monotonic() - loop_start)))
-                    continue
+                    continue   # skip presence + optical flow on IR-toggle frames
 
-            # ── Presence detection (MOG2 + blob filter) ───────────────────────
-            if state == STATE_ASLEEP:
-                mog2_lr = 0.0    # frozen: sleeping baby never absorbed into background
-            elif state == STATE_AWAY:
-                mog2_lr = 0.05   # fast: learn current empty-crib scene quickly
+            # ── Presence detection (reference frame diff) ─────────────────────
+            raw_present = compute_presence(curr_gray, reference_gray,
+                                           min_fraction=presence_threshold)
+
+            if raw_present:
+                presence_streak += 1
+                absence_streak   = 0
             else:
-                mog2_lr = -1     # auto: standard MOG2 adaptation
+                absence_streak  += 1
+                presence_streak  = 0
 
-            baby_present = compute_presence(curr_gray, mog2, mog2_lr, min_blob_pixels)
+            # 2-frame hysteresis: avoids single-frame noise flips
+            baby_present = presence_streak >= 2
+            baby_absent  = absence_streak  >= 2
 
             # ── Motion detection (optical flow) ───────────────────────────────
             if prev_gray is not None:
@@ -229,11 +229,10 @@ def run_state_machine(rtsp_url, motion_threshold, presence_threshold,
             else:
                 flow_mag  = 0.0
                 is_motion = False
-                prev_gray = curr_gray
 
             # ── State transitions ─────────────────────────────────────────────
 
-            if not baby_present:
+            if baby_absent:
                 if state == STATE_ASLEEP and current_session_id is not None:
                     end_sleep_session(current_session_id, now)
                     if HUCKLEBERRY_AVAILABLE and current_sleep_start:
@@ -251,7 +250,7 @@ def run_state_machine(rtsp_url, motion_threshold, presence_threshold,
                 if away_since is None:
                     away_since = now
 
-            else:
+            elif baby_present:
                 away_since = None
 
                 if state == STATE_AWAY:
@@ -319,7 +318,7 @@ def main():
             continue
 
         motion_threshold   = float(settings.get("sleep_motion_threshold",   0.5))
-        presence_threshold = float(settings.get("sleep_presence_threshold", 0.08))
+        presence_threshold = float(settings.get("sleep_presence_threshold", 0.03))
         sleep_min_seconds  = int(settings.get("sleep_min_minutes",          10)) * 60
         wake_seconds       = int(settings.get("sleep_wake_seconds",         20))
 

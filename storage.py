@@ -31,7 +31,7 @@ DEFAULT_SETTINGS = {
     "huckleberry_password":     "",
     "huckleberry_child_index":  0,
     "huckleberry_timezone":     "America/New_York",
-    "sleep_presence_threshold": 0.08,  # min foreground blob as fraction of frame
+    "sleep_presence_threshold": 0.03,  # fraction of 320×240 that must differ from empty-crib reference
 }
 
 log_lock      = threading.Lock()

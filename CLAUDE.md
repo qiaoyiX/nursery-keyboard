@@ -48,9 +48,10 @@ Three files form the core:
 
 **`sleep_monitor.py`** — Standalone sleep detection daemon (second systemd service).
 - Reads RTSP stream from TAPO C110 at ~1fps using OpenCV.
-- Two-signal detection per frame: **MOG2** for presence (AWAY vs PRESENT) and **Farneback optical flow** for motion (AWAKE vs ASLEEP).
-- MOG2 uses a state-dependent learning rate: lr=0 when ASLEEP (frozen — sleeping baby never absorbed into background), lr=0.05 when AWAY (fast re-learn of empty crib), lr=-1 when AWAKE (auto).
-- 30-frame warmup at startup (lr=1.0) builds the background model before entering the state machine.
+- Two-signal detection per frame: **reference frame diff** for presence (AWAY vs PRESENT) and **Farneback optical flow** for motion (AWAKE vs ASLEEP).
+- Presence: `cv2.absdiff(current, reference_frame)` — compares against a stored empty-crib baseline (`reference_frame.npy`). Immune to still-object absorption (the MOG2 flaw where a still baby gets baked into the background model).
+- Calibration: "📷 Crib is empty" button saves the current frame as the reference. No 30-second warmup; startup is instant.
+- 2-frame hysteresis on presence transitions prevents single-frame noise from flipping AWAY state.
 - Writes sleep sessions via `storage.py`; writes heartbeat file so Flask can detect if daemon is offline.
 
 **`templates/index.html`** — Single-page dashboard. Pure HTML/CSS/JS, no build step.
@@ -107,11 +108,11 @@ sudo journalctl -u nursery-sleep-monitor -f
 |-----|---------|-------------|
 | `camera_rtsp_url` | `""` | `rtsp://user:pass@IP:554/stream2` — TAPO camera account credentials |
 | `sleep_motion_threshold` | `0.5` | Mean optical flow magnitude (px/frame) above which baby is "moving" |
-| `sleep_presence_threshold` | `0.08` | Min foreground blob as fraction of 320×240 frame (baby-sized blob = present) |
+| `sleep_presence_threshold` | `0.03` | Fraction of 320×240 frame that must differ from the empty-crib reference to count as "present" |
 | `sleep_min_minutes` | `10` | Stillness minutes before marking asleep |
 | `sleep_wake_seconds` | `20` | Sustained motion seconds before marking awake |
 
-**How it works:** Startup takes ~30s to build MOG2 background model (crib should be empty). Then: AWAY → (baby detected) → AWAKE → (still ≥ `sleep_min_minutes`) → ASLEEP → (motion ≥ `sleep_wake_seconds`) → AWAKE. Start/end times are backdated to when each streak began. Lighting-change guard: frame diff > 80% (IR night-vision flip) skips the frame. Heartbeat written every frame; Flask shows "Camera offline" if stale > 60s. "📷 Crib is empty" button on dashboard triggers a MOG2 re-initialization.
+**How it works:** Startup is instant — loads `reference_frame.npy` (saved empty-crib baseline) from disk. Then: AWAY → (baby detected for 2 consecutive frames) → AWAKE → (still ≥ `sleep_min_minutes`) → ASLEEP → (motion ≥ `sleep_wake_seconds`) → AWAKE. Start/end times are backdated to when each streak began. Lighting-change guard: frame diff > 80% (IR night-vision flip) skips the frame entirely. Heartbeat written every frame; Flask shows "Camera offline" if stale > 60s. "📷 Crib is empty" button saves the current frame as the new reference baseline (crib must be empty when pressed).
 
 ## API routes
 
@@ -124,7 +125,7 @@ sudo journalctl -u nursery-sleep-monitor -f
 | DELETE | `/log/entry` | Remove one entry `{"id": <int>}` |
 | GET | `/settings` | Get `feed_interval_minutes` |
 | POST | `/settings` | Set `feed_interval_minutes` (multiple of 15, 15–720) |
-| POST | `/sleep/calibrate` | Signal daemon to re-init MOG2 background (crib must be empty) |
+| POST | `/sleep/calibrate` | Save current frame as empty-crib reference baseline (crib must be empty) |
 | GET | `/devices` | Debug: list input devices (only with `NURSERY_DEBUG=1`) |
 
 ## Debugging the keypad
