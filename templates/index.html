@@ -189,10 +189,9 @@
       color: var(--brown-muted);
       padding: 4px 14px;
       cursor: pointer;
-      display: none;
+      display: inline-block;
     }
     .btn-calibrate:hover { border-color: var(--sleep); color: var(--sleep); }
-    .btn-calibrate.visible { display: inline-block; }
     .sleep-summary-text {
       font-size: 0.78rem;
       color: var(--brown-muted);
@@ -711,13 +710,11 @@
     }
 
     function updateSleepCard(sleep) {
-      const stateEl     = document.getElementById("sleepStateText");
-      const summaryEl   = document.getElementById("sleepSummaryText");
-      const calibrateEl = document.getElementById("btnCalibrate");
+      const stateEl   = document.getElementById("sleepStateText");
+      const summaryEl = document.getElementById("sleepSummaryText");
       const { status, current_start_iso, total_sleep_minutes, nap_count } = sleep;
 
       stateEl.className = "sleep-state-text";
-      calibrateEl.classList.remove("visible");
 
       if (status === "asleep" && current_start_iso) {
         const startClock = new Date(current_start_iso).toLocaleTimeString("en-US",
@@ -736,7 +733,6 @@
       } else if (status === "away") {
         stateEl.textContent = "👼 Not in crib";
         stateEl.classList.add("is-away");
-        calibrateEl.classList.add("visible");
       } else {
         stateEl.textContent = "⋯ Camera offline";
         stateEl.classList.add("is-unknown");
@@ -752,7 +748,7 @@
 
     async function calibrateSleep() {
       await fetch("/sleep/calibrate", { method: "POST" });
-      showToast("Background saved — crib calibrated as empty");
+      showToast("Reference frame saved — crib baseline updated");
     }
 
     function updateSleepTimeline(sessions) {

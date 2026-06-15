@@ -2,17 +2,18 @@
 Sleep monitoring daemon — runs as a separate systemd service (nursery-sleep-monitor).
 
 Algorithm (two signals per frame):
-  1. Presence  — reference frame differencing: compare against stored empty-crib baseline.
-                 Immune to still-object absorption (the fundamental MOG2 flaw for still babies).
-                 Press "Crib is empty" dashboard button to save/update the reference.
+  1. Presence  — reference frame differencing: compare against a stored empty-crib baseline.
+                 Reference is bootstrapped automatically from the first few frames on startup
+                 and self-corrects during trusted-empty periods (state=AWAY, no motion,
+                 current frame already close to reference). Never updates while baby is present.
   2. Motion    — Farneback optical flow mean magnitude
                  (actual motion vectors, not raw pixel differences)
 
 States: AWAY (not in crib) → AWAKE (in crib, moving) → ASLEEP (in crib, still)
 
-Calibration: press the "📷 Crib is empty" button with an empty crib visible to save a
-reference frame (stored as reference_frame.npy). Without a reference frame the daemon
-conservatively assumes the baby is present.
+Calibration: the "📷 Crib is empty" button on the dashboard saves the current frame as
+a new reference baseline. Press it with the crib visibly empty to override the auto-
+calibration (e.g. after adding/removing a sheet).
 
 Configuration (settings.json):
   camera_rtsp_url          — rtsp://user:pass@IP:554/stream2
@@ -54,10 +55,13 @@ STATE_AWAY   = "away"
 STATE_AWAKE  = "awake"
 STATE_ASLEEP = "asleep"
 
-LIGHTING_CEILING      = 0.80  # frame-diff fraction above which we assume IR toggle
-FRAME_INTERVAL        = 1.0   # seconds between sampled frames (~1 fps)
+LIGHTING_CEILING      = 0.80   # frame-diff fraction above which we assume IR toggle
+FRAME_INTERVAL        = 1.0    # seconds between sampled frames (~1 fps)
 REFERENCE_FRAME_FILE  = os.path.join(os.path.dirname(__file__), "reference_frame.npy")
 PRESENCE_MORPH_KERNEL = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
+REFERENCE_UPDATE_LR   = 0.02   # how quickly reference drifts toward current (lighting changes)
+NOISE_FLOOR_FLOW      = 0.15   # flow below this = scene genuinely still (well under motion_threshold=0.5)
+BOOTSTRAP_FRAMES      = 5      # frames averaged on startup to build initial reference (~5s)
 
 
 # ── Reference frame I/O ───────────────────────────────────────────────────────
@@ -75,6 +79,42 @@ def load_reference_frame():
     return None
 
 
+def bootstrap_reference(cap):
+    """Median of the first BOOTSTRAP_FRAMES frames — quick startup reference (~5s)."""
+    frames = []
+    for _ in range(BOOTSTRAP_FRAMES):
+        g = read_frame_gray(cap)
+        if g is not None:
+            frames.append(g.astype(np.float32))
+        time.sleep(FRAME_INTERVAL)
+    if not frames:
+        return None
+    ref = np.median(np.stack(frames), axis=0).astype(np.uint8)
+    save_reference_frame(ref)
+    return ref
+
+
+def maybe_update_reference(reference_gray, curr_gray, state, flow_mag, presence_threshold):
+    """
+    Triple-gated slow drift: refine the reference only during trusted-empty periods.
+    Gate 1: must be in AWAY state (never absorb a present baby).
+    Gate 2: scene must be genuinely still (flow at noise floor, not movement).
+    Gate 3: current must already closely match reference (prevents inversion entrenchment).
+    Without all three gates, a bootstrapped reference that included the baby would
+    self-reinforce rather than self-correct.
+    """
+    if state != STATE_AWAY:
+        return reference_gray
+    if flow_mag >= NOISE_FLOOR_FLOW:
+        return reference_gray
+    diff = cv2.absdiff(curr_gray, reference_gray)
+    _, mask = cv2.threshold(diff, 20, 255, cv2.THRESH_BINARY)
+    if float(mask.sum() / 255) / mask.size > presence_threshold:
+        return reference_gray
+    return cv2.addWeighted(reference_gray, 1.0 - REFERENCE_UPDATE_LR,
+                           curr_gray,       REFERENCE_UPDATE_LR, 0)
+
+
 # ── Per-frame signal functions ────────────────────────────────────────────────
 
 def frame_diff_fraction(frame_a, frame_b, pixel_thresh=25):
@@ -87,11 +127,10 @@ def frame_diff_fraction(frame_a, frame_b, pixel_thresh=25):
 def compute_presence(curr_gray, reference_gray, diff_threshold=20, min_fraction=0.03):
     """
     True if curr_gray differs from the empty-crib reference frame enough to indicate a baby.
-    Uses absdiff against a stored baseline — immune to still-object absorption.
-    If no reference exists, returns True (conservative: assume baby is present).
+    Returns False (AWAY) when no reference exists — caller will bootstrap one.
     """
     if reference_gray is None:
-        return True
+        return False   # no reference yet → provisionally AWAY (bootstrap running)
     diff = cv2.absdiff(curr_gray, reference_gray)
     _, mask = cv2.threshold(diff, diff_threshold, 255, cv2.THRESH_BINARY)
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, PRESENCE_MORPH_KERNEL)
@@ -138,13 +177,19 @@ def run_state_machine(rtsp_url, motion_threshold, presence_threshold,
 
     logging.info("RTSP stream opened: %s", rtsp_url)
 
-    # ── Load reference frame (instant — no warmup needed) ─────────────────────
+    # ── Load or bootstrap reference frame ─────────────────────────────────────
     reference_gray = load_reference_frame()
     if reference_gray is None:
-        logging.warning("No reference frame on disk — press 'Crib is empty' to calibrate. "
-                        "Treating baby as present until calibrated.")
+        logging.info("No saved reference — building provisional reference from %d frames (~%ds)…",
+                     BOOTSTRAP_FRAMES, BOOTSTRAP_FRAMES)
+        reference_gray = bootstrap_reference(cap)
+        if reference_gray is not None:
+            logging.info("Provisional reference built. Self-corrects during empty-crib periods; "
+                         "press 'Crib is empty' to override.")
+        else:
+            logging.warning("Could not bootstrap reference — camera may not be ready")
     else:
-        logging.info("Reference frame loaded — ready")
+        logging.info("Reference frame loaded from disk")
 
     # ── Resume open session from DB (daemon restart) ──────────────────────────
     open_session = get_open_sleep_session()
@@ -166,6 +211,7 @@ def run_state_machine(rtsp_url, motion_threshold, presence_threshold,
     prev_gray       = read_frame_gray(cap)  # seed optical flow
     presence_streak = 0   # consecutive frames with baby detected
     absence_streak  = 0   # consecutive frames without baby
+    flow_mag        = 0.0
 
     try:
         while True:
@@ -182,7 +228,7 @@ def run_state_machine(rtsp_url, motion_threshold, presence_threshold,
                     os.remove(CALIBRATE_FLAG)
                     save_reference_frame(curr_gray)
                     reference_gray  = curr_gray
-                    logging.info("Reference frame saved — empty crib baseline updated")
+                    logging.info("Reference frame saved manually — empty crib baseline updated")
                     if state == STATE_ASLEEP and current_session_id:
                         end_sleep_session(current_session_id, datetime.now())
                         current_session_id  = None
@@ -229,6 +275,11 @@ def run_state_machine(rtsp_url, motion_threshold, presence_threshold,
             else:
                 flow_mag  = 0.0
                 is_motion = False
+
+            # ── Reference self-correction (lighting drift) ────────────────────
+            reference_gray = maybe_update_reference(
+                reference_gray, curr_gray, state, flow_mag, presence_threshold
+            )
 
             # ── State transitions ─────────────────────────────────────────────
 
