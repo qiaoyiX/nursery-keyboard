@@ -1,24 +1,29 @@
 """
 Sleep monitoring daemon — runs as a separate systemd service (nursery-sleep-monitor).
 
-Algorithm (two signals per frame):
-  1. Presence  — reference frame differencing: compare against a stored empty-crib baseline.
-                 Reference is bootstrapped automatically from the first few frames on startup
-                 and self-corrects during trusted-empty periods (state=AWAY, no motion,
-                 current frame already close to reference). Never updates while baby is present.
-  2. Motion    — Farneback optical flow mean magnitude
-                 (actual motion vectors, not raw pixel differences)
+Algorithm — one robust primitive for both signals:
+  active_fraction(a, b) = fraction of pixels that meaningfully changed between two frames,
+  after per-pixel thresholding and MORPH_OPEN speck removal. Bounded [0,1], interpretable,
+  cheap, and robust to H.264 compression / IR-grain noise (which defeats mean optical flow).
+
+  1. Presence — active_fraction(current, reference_empty_crib): high = baby present.
+  2. Motion   — active_fraction(current, previous_frame): high = baby moving.
 
 States: AWAY (not in crib) → AWAKE (in crib, moving) → ASLEEP (in crib, still)
 
-Calibration: the "📷 Crib is empty" button on the dashboard saves the current frame as
-a new reference baseline. Press it with the crib visibly empty to override the auto-
-calibration (e.g. after adding/removing a sheet).
+Every frame logs both metrics + thresholds at INFO so you can tune from real numbers:
+  sudo journalctl -u nursery-sleep-monitor -f
+Watch with the crib empty vs baby-in-crib, then set the thresholds in settings.json to
+sit between the observed values. No code change needed to tune.
+
+Calibration: the "📷 Crib is empty" button saves the current frame as the empty-crib
+reference. (The button is served by the nursery-tracker Flask service — restart that
+service after deploying template changes, not just this daemon.)
 
 Configuration (settings.json):
   camera_rtsp_url          — rtsp://user:pass@IP:554/stream2
-  sleep_motion_threshold   — mean optical flow magnitude in px/frame (default 0.5)
-  sleep_presence_threshold — fraction of frame that must differ from reference (default 0.03)
+  sleep_presence_threshold — fraction of frame differing from reference to count as present (default 0.02)
+  sleep_motion_fraction    — fraction of pixels changed vs previous frame to count as moving (default 0.01)
   sleep_min_minutes        — stillness minutes before marking asleep (default 10)
   sleep_wake_seconds       — sustained motion seconds before marking awake (default 20)
 """
@@ -55,13 +60,28 @@ STATE_AWAY   = "away"
 STATE_AWAKE  = "awake"
 STATE_ASLEEP = "asleep"
 
-LIGHTING_CEILING      = 0.80   # frame-diff fraction above which we assume IR toggle
-FRAME_INTERVAL        = 1.0    # seconds between sampled frames (~1 fps)
-REFERENCE_FRAME_FILE  = os.path.join(os.path.dirname(__file__), "reference_frame.npy")
-PRESENCE_MORPH_KERNEL = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
-REFERENCE_UPDATE_LR   = 0.02   # how quickly reference drifts toward current (lighting changes)
-NOISE_FLOOR_FLOW      = 0.15   # flow below this = scene genuinely still (well under motion_threshold=0.5)
-BOOTSTRAP_FRAMES      = 5      # frames averaged on startup to build initial reference (~5s)
+LIGHTING_CEILING     = 0.80   # frame-diff fraction above which we assume IR toggle, skip frame
+FRAME_INTERVAL       = 1.0    # seconds between sampled frames (~1 fps)
+PIXEL_THRESH         = 20     # per-pixel gray-level delta to count as "changed"
+REFERENCE_FRAME_FILE = os.path.join(os.path.dirname(__file__), "reference_frame.npy")
+DENOISE_KERNEL       = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+REFERENCE_UPDATE_LR  = 0.02   # slow drift of reference toward current (tracks lighting changes)
+NOISE_FLOOR_FRACTION = 0.005  # motion below this = scene genuinely still (for reference refine gate)
+BOOTSTRAP_FRAMES     = 5      # frames median-averaged on startup to build initial reference (~5s)
+
+
+# ── Core primitive ────────────────────────────────────────────────────────────
+
+def active_fraction(gray_a, gray_b, pixel_thresh=PIXEL_THRESH):
+    """
+    Fraction of pixels that meaningfully changed between two frames.
+    absdiff → per-pixel threshold → MORPH_OPEN (erode→dilate removes isolated noise specks)
+    → count. Robust to compression / IR-grain noise; bounded [0, 1].
+    """
+    diff = cv2.absdiff(gray_a, gray_b)
+    _, mask = cv2.threshold(diff, pixel_thresh, 255, cv2.THRESH_BINARY)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, DENOISE_KERNEL)
+    return float(mask.sum() / 255) / float(mask.size)
 
 
 # ── Reference frame I/O ───────────────────────────────────────────────────────
@@ -94,59 +114,32 @@ def bootstrap_reference(cap):
     return ref
 
 
-def maybe_update_reference(reference_gray, curr_gray, state, flow_mag, presence_threshold):
+def maybe_update_reference(reference_gray, curr_gray, state, motion_frac, presence_threshold):
     """
-    Triple-gated slow drift: refine the reference only during trusted-empty periods.
-    Gate 1: must be in AWAY state (never absorb a present baby).
-    Gate 2: scene must be genuinely still (flow at noise floor, not movement).
-    Gate 3: current must already closely match reference (prevents inversion entrenchment).
-    Without all three gates, a bootstrapped reference that included the baby would
-    self-reinforce rather than self-correct.
+    Triple-gated slow drift: refine the reference only during trusted-empty periods so it
+    tracks lighting changes without ever absorbing a present baby.
+      Gate 1: state == AWAY (never absorb a present baby)
+      Gate 2: scene genuinely still (motion at noise floor)
+      Gate 3: current already closely matches reference (prevents inversion entrenchment)
     """
     if state != STATE_AWAY:
         return reference_gray
-    if flow_mag >= NOISE_FLOOR_FLOW:
+    if motion_frac >= NOISE_FLOOR_FRACTION:
         return reference_gray
-    diff = cv2.absdiff(curr_gray, reference_gray)
-    _, mask = cv2.threshold(diff, 20, 255, cv2.THRESH_BINARY)
-    if float(mask.sum() / 255) / mask.size > presence_threshold:
+    if active_fraction(curr_gray, reference_gray) > presence_threshold:
         return reference_gray
     return cv2.addWeighted(reference_gray, 1.0 - REFERENCE_UPDATE_LR,
                            curr_gray,       REFERENCE_UPDATE_LR, 0)
 
 
-# ── Per-frame signal functions ────────────────────────────────────────────────
+# ── Per-frame signals ─────────────────────────────────────────────────────────
 
-def frame_diff_fraction(frame_a, frame_b, pixel_thresh=25):
-    """Fraction of pixels differing by more than pixel_thresh (for IR-toggle guard only)."""
-    diff = cv2.absdiff(frame_a, frame_b)
-    _, thresh = cv2.threshold(diff, pixel_thresh, 1, cv2.THRESH_BINARY)
-    return float(thresh.sum()) / float(thresh.size)
-
-
-def compute_presence(curr_gray, reference_gray, diff_threshold=20, min_fraction=0.03):
-    """
-    True if curr_gray differs from the empty-crib reference frame enough to indicate a baby.
-    Returns False (AWAY) when no reference exists — caller will bootstrap one.
-    """
+def compute_presence(curr_gray, reference_gray, min_fraction):
+    """Active fraction vs empty-crib reference > min_fraction. No reference → AWAY."""
     if reference_gray is None:
-        return False   # no reference yet → provisionally AWAY (bootstrap running)
-    diff = cv2.absdiff(curr_gray, reference_gray)
-    _, mask = cv2.threshold(diff, diff_threshold, 255, cv2.THRESH_BINARY)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, PRESENCE_MORPH_KERNEL)
-    changed_fraction = float(mask.sum() / 255) / float(mask.size)
-    return changed_fraction > min_fraction
-
-
-def compute_optical_flow(prev_gray, curr_gray):
-    """Mean optical flow magnitude (pixels/frame). 0 = no motion."""
-    flow = cv2.calcOpticalFlowFarneback(
-        prev_gray, curr_gray, None,
-        pyr_scale=0.5, levels=3, winsize=15,
-        iterations=3, poly_n=5, poly_sigma=1.2, flags=0
-    )
-    mag, _ = cv2.cartToPolar(flow[..., 0], flow[..., 1])
-    return float(mag.mean())
+        return 0.0, False
+    frac = active_fraction(curr_gray, reference_gray)
+    return frac, frac > min_fraction
 
 
 # ── RTSP capture ──────────────────────────────────────────────────────────────
@@ -168,7 +161,7 @@ def read_frame_gray(cap):
 
 # ── State machine ─────────────────────────────────────────────────────────────
 
-def run_state_machine(rtsp_url, motion_threshold, presence_threshold,
+def run_state_machine(rtsp_url, presence_threshold, motion_fraction,
                       sleep_min_seconds, wake_seconds):
     cap = open_capture(rtsp_url)
     if cap is None:
@@ -208,10 +201,9 @@ def run_state_machine(rtsp_url, motion_threshold, presence_threshold,
     still_since     = None
     motion_since    = None
     away_since      = datetime.now() if state == STATE_AWAY else None
-    prev_gray       = read_frame_gray(cap)  # seed optical flow
+    prev_gray       = read_frame_gray(cap)  # seed motion diff
     presence_streak = 0   # consecutive frames with baby detected
     absence_streak  = 0   # consecutive frames without baby
-    flow_mag        = 0.0
 
     try:
         while True:
@@ -247,15 +239,20 @@ def run_state_machine(rtsp_url, motion_threshold, presence_threshold,
 
             # ── Lighting-change guard (skip IR-toggle frames entirely) ─────────
             if prev_gray is not None:
-                if frame_diff_fraction(prev_gray, curr_gray) > LIGHTING_CEILING:
+                if active_fraction(prev_gray, curr_gray, pixel_thresh=25) > LIGHTING_CEILING:
                     prev_gray = curr_gray
                     write_sleep_heartbeat(state)
                     time.sleep(max(0.0, FRAME_INTERVAL - (time.monotonic() - loop_start)))
-                    continue   # skip presence + optical flow on IR-toggle frames
+                    continue
 
-            # ── Presence detection (reference frame diff) ─────────────────────
-            raw_present = compute_presence(curr_gray, reference_gray,
-                                           min_fraction=presence_threshold)
+            # ── Presence + motion (same robust primitive) ─────────────────────
+            presence_frac, raw_present = compute_presence(curr_gray, reference_gray, presence_threshold)
+            motion_frac = active_fraction(prev_gray, curr_gray) if prev_gray is not None else 0.0
+            is_motion   = motion_frac > motion_fraction
+
+            # Per-frame visibility for data-driven tuning
+            logging.info("state=%s presence=%.4f (thr %.3f) motion=%.4f (thr %.3f)",
+                         state, presence_frac, presence_threshold, motion_frac, motion_fraction)
 
             if raw_present:
                 presence_streak += 1
@@ -268,17 +265,9 @@ def run_state_machine(rtsp_url, motion_threshold, presence_threshold,
             baby_present = presence_streak >= 2
             baby_absent  = absence_streak  >= 2
 
-            # ── Motion detection (optical flow) ───────────────────────────────
-            if prev_gray is not None:
-                flow_mag  = compute_optical_flow(prev_gray, curr_gray)
-                is_motion = flow_mag > motion_threshold
-            else:
-                flow_mag  = 0.0
-                is_motion = False
-
-            # ── Reference self-correction (lighting drift) ────────────────────
+            # ── Reference self-correction (lighting drift, empty crib only) ───
             reference_gray = maybe_update_reference(
-                reference_gray, curr_gray, state, flow_mag, presence_threshold
+                reference_gray, curr_gray, state, motion_frac, presence_threshold
             )
 
             # ── State transitions ─────────────────────────────────────────────
@@ -368,13 +357,13 @@ def main():
             time.sleep(30)
             continue
 
-        motion_threshold   = float(settings.get("sleep_motion_threshold",   0.5))
-        presence_threshold = float(settings.get("sleep_presence_threshold", 0.03))
+        presence_threshold = float(settings.get("sleep_presence_threshold", 0.02))
+        motion_fraction    = float(settings.get("sleep_motion_fraction",    0.01))
         sleep_min_seconds  = int(settings.get("sleep_min_minutes",          10)) * 60
         wake_seconds       = int(settings.get("sleep_wake_seconds",         20))
 
         try:
-            run_state_machine(rtsp_url, motion_threshold, presence_threshold,
+            run_state_machine(rtsp_url, presence_threshold, motion_fraction,
                               sleep_min_seconds, wake_seconds)
         except Exception as exc:
             logging.error("Unexpected error: %s", exc, exc_info=True)

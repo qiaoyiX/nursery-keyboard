@@ -48,9 +48,11 @@ Three files form the core:
 
 **`sleep_monitor.py`** — Standalone sleep detection daemon (second systemd service).
 - Reads RTSP stream from TAPO C110 at ~1fps using OpenCV.
-- Two-signal detection per frame: **reference frame diff** for presence (AWAY vs PRESENT) and **Farneback optical flow** for motion (AWAKE vs ASLEEP).
-- Presence: `cv2.absdiff(current, reference_frame)` — compares against a stored empty-crib baseline (`reference_frame.npy`). Immune to still-object absorption (the MOG2 flaw where a still baby gets baked into the background model).
-- Calibration: "📷 Crib is empty" button saves the current frame as the reference. No 30-second warmup; startup is instant.
+- One robust primitive for both signals: `active_fraction(a, b)` = `absdiff → per-pixel threshold → MORPH_OPEN denoise → fraction of changed pixels`. Bounded [0,1], robust to H.264/IR-grain noise (which defeats mean optical flow). `MORPH_OPEN` (not CLOSE) is essential — it removes isolated noise specks rather than bridging them into false blobs.
+- **Presence** (AWAY vs PRESENT) = `active_fraction(current, reference_frame)` against a stored empty-crib baseline (`reference_frame.npy`). Immune to MOG2-style still-object absorption.
+- **Motion** (AWAKE vs ASLEEP) = `active_fraction(current, previous_frame)`.
+- Every frame logs `state / presence / motion` + thresholds at INFO — tune `sleep_presence_threshold` & `sleep_motion_fraction` in `settings.json` from the real numbers (`journalctl -u nursery-sleep-monitor -f`), no code change needed.
+- Reference auto-bootstraps from the median of the first 5 frames; `maybe_update_reference` slowly drifts it (lr=0.02) for lighting changes, triple-gated so it only refines during confirmed-empty periods. "📷 Crib is empty" button saves an authoritative reference (served by `nursery-tracker` — restart that service after template changes).
 - 2-frame hysteresis on presence transitions prevents single-frame noise from flipping AWAY state.
 - Writes sleep sessions via `storage.py`; writes heartbeat file so Flask can detect if daemon is offline.
 
@@ -107,12 +109,14 @@ sudo journalctl -u nursery-sleep-monitor -f
 | Key | Default | Description |
 |-----|---------|-------------|
 | `camera_rtsp_url` | `""` | `rtsp://user:pass@IP:554/stream2` — TAPO camera account credentials |
-| `sleep_motion_threshold` | `0.5` | Mean optical flow magnitude (px/frame) above which baby is "moving" |
-| `sleep_presence_threshold` | `0.03` | Fraction of 320×240 frame that must differ from the empty-crib reference to count as "present" |
+| `sleep_motion_fraction` | `0.01` | Fraction of pixels changed vs the previous frame above which baby is "moving" |
+| `sleep_presence_threshold` | `0.02` | Fraction of 320×240 frame that must differ from the empty-crib reference to count as "present" |
 | `sleep_min_minutes` | `10` | Stillness minutes before marking asleep |
 | `sleep_wake_seconds` | `20` | Sustained motion seconds before marking awake |
 
-**How it works:** Startup is instant — loads `reference_frame.npy` (saved empty-crib baseline) from disk. Then: AWAY → (baby detected for 2 consecutive frames) → AWAKE → (still ≥ `sleep_min_minutes`) → ASLEEP → (motion ≥ `sleep_wake_seconds`) → AWAKE. Start/end times are backdated to when each streak began. Lighting-change guard: frame diff > 80% (IR night-vision flip) skips the frame entirely. Heartbeat written every frame; Flask shows "Camera offline" if stale > 60s. "📷 Crib is empty" button saves the current frame as the new reference baseline (crib must be empty when pressed).
+**How it works:** Startup loads `reference_frame.npy` (saved empty-crib baseline) or bootstraps one from the first 5 frames. Then: AWAY → (baby detected for 2 consecutive frames) → AWAKE → (still ≥ `sleep_min_minutes`) → ASLEEP → (motion ≥ `sleep_wake_seconds`) → AWAKE. Start/end times are backdated to when each streak began. Lighting-change guard: frame diff > 80% (IR night-vision flip) skips the frame entirely. Heartbeat written every frame; Flask shows "Camera offline" if stale > 60s. "📷 Crib is empty" button saves the current frame as the new reference baseline (crib must be empty when pressed).
+
+**Tuning:** Every frame logs `presence` and `motion` fractions with their thresholds. Watch `journalctl -u nursery-sleep-monitor -f` with the crib empty vs. baby-in-crib (still and moving), then set `sleep_presence_threshold` / `sleep_motion_fraction` in `settings.json` to sit between the observed values. The monitor re-reads settings on reconnect (or restart the service).
 
 ## API routes
 

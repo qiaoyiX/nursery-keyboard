@@ -24,14 +24,14 @@ CALIBRATE_FLAG   = os.path.join(os.path.dirname(__file__), "calibrate.flag")
 DEFAULT_SETTINGS = {
     "feed_interval_minutes":    180,
     "camera_rtsp_url":          "",
-    "sleep_motion_threshold":   0.5,   # mean optical flow magnitude (px/frame)
+    "sleep_motion_fraction":    0.01,  # fraction of pixels changed vs previous frame = "moving"
     "sleep_min_minutes":        10,
     "sleep_wake_seconds":       20,
     "huckleberry_email":        "",
     "huckleberry_password":     "",
     "huckleberry_child_index":  0,
     "huckleberry_timezone":     "America/New_York",
-    "sleep_presence_threshold": 0.03,  # fraction of 320×240 that must differ from empty-crib reference
+    "sleep_presence_threshold": 0.02,  # fraction of 320×240 that must differ from empty-crib reference
 }
 
 log_lock      = threading.Lock()
