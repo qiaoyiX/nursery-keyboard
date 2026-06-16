@@ -169,8 +169,12 @@ def next_feed_iso(entries, interval_minutes):
     return (last_dt + timedelta(minutes=interval_minutes)).isoformat()
 
 
-def today_sleep_stats(sessions):
-    """Summarise today's sleep sessions for the /data endpoint."""
+def today_sleep_stats(sessions, max_open_minutes=None):
+    """Summarise today's sleep sessions for the /data endpoint.
+
+    max_open_minutes clamps an *open* (still-running) session's counted duration so a
+    stuck-open session can't balloon the displayed total before the daemon force-ends it.
+    """
     now = datetime.now()
     total_minutes = 0.0
     sessions_out = []
@@ -191,6 +195,8 @@ def today_sleep_stats(sessions):
             is_open = False
 
         dur = (end - start).total_seconds() / 60
+        if is_open and max_open_minutes is not None:
+            dur = min(dur, max_open_minutes)
         total_minutes += dur
         sessions_out.append({
             "id":               s["id"],
@@ -278,7 +284,8 @@ def get_data():
     hourly   = hourly_stats(entries)
 
     sessions_today = get_sleep_sessions_today()
-    sleep_summary  = today_sleep_stats(sessions_today)
+    max_open_min   = float(settings.get("sleep_max_session_hours", 14)) * 60
+    sleep_summary  = today_sleep_stats(sessions_today, max_open_minutes=max_open_min)
     sleep_status   = read_sleep_status()
 
     current_start_iso = None

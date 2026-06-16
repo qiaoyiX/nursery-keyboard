@@ -162,7 +162,7 @@ def read_frame_gray(cap):
 # ── State machine ─────────────────────────────────────────────────────────────
 
 def run_state_machine(rtsp_url, presence_threshold, motion_fraction,
-                      sleep_min_seconds, wake_seconds):
+                      sleep_min_seconds, wake_seconds, max_session_seconds):
     cap = open_capture(rtsp_url)
     if cap is None:
         logging.warning("Could not open RTSP stream: %s", rtsp_url)
@@ -314,7 +314,24 @@ def run_state_machine(rtsp_url, presence_threshold, motion_fraction,
                         still_since = None
 
                 elif state == STATE_ASLEEP:
-                    if is_motion:
+                    # Sanity cap: a session open longer than the cap is almost certainly a
+                    # phantom nap on an empty crib (or a missed wake) — force-end it so the
+                    # daily total can't balloon. Sized for overnight, not a nap.
+                    if (current_sleep_start is not None
+                            and (now - current_sleep_start).total_seconds() >= max_session_seconds):
+                        ended_id           = current_session_id
+                        sleep_start_for_hb = current_sleep_start
+                        end_sleep_session(ended_id, now)
+                        if HUCKLEBERRY_AVAILABLE and sleep_start_for_hb:
+                            push_sleep(sleep_start_for_hb, now)
+                        state               = STATE_AWAKE
+                        current_session_id  = None
+                        current_sleep_start = None
+                        motion_since        = None
+                        still_since         = None
+                        logging.warning("Session %s exceeded %.1fh cap — force-ended at %s",
+                                        ended_id, max_session_seconds / 3600, now.isoformat())
+                    elif is_motion:
                         if motion_since is None:
                             motion_since = now
                             still_since  = None
@@ -357,14 +374,15 @@ def main():
             time.sleep(30)
             continue
 
-        presence_threshold = float(settings.get("sleep_presence_threshold", 0.02))
-        motion_fraction    = float(settings.get("sleep_motion_fraction",    0.01))
-        sleep_min_seconds  = int(settings.get("sleep_min_minutes",          10)) * 60
-        wake_seconds       = int(settings.get("sleep_wake_seconds",         20))
+        presence_threshold  = float(settings.get("sleep_presence_threshold", 0.02))
+        motion_fraction     = float(settings.get("sleep_motion_fraction",    0.01))
+        sleep_min_seconds   = int(settings.get("sleep_min_minutes",          10)) * 60
+        wake_seconds        = int(settings.get("sleep_wake_seconds",         20))
+        max_session_seconds = float(settings.get("sleep_max_session_hours",  14)) * 3600
 
         try:
             run_state_machine(rtsp_url, presence_threshold, motion_fraction,
-                              sleep_min_seconds, wake_seconds)
+                              sleep_min_seconds, wake_seconds, max_session_seconds)
         except Exception as exc:
             logging.error("Unexpected error: %s", exc, exc_info=True)
 

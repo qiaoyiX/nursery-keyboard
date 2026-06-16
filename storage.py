@@ -27,6 +27,7 @@ DEFAULT_SETTINGS = {
     "sleep_motion_fraction":    0.01,  # fraction of pixels changed vs previous frame = "moving"
     "sleep_min_minutes":        10,
     "sleep_wake_seconds":       20,
+    "sleep_max_session_hours":  14,    # sanity cap: force-end a sleep session open longer than this
     "huckleberry_email":        "",
     "huckleberry_password":     "",
     "huckleberry_child_index":  0,
