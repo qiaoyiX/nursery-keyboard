@@ -316,9 +316,9 @@ def huckleberry_test():
     try:
         result = test_connection()
         return jsonify({"ok": True, "child_count": result["child_count"]})
-    except Exception:
+    except Exception as exc:
         logging.exception("Huckleberry connection test failed")
-        return jsonify({"ok": False, "error": "connection test failed — check server logs"}), 500
+        return jsonify({"ok": False, "error": str(exc)}), 500
 
 
 @app.route("/sleep/calibrate", methods=["POST"])

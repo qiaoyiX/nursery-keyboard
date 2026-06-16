@@ -26,8 +26,8 @@ _DIAPER_MODE = {"Wet": "pee", "Dirty": "poo"}
 def _make_api(settings, session):
     tz = settings.get("huckleberry_timezone", "America/New_York")
     return HuckleberryAPI(
-        email=settings["huckleberry_email"],
-        password=settings["huckleberry_password"],
+        email=settings["huckleberry_email"].strip(),
+        password=settings["huckleberry_password"].strip(),
         websession=session,
         timezone=tz,
     )
@@ -84,6 +84,22 @@ async def _push_sleep_async(start_time: datetime, end_time: datetime) -> None:
                      start_time.isoformat(), end_time.isoformat())
 
 
+def _friendly_auth_error(err: aiohttp.ClientResponseError) -> str:
+    """Map a Firebase auth error into an actionable message."""
+    msg = err.message or ""
+    if "EMAIL_NOT_FOUND" in msg:
+        return "No Huckleberry account for that email — check huckleberry_email in settings.json."
+    if "INVALID_PASSWORD" in msg or "INVALID_LOGIN_CREDENTIALS" in msg:
+        return ("Password rejected by Huckleberry. If you normally sign into the app with "
+                "Apple or Google, there is no email+password credential — open the Huckleberry "
+                "app and set/reset a password first, then use that here.")
+    if "MISSING_PASSWORD" in msg or "MISSING_EMAIL" in msg:
+        return "Email or password is empty in settings.json."
+    if "TOO_MANY_ATTEMPTS" in msg:
+        return "Too many failed attempts — Huckleberry temporarily blocked sign-in. Wait and retry."
+    return f"Huckleberry rejected sign-in (HTTP {err.status}): {msg}"
+
+
 async def _test_connection_async() -> dict:
     settings = load_settings()
     email    = settings.get("huckleberry_email", "")
@@ -92,7 +108,10 @@ async def _test_connection_async() -> dict:
         raise ValueError("huckleberry_email / huckleberry_password not set in settings.json")
     async with aiohttp.ClientSession() as session:
         api = _make_api(settings, session)
-        await api.authenticate()
+        try:
+            await api.authenticate()
+        except aiohttp.ClientResponseError as err:
+            raise RuntimeError(_friendly_auth_error(err)) from err
         user = await api.get_user()
         return {"ok": True, "child_count": len(user.childList)}
 
