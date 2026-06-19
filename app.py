@@ -312,6 +312,30 @@ def get_data():
     })
 
 
+@app.route("/history")
+def history():
+    """Filtered history search across ALL entries (not just today's recent 50).
+
+    Query params (both optional):
+      date — YYYY-MM-DD, matches the entry's local date
+      type — one of Wet/Dirty/Play/Feed
+    Returns newest-first, capped to HISTORY_LIMIT.
+    """
+    HISTORY_LIMIT = 200
+    entries = get_entries()
+
+    etype = request.args.get("type")
+    if etype in ("Wet", "Dirty", "Play", "Feed"):
+        entries = [e for e in entries if e["type"] == etype]
+
+    date = request.args.get("date")
+    if date:
+        entries = [e for e in entries if e["time"].startswith(date)]
+
+    entries = list(reversed(entries))[:HISTORY_LIMIT]
+    return jsonify({"entries": entries})
+
+
 @app.route("/huckleberry/test")
 def huckleberry_test():
     if not HUCKLEBERRY_AVAILABLE:
