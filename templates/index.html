@@ -15,6 +15,8 @@
       --brown-mid:   #7a4f35;
       --brown-light: #a07858;
       --brown-muted: #b8957a;
+      --text-muted:  #8a6a52;   /* darker than --brown-muted: AA-legible small text */
+      --surface:     #fff;      /* card/panel surface; flips in dark mode */
       --wet:   #4a9fd4;  --wet-a:   rgba(74,159,212,.10);
       --dirty: #c0813a;  --dirty-a: rgba(192,129,58,.10);
       --play:  #8e6abf;  --play-a:  rgba(142,106,191,.10);
@@ -22,7 +24,23 @@
       --danger: #c0513a;
       --sleep:   #5c7fa3;  --sleep-a: rgba(92,127,163,.13);  --sleep-2: rgba(92,127,163,.35);
       --shadow-card: 0 1px 3px rgba(61,43,31,.07), 0 6px 18px rgba(61,43,31,.07);
+      --toast-bg: var(--brown-deep);  --toast-fg: #fff;
       --r: 18px;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --cream:       #1c1712;
+        --cream-2:     #2c2218;
+        --brown-deep:  #f0e6d8;   /* primary text */
+        --brown-mid:   #cda077;   /* headings / accents on dark */
+        --brown-light: #b89677;
+        --brown-muted: #6e5a47;   /* borders / hairlines on dark */
+        --text-muted:  #b6a087;   /* muted text on dark */
+        --surface:     #271f17;   /* card surface */
+        --shadow-card: 0 1px 3px rgba(0,0,0,.35), 0 6px 18px rgba(0,0,0,.40);
+        --toast-bg: #0f0b08;  --toast-fg: #f0e6d8;
+      }
     }
 
     * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -47,7 +65,7 @@
     }
     .date {
       font-size: 0.78rem;
-      color: var(--brown-muted);
+      color: var(--text-muted);
       letter-spacing: 0.06em;
       text-transform: uppercase;
     }
@@ -71,10 +89,10 @@
       content: '';
       position: absolute; inset: 0;
     }
-    .wet::before   { background: linear-gradient(145deg, #fff 35%, var(--wet-a)); }
-    .dirty::before { background: linear-gradient(145deg, #fff 35%, var(--dirty-a)); }
-    .play::before  { background: linear-gradient(145deg, #fff 35%, var(--play-a)); }
-    .feed::before  { background: linear-gradient(145deg, #fff 35%, var(--feed-a)); }
+    .wet::before   { background: linear-gradient(145deg, var(--surface) 35%, var(--wet-a)); }
+    .dirty::before { background: linear-gradient(145deg, var(--surface) 35%, var(--dirty-a)); }
+    .play::before  { background: linear-gradient(145deg, var(--surface) 35%, var(--play-a)); }
+    .feed::before  { background: linear-gradient(145deg, var(--surface) 35%, var(--feed-a)); }
     .count-card > * { position: relative; }
 
     .count-card .num {
@@ -86,7 +104,7 @@
     }
     .count-card .label {
       font-size: 0.68rem;
-      color: var(--brown-muted);
+      color: var(--text-muted);
       letter-spacing: 0.07em;
       text-transform: uppercase;
     }
@@ -103,15 +121,15 @@
       margin-bottom: 14px;
       text-align: center;
       transition: background 0.5s;
-      background: linear-gradient(150deg, #fff 60%, var(--cream-2));
+      background: linear-gradient(150deg, var(--surface) 60%, var(--cream-2));
     }
-    .next-feed-card.status-ok   { background: linear-gradient(150deg, #fff 50%, rgba(90,170,114,.13)); }
-    .next-feed-card.status-soon { background: linear-gradient(150deg, #fff 50%, rgba(200,154,16,.12)); }
-    .next-feed-card.status-late { background: linear-gradient(150deg, #fff 50%, rgba(192,81,58,.12)); }
+    .next-feed-card.status-ok   { background: linear-gradient(150deg, var(--surface) 50%, rgba(90,170,114,.13)); }
+    .next-feed-card.status-soon { background: linear-gradient(150deg, var(--surface) 50%, rgba(200,154,16,.12)); }
+    .next-feed-card.status-late { background: linear-gradient(150deg, var(--surface) 50%, rgba(192,81,58,.12)); }
 
     .nf-title {
       font-size: 0.68rem;
-      color: var(--brown-muted);
+      color: var(--text-muted);
       text-transform: uppercase;
       letter-spacing: 0.09em;
       margin-bottom: 8px;
@@ -125,12 +143,12 @@
     .nf-ok      { color: var(--feed); }
     .nf-soon    { color: #9e7300; }
     .nf-late    { color: var(--danger); }
-    .nf-neutral { color: var(--brown-muted); font-family: inherit; font-size: 0.9rem; }
+    .nf-neutral { color: var(--text-muted); font-family: inherit; font-size: 0.9rem; }
 
     .nf-interval {
       margin-top: 12px;
       font-size: 0.78rem;
-      color: var(--brown-muted);
+      color: var(--text-muted);
       display: flex;
       align-items: center;
       justify-content: center;
@@ -138,15 +156,16 @@
     }
     .nf-interval select {
       border: 1px solid var(--cream-2);
-      border-radius: 8px;
+      border-radius: 10px;
       background: var(--cream);
       color: var(--brown-deep);
-      font-size: 0.78rem;
-      padding: 4px 8px;
+      font-size: 0.85rem;
+      min-height: 44px;
+      padding: 4px 10px;
       cursor: pointer;
-      outline: none;
       -webkit-appearance: auto;
     }
+    .nf-interval select:focus-visible { outline: 2px solid var(--feed); outline-offset: 2px; }
 
     /* ── Sleep cards ────────────────────── */
     .sleep-card {
@@ -154,14 +173,14 @@
       padding: 18px 16px 14px;
       box-shadow: var(--shadow-card);
       margin-bottom: 14px;
-      background: linear-gradient(150deg, #fff 50%, var(--sleep-a));
+      background: linear-gradient(150deg, var(--surface) 50%, var(--sleep-a));
     }
     .sleep-card-title {
       font-size: 0.68rem;
       font-weight: 600;
       text-transform: uppercase;
       letter-spacing: 0.09em;
-      color: var(--brown-muted);
+      color: var(--text-muted);
       margin-bottom: 8px;
     }
     .sleep-state-text {
@@ -173,9 +192,9 @@
     }
     .sleep-state-text.is-sleeping { color: var(--sleep); }
     .sleep-state-text.is-awake    { color: var(--brown-mid); }
-    .sleep-state-text.is-away     { color: var(--brown-muted); }
+    .sleep-state-text.is-away     { color: var(--text-muted); }
     .sleep-state-text.is-unknown  {
-      color: var(--brown-muted);
+      color: var(--text-muted);
       font-style: italic;
       font-family: inherit;
       font-size: 0.9rem;
@@ -185,16 +204,18 @@
       font-size: 0.72rem;
       background: none;
       border: 1px solid var(--cream-2);
-      border-radius: 20px;
-      color: var(--brown-muted);
-      padding: 4px 14px;
+      border-radius: 22px;
+      color: var(--text-muted);
+      min-height: 44px;
+      padding: 0 16px;
       cursor: pointer;
-      display: inline-block;
+      display: inline-flex;
+      align-items: center;
     }
     .btn-calibrate:hover { border-color: var(--sleep); color: var(--sleep); }
     .sleep-summary-text {
       font-size: 0.78rem;
-      color: var(--brown-muted);
+      color: var(--text-muted);
     }
 
     /* ── Sleep timeline ──────────────────── */
@@ -202,7 +223,7 @@
       border-radius: var(--r);
       padding: 18px 16px 14px;
       box-shadow: var(--shadow-card);
-      background: #fff;
+      background: var(--surface);
       margin-bottom: 14px;
     }
     .sleep-timeline-track {
@@ -228,7 +249,7 @@
       display: flex;
       justify-content: space-between;
       font-size: 0.62rem;
-      color: var(--brown-muted);
+      color: var(--text-muted);
       padding: 0 2px;
     }
 
@@ -276,8 +297,11 @@
       color: rgba(192,81,58,.65);
       font-size: 0.73rem;
       font-weight: 500;
-      padding: 6px 18px;
-      border-radius: 20px;
+      min-height: 44px;
+      display: inline-flex;
+      align-items: center;
+      padding: 0 20px;
+      border-radius: 22px;
       cursor: pointer;
       letter-spacing: 0.03em;
       transition: color 0.15s, border-color 0.15s;
@@ -290,47 +314,91 @@
       font-weight: 600;
       text-transform: uppercase;
       letter-spacing: 0.09em;
-      color: var(--brown-muted);
+      color: var(--text-muted);
       margin-bottom: 10px;
     }
 
     /* ── History ─────────────────────────── */
-    .history-filters {
+    .history-filters { margin-bottom: 12px; }
+    .filter-row {
       display: flex;
       gap: 8px;
       align-items: center;
-      margin-bottom: 10px;
       flex-wrap: wrap;
     }
+    .filter-row + .filter-row { margin-top: 8px; }
+
+    /* date input + preset/clear chips share a base look + 44px tap height */
     .history-filters input[type="date"],
-    .history-filters select {
+    .filter-chip,
+    .btn-clear-filter {
       font: inherit;
       font-size: 0.8rem;
+      min-height: 44px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border: 1px solid var(--cream-2);
+      border-radius: 14px;
+      background: var(--surface);
       color: var(--brown-mid);
-      background: #fff;
-      border: 1px solid var(--cream-2);
-      border-radius: 12px;
-      padding: 6px 10px;
+      padding: 0 14px;
       cursor: pointer;
     }
-    .history-filters input[type="date"]:focus,
-    .history-filters select:focus {
-      outline: none;
+    .history-filters input[type="date"] { color: var(--text-muted); }
+    .filter-chip.is-active,
+    .history-filters input[type="date"].is-active {
       border-color: var(--feed);
+      background: var(--feed-a);
+      color: var(--feed);
+      font-weight: 600;
     }
-    .history-filters .btn-clear-filter {
-      font: inherit;
+    .btn-clear-filter { color: var(--text-muted); border-radius: 22px; }
+    .btn-clear-filter:hover { border-color: var(--danger); color: var(--danger); }
+
+    /* color-coded type toggle pills */
+    .type-toggle {
+      min-height: 44px;
+      padding: 0 16px;
+      border-radius: 22px;
       font-size: 0.72rem;
-      color: var(--brown-muted);
-      background: none;
-      border: 1px solid var(--cream-2);
-      border-radius: 20px;
-      padding: 5px 12px;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      border: 1.5px solid transparent;
       cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      flex: 1 1 0;
+      justify-content: center;
     }
-    .history-filters .btn-clear-filter:hover { border-color: var(--danger); color: var(--danger); }
+    .type-toggle.type-wet   { color: var(--wet);   background: var(--wet-a);   }
+    .type-toggle.type-dirty { color: var(--dirty); background: var(--dirty-a); }
+    .type-toggle.type-play  { color: var(--play);  background: var(--play-a);  }
+    .type-toggle.type-feed  { color: var(--feed);  background: var(--feed-a);  }
+    .type-toggle.is-active           { color: #fff; }
+    .type-toggle.type-wet.is-active   { background: var(--wet);   border-color: var(--wet);   }
+    .type-toggle.type-dirty.is-active { background: var(--dirty); border-color: var(--dirty); }
+    .type-toggle.type-play.is-active  { background: var(--play);  border-color: var(--play);  }
+    .type-toggle.type-feed.is-active  { background: var(--feed);  border-color: var(--feed);  }
+
+    .history-filters input[type="date"]:focus-visible,
+    .filter-chip:focus-visible,
+    .type-toggle:focus-visible,
+    .btn-clear-filter:focus-visible {
+      outline: 2px solid var(--feed);
+      outline-offset: 2px;
+    }
+
+    .filter-summary {
+      font-size: 0.7rem;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      color: var(--text-muted);
+      margin: 10px 2px 8px;
+    }
     .history {
-      background: #fff;
+      background: var(--surface);
       border-radius: var(--r);
       overflow: hidden;
       box-shadow: var(--shadow-card);
@@ -345,7 +413,7 @@
       align-items: center;
       gap: 10px;
       padding: 10px 14px;
-      border-bottom: 1px solid #f5ede2;
+      border-bottom: 1px solid var(--cream-2);
     }
     .entry:last-child { border-bottom: none; }
 
@@ -363,26 +431,31 @@
     .type-pill.type-play  { color: var(--play);  background: var(--play-a); }
     .type-pill.type-feed  { color: var(--feed);  background: var(--feed-a); }
 
-    .entry .time { color: var(--brown-muted); font-size: 0.77rem; flex: 1; }
+    .entry .time { color: var(--text-muted); font-size: 0.77rem; flex: 1; }
 
     .btn-delete-entry {
       background: none; border: none; color: var(--danger);
-      font-size: 0.68rem; width: 22px; height: 22px;
+      font-size: 0.85rem; width: 38px; height: 38px;
       border-radius: 50%; display: flex; align-items: center; justify-content: center;
-      opacity: 0; cursor: pointer; transition: opacity 0.15s, background 0.15s;
+      opacity: 0.5; cursor: pointer; transition: opacity 0.15s, background 0.15s;
       flex-shrink: 0;
     }
-    .entry:hover .btn-delete-entry { opacity: 1; }
     .btn-delete-entry:hover { background: rgba(192,81,58,.1); }
+    /* Touch devices have no hover: keep delete always visible.
+       Reveal-on-hover only where a fine pointer can hover. */
+    @media (hover: hover) and (pointer: fine) {
+      .btn-delete-entry { opacity: 0; }
+      .entry:hover .btn-delete-entry { opacity: 1; }
+    }
 
     .empty {
       text-align: center; padding: 28px;
-      color: var(--brown-muted); font-size: 0.85rem;
+      color: var(--text-muted); font-size: 0.85rem;
     }
 
     /* ── Chart cards ─────────────────────── */
     .chart-card {
-      background: #fff;
+      background: var(--surface);
       border-radius: var(--r);
       padding: 18px 16px 14px;
       box-shadow: var(--shadow-card);
@@ -397,7 +470,7 @@
       position: fixed;
       top: 20px; left: 50%;
       transform: translateX(-50%) translateY(-6px);
-      background: var(--brown-deep); color: #fff;
+      background: var(--toast-bg); color: var(--toast-fg);
       padding: 10px 22px; border-radius: 24px;
       font-size: 0.83rem; opacity: 0;
       transition: opacity 0.22s, transform 0.22s;
@@ -472,16 +545,15 @@
 
   <p class="section-label">History</p>
   <div class="history-filters">
-    <input type="date" id="filterDate" onchange="applyHistoryFilter()" aria-label="Filter by date">
-    <select id="filterType" onchange="applyHistoryFilter()" aria-label="Filter by type">
-      <option value="">All types</option>
-      <option value="Wet">Wet</option>
-      <option value="Dirty">Dirty</option>
-      <option value="Play">Play</option>
-      <option value="Feed">Feed</option>
-    </select>
-    <button class="btn-clear-filter" id="filterClear" onclick="clearHistoryFilter()" style="display:none">Clear</button>
+    <div class="filter-row">
+      <button class="filter-chip" id="presetToday" onclick="setDatePreset('today')">Today</button>
+      <button class="filter-chip" id="presetYesterday" onclick="setDatePreset('yesterday')">Yesterday</button>
+      <input type="date" id="filterDate" onchange="onDateInput()" aria-label="Filter by date">
+      <button class="btn-clear-filter" id="filterClear" onclick="clearHistoryFilter()" style="display:none">Reset filters</button>
+    </div>
+    <div class="filter-row" id="typeToggles" role="group" aria-label="Filter by type"></div>
   </div>
+  <p class="filter-summary" id="filterSummary" style="display:none"></p>
   <div class="history" id="history">
     {% if recent %}
       {% for e in recent %}
@@ -584,6 +656,16 @@
       setTimeout(() => t.classList.remove("show"), 1800);
     }
 
+    // Debounced "offline" toast so the 8s poll can't spam it.
+    let lastOfflineToast = 0;
+    function notifyOffline() {
+      const now = Date.now();
+      if (now - lastOfflineToast > 15000) {
+        lastOfflineToast = now;
+        showToast("Connection issue — not updating");
+      }
+    }
+
     async function logEvent(type) {
       try {
         await fetch("/log", {
@@ -610,6 +692,11 @@
     }
 
     // --- Charts ---
+
+    // Theme chart text/grid for legibility in light and dark mode.
+    const prefersDark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+    Chart.defaults.color       = prefersDark ? "#b6a087" : "#7a4f35";
+    Chart.defaults.borderColor = prefersDark ? "rgba(255,255,255,.10)" : "rgba(0,0,0,.06)";
 
     const chartOpts = {
       animation: false,
@@ -730,16 +817,72 @@
     // --- History filters (date + type) ---
 
     let historyFilterActive = false;
+    let filterType = "";   // "" = all types
+
+    // Build the color-coded type toggle pills once, from TYPES.
+    (function buildTypeToggles() {
+      const wrap = document.getElementById("typeToggles");
+      TYPES.forEach(t => {
+        const btn = document.createElement("button");
+        btn.className = "type-toggle type-" + t.toLowerCase();
+        btn.textContent = t;
+        btn.setAttribute("aria-pressed", "false");
+        btn.onclick = () => toggleType(t);
+        wrap.appendChild(btn);
+      });
+    })();
+
+    function toggleType(t) {
+      filterType = (filterType === t) ? "" : t;
+      const wrap = document.getElementById("typeToggles");
+      [...wrap.children].forEach(c => {
+        const active = c.textContent === filterType;
+        c.classList.toggle("is-active", active);
+        c.setAttribute("aria-pressed", active ? "true" : "false");
+      });
+      applyHistoryFilter();
+    }
+
+    function isoDate(d) {
+      // local YYYY-MM-DD (avoids UTC off-by-one from toISOString)
+      return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+    }
+
+    function setDatePreset(which) {
+      const d = new Date();
+      if (which === "yesterday") d.setDate(d.getDate() - 1);
+      document.getElementById("filterDate").value = isoDate(d);
+      applyHistoryFilter();
+    }
+
+    function onDateInput() { applyHistoryFilter(); }
+
+    function fmtDateLabel(iso) {
+      const [y, m, d] = iso.split("-").map(Number);
+      return new Date(y, m - 1, d).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+    }
+
+    function updateFilterActiveStates(date) {
+      document.getElementById("filterDate").classList.toggle("is-active", !!date);
+      const todayIso = isoDate(new Date());
+      const yIso = isoDate(new Date(Date.now() - 86400000));
+      document.getElementById("presetToday").classList.toggle("is-active", date === todayIso);
+      document.getElementById("presetYesterday").classList.toggle("is-active", date === yIso);
+    }
 
     async function applyHistoryFilter() {
       const date = document.getElementById("filterDate").value;
-      const type = document.getElementById("filterType").value;
+      const type = filterType;
       const clearBtn = document.getElementById("filterClear");
+      const summary  = document.getElementById("filterSummary");
+
+      updateFilterActiveStates(date);
 
       if (!date && !type) {
         // No filter → back to the live recent view driven by /data.
         historyFilterActive = false;
         clearBtn.style.display = "none";
+        summary.style.display = "none";
         refresh();
         return;
       }
@@ -754,12 +897,23 @@
         const res  = await fetch("/history?" + params.toString());
         const data = await res.json();
         updateHistory(data.entries, "No entries match this filter.");
-      } catch (_) {}
+        const parts = [date ? fmtDateLabel(date) : "All dates"];
+        if (type) parts.push(type);
+        const n = data.entries.length;
+        summary.textContent = "Showing: " + parts.join(" · ") + " — " + n + (n === 1 ? " entry" : " entries");
+        summary.style.display = "";
+      } catch (_) {
+        notifyOffline();
+      }
     }
 
     function clearHistoryFilter() {
       document.getElementById("filterDate").value = "";
-      document.getElementById("filterType").value = "";
+      filterType = "";
+      [...document.getElementById("typeToggles").children].forEach(c => {
+        c.classList.remove("is-active");
+        c.setAttribute("aria-pressed", "false");
+      });
       applyHistoryFilter();
     }
 
@@ -879,7 +1033,9 @@
           updateSleepCard(data.sleep);
           updateSleepTimeline(data.sleep.sessions_today || []);
         }
-      } catch (_) {}
+      } catch (_) {
+        notifyOffline();
+      }
     }
 
     refresh();
