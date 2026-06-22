@@ -79,6 +79,9 @@ def listen_one_interface(dev):
                             label = KEYPAD_KEYS.get(key_name)
                             if label:
                                 try:
+                                    if is_debounced(label):
+                                        logging.info("Debounced: %s — discarded (repeat within window)", label)
+                                        continue
                                     add_entry(label)
                                     logging.info("Logged: %s", label)
                                     if HUCKLEBERRY_AVAILABLE:
@@ -119,6 +122,26 @@ def keypad_listener():
             t.join()
         logging.info("All SayoDevice interfaces died — rescanning in 2s")
         time.sleep(2)
+
+
+# ── Debounce ──────────────────────────────────────────────────────────────────
+
+def is_debounced(event_type, now=None):
+    """True if an entry of this type was logged within its debounce window (→ discard).
+
+    Per-type windows come from settings (`debounce_minutes`, minutes; 0 = off). Applies to
+    both the keypad and the web /log path so rapid repeats are dropped before add_entry/push.
+    """
+    now = now or datetime.now()
+    with settings_lock:
+        window = load_settings().get("debounce_minutes", {}).get(event_type, 0)
+    if not window:
+        return False
+    for e in reversed(get_entries()):   # entries are time-ordered; last match = newest
+        if e["type"] == event_type:
+            last = datetime.fromisoformat(e["time"])
+            return (now - last).total_seconds() < window * 60
+    return False
 
 
 # ── Stats helpers ─────────────────────────────────────────────────────────────
@@ -266,6 +289,8 @@ def log_event():
     event_type = data.get("type")
     if event_type not in ["Wet", "Dirty", "Play", "Feed"]:
         return jsonify({"error": "invalid type"}), 400
+    if is_debounced(event_type):
+        return jsonify({"ok": True, "discarded": True, "reason": "debounced"})
     add_entry(event_type)
     if HUCKLEBERRY_AVAILABLE:
         push_event(event_type, datetime.now())

@@ -28,6 +28,7 @@ DEFAULT_SETTINGS = {
     "sleep_min_minutes":        10,
     "sleep_wake_seconds":       20,
     "sleep_max_session_hours":  14,    # sanity cap: force-end a sleep session open longer than this
+    "debounce_minutes":         {"Feed": 5, "Wet": 1, "Dirty": 1, "Play": 5},  # discard repeat presses of a type within N min (0 = off)
     "huckleberry_email":        "",
     "huckleberry_password":     "",
     "huckleberry_child_index":  0,

@@ -668,12 +668,13 @@
 
     async function logEvent(type) {
       try {
-        await fetch("/log", {
+        const res  = await fetch("/log", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ type })
         });
-        showToast("Logged: " + type);
+        const data = await res.json().catch(() => ({}));
+        showToast(data.discarded ? "Skipped — logged recently" : "Logged: " + type);
         refresh();
       } catch (e) {
         showToast("Error logging");
