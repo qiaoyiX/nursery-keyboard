@@ -433,20 +433,69 @@
 
     .entry .time { color: var(--text-muted); font-size: 0.77rem; flex: 1; }
 
+    .btn-edit-entry,
     .btn-delete-entry {
-      background: none; border: none; color: var(--danger);
+      background: none; border: none;
       font-size: 0.85rem; width: 38px; height: 38px;
       border-radius: 50%; display: flex; align-items: center; justify-content: center;
       opacity: 0.5; cursor: pointer; transition: opacity 0.15s, background 0.15s;
       flex-shrink: 0;
     }
+    .btn-edit-entry   { color: var(--brown-mid); }
+    .btn-delete-entry { color: var(--danger); }
+    .btn-edit-entry:hover   { background: rgba(122,79,53,.1); }
     .btn-delete-entry:hover { background: rgba(192,81,58,.1); }
-    /* Touch devices have no hover: keep delete always visible.
+    /* Touch devices have no hover: keep controls always visible.
        Reveal-on-hover only where a fine pointer can hover. */
     @media (hover: hover) and (pointer: fine) {
-      .btn-delete-entry { opacity: 0; }
+      .btn-edit-entry, .btn-delete-entry { opacity: 0; }
+      .entry:hover .btn-edit-entry,
       .entry:hover .btn-delete-entry { opacity: 1; }
     }
+
+    /* ── Edit entry modal ────────────────── */
+    .modal-overlay {
+      position: fixed; inset: 0;
+      background: rgba(61,43,31,.45);
+      display: flex; align-items: center; justify-content: center;
+      padding: 20px; z-index: 50;
+    }
+    .modal-overlay[hidden] { display: none; }
+    .modal {
+      background: var(--surface);
+      border-radius: var(--r);
+      box-shadow: var(--shadow-card);
+      padding: 22px 20px 18px;
+      width: 100%; max-width: 360px;
+    }
+    .modal-title {
+      font-size: 0.68rem; font-weight: 600;
+      text-transform: uppercase; letter-spacing: 0.09em;
+      color: var(--text-muted); margin-bottom: 14px;
+    }
+    .edit-types { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
+    .modal input[type="datetime-local"] {
+      font: inherit; font-size: 0.9rem;
+      width: 100%; min-height: 44px;
+      border: 1px solid var(--cream-2);
+      border-radius: 14px;
+      background: var(--cream);
+      color: var(--brown-deep);
+      padding: 0 12px;
+    }
+    .modal input[type="datetime-local"]:focus-visible { outline: 2px solid var(--feed); outline-offset: 2px; }
+    .modal-actions {
+      display: flex; gap: 10px; justify-content: flex-end;
+      margin-top: 18px;
+    }
+    .modal-actions button {
+      font: inherit; font-size: 0.82rem; font-weight: 600;
+      min-height: 44px; padding: 0 18px;
+      border-radius: 22px; cursor: pointer;
+    }
+    .btn-cancel { background: none; border: 1px solid var(--cream-2); color: var(--text-muted); }
+    .btn-cancel:hover { border-color: var(--brown-mid); color: var(--brown-mid); }
+    .btn-save { background: var(--feed); border: none; color: #fff; }
 
     .empty {
       text-align: center; padding: 28px;
@@ -486,6 +535,15 @@
     <p class="date" id="dateLabel"></p>
   </div>
 
+  <div class="next-feed-card" id="nextFeedCard">
+    <div class="nf-title">🍼 Next Feed</div>
+    <div class="nf-time nf-neutral" id="nextFeedDisplay">—</div>
+    <div class="nf-interval">
+      <span>Every</span>
+      <select id="feedIntervalSel" onchange="saveInterval(+this.value)"></select>
+    </div>
+  </div>
+
   <div class="counts">
     <div class="count-card wet">
       <div class="num" id="cnt-Wet">{{ counts.Wet }}</div>
@@ -505,16 +563,11 @@
     </div>
   </div>
 
-  <div class="next-feed-card" id="nextFeedCard">
-    <div class="nf-title">🍼 Next Feed</div>
-    <div class="nf-time nf-neutral" id="nextFeedDisplay">—</div>
-    <div class="nf-interval">
-      <span>Every</span>
-      <select id="feedIntervalSel" onchange="saveInterval(+this.value)"></select>
-    </div>
-  </div>
+  <!-- Sleep monitoring UI is temporarily disabled: camera-based sleep
+       detection is currently not working (state is unreliable / "always wrong").
+       Backend daemon + /data sleep payload are left intact; re-enable this block
+       and the matching JS below once detection is trustworthy again.
 
-  <!-- Sleep Status Card -->
   <div class="sleep-card" id="sleepCard">
     <div class="sleep-card-title">😴 Sleep</div>
     <div class="sleep-state-text is-unknown" id="sleepStateText">⋯ Camera offline</div>
@@ -522,7 +575,6 @@
     <button class="btn-calibrate" id="btnCalibrate" onclick="calibrateSleep()">📷 Crib is empty</button>
   </div>
 
-  <!-- Sleep Timeline -->
   <div class="sleep-timeline-card">
     <div class="sleep-card-title" style="margin-bottom:10px">Today's Timeline</div>
     <div class="sleep-timeline-track" id="sleepTrack"></div>
@@ -531,6 +583,7 @@
       <span>12p</span><span>3p</span><span>6p</span><span>9p</span><span>12a</span>
     </div>
   </div>
+  -->
 
   <div class="buttons">
     <button class="action-btn btn-wet"   onclick="logEvent('Wet')">💧 Wet</button>
@@ -582,6 +635,18 @@
   <div class="chart-card">
     <p class="section-label">Last 7 Days</p>
     <div class="chart-wrap"><canvas id="chartDaily"></canvas></div>
+  </div>
+
+  <div class="modal-overlay" id="editOverlay" hidden onclick="if(event.target===this)closeEdit()">
+    <div class="modal" role="dialog" aria-modal="true" aria-label="Edit entry">
+      <div class="modal-title">Edit entry</div>
+      <div class="edit-types" id="editTypes" role="group" aria-label="Event type"></div>
+      <input type="datetime-local" id="editTime" aria-label="Date and time">
+      <div class="modal-actions">
+        <button class="btn-cancel" onclick="closeEdit()">Cancel</button>
+        <button class="btn-save" onclick="saveEdit()">Save</button>
+      </div>
+    </div>
   </div>
 
   <div class="toast" id="toast"></div>
@@ -802,6 +867,12 @@
         timeSpan.className = "time";
         timeSpan.textContent = e.time.replace("T", " ").slice(0, 16);
 
+        const editBtn = document.createElement("button");
+        editBtn.className = "btn-edit-entry";
+        editBtn.textContent = "✎";
+        editBtn.setAttribute("aria-label", "Edit entry");
+        editBtn.onclick = () => openEdit(e);
+
         const delBtn = document.createElement("button");
         delBtn.className = "btn-delete-entry";
         delBtn.textContent = "✕";
@@ -810,6 +881,7 @@
 
         row.appendChild(typeSpan);
         row.appendChild(timeSpan);
+        row.appendChild(editBtn);
         row.appendChild(delBtn);
         h.appendChild(row);
       }
@@ -933,8 +1005,71 @@
       }
     }
 
-    // --- Sleep monitoring ---
+    // --- Edit entry ---
 
+    let editingId = null;
+    let editingType = "";
+
+    // Build the type-picker pills in the edit modal once, from TYPES.
+    (function buildEditTypes() {
+      const wrap = document.getElementById("editTypes");
+      TYPES.forEach(t => {
+        const btn = document.createElement("button");
+        btn.className = "type-toggle type-" + t.toLowerCase();
+        btn.textContent = t;
+        btn.setAttribute("aria-pressed", "false");
+        btn.onclick = () => selectEditType(t);
+        wrap.appendChild(btn);
+      });
+    })();
+
+    function selectEditType(t) {
+      editingType = t;
+      [...document.getElementById("editTypes").children].forEach(c => {
+        const active = c.textContent === t;
+        c.classList.toggle("is-active", active);
+        c.setAttribute("aria-pressed", active ? "true" : "false");
+      });
+    }
+
+    function openEdit(entry) {
+      editingId = entry.id;
+      selectEditType(TYPES.includes(entry.type) ? entry.type : TYPES[0]);
+      // datetime-local wants local "YYYY-MM-DDThh:mm" — the stored time is already local.
+      document.getElementById("editTime").value = entry.time.slice(0, 16);
+      document.getElementById("editOverlay").hidden = false;
+    }
+
+    function closeEdit() {
+      document.getElementById("editOverlay").hidden = true;
+      editingId = null;
+    }
+
+    async function saveEdit() {
+      if (editingId === null) return;
+      const time = document.getElementById("editTime").value;
+      if (!time) { showToast("Pick a date and time"); return; }
+      try {
+        const res = await fetch("/log/entry", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id: editingId, type: editingType, time }),
+        });
+        if (!res.ok) throw new Error();
+        closeEdit();
+        showToast("Entry updated");
+        refresh();
+      } catch (_) {
+        showToast("Error updating entry");
+      }
+    }
+
+    // --- Sleep monitoring (temporarily disabled) ---
+    // Camera-based sleep detection is currently not working — the reported
+    // state was unreliable, so the sleep cards above and these consumers are
+    // commented out. The backend still emits `data.sleep`; re-enable here and
+    // in refresh() once detection is trustworthy again.
+    /*
     function fmtElapsed(isoStr) {
       const mins = Math.round((Date.now() - new Date(isoStr)) / 60000);
       return fmtInterval(Math.max(0, mins)) + " ago";
@@ -1013,6 +1148,7 @@
         track.appendChild(block);
       }
     }
+    */
 
     // --- Polling ---
 
@@ -1030,10 +1166,11 @@
         }
         updateNextFeed(data);
         updateCharts(data);
-        if (data.sleep) {
-          updateSleepCard(data.sleep);
-          updateSleepTimeline(data.sleep.sessions_today || []);
-        }
+        // Sleep display disabled (detection not working) — re-enable with the block above:
+        // if (data.sleep) {
+        //   updateSleepCard(data.sleep);
+        //   updateSleepTimeline(data.sleep.sessions_today || []);
+        // }
       } catch (_) {
         notifyOffline();
       }

@@ -9,7 +9,7 @@ from storage import (
     USE_DB,
     CALIBRATE_FLAG,
     log_lock, settings_lock, sleep_lock,
-    get_entries, add_entry, clear_today, delete_entry,
+    get_entries, add_entry, clear_today, delete_entry, update_entry,
     load_settings, save_settings,
     get_sleep_sessions_today, get_open_sleep_session, read_sleep_status,
 )
@@ -279,6 +279,26 @@ def delete_entry_route():
         return jsonify({"error": "missing id"}), 400
     deleted = delete_entry(entry_id)
     if deleted == 0:
+        return jsonify({"error": "not found"}), 404
+    return jsonify({"ok": True})
+
+
+@app.route("/log/entry", methods=["PATCH"])
+def update_entry_route():
+    data = request.get_json(silent=True) or {}
+    entry_id = data.get("id")
+    event_type = data.get("type")
+    time = data.get("time")
+    if not isinstance(entry_id, int):
+        return jsonify({"error": "missing id"}), 400
+    if event_type not in ["Wet", "Dirty", "Play", "Feed"]:
+        return jsonify({"error": "invalid type"}), 400
+    try:
+        time = datetime.fromisoformat(time).isoformat()
+    except (TypeError, ValueError):
+        return jsonify({"error": "invalid time"}), 400
+    updated = update_entry(entry_id, event_type, time)
+    if updated == 0:
         return jsonify({"error": "not found"}), 404
     return jsonify({"ok": True})
 

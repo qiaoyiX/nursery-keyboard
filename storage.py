@@ -85,6 +85,14 @@ def _pg_delete_entry(entry_id):
             return cur.rowcount
 
 
+def _pg_update_entry(entry_id, event_type, time):
+    with db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE events SET type = %s, time = %s WHERE id = %s",
+                        (event_type, time, entry_id))
+            return cur.rowcount
+
+
 # ── Events — JSON fallback path ───────────────────────────────────────────────
 
 def _json_load():
@@ -129,6 +137,16 @@ def _json_delete_entry(entry_id):
     return 1
 
 
+def _json_update_entry(entry_id, event_type, time):
+    with log_lock:
+        entries = _json_load()
+        if not (0 <= entry_id < len(entries)):
+            return 0
+        entries[entry_id] = {"type": event_type, "time": time}
+        _json_save(entries)
+    return 1
+
+
 # ── Public events API ─────────────────────────────────────────────────────────
 
 def get_entries():
@@ -151,6 +169,11 @@ def clear_today():
 
 def delete_entry(entry_id):
     return _pg_delete_entry(entry_id) if USE_DB else _json_delete_entry(entry_id)
+
+
+def update_entry(entry_id, event_type, time):
+    return (_pg_update_entry(entry_id, event_type, time) if USE_DB
+            else _json_update_entry(entry_id, event_type, time))
 
 
 # ── Settings ──────────────────────────────────────────────────────────────────

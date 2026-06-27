@@ -57,7 +57,10 @@ Three files form the core:
 - Writes sleep sessions via `storage.py`; writes heartbeat file so Flask can detect if daemon is offline.
 
 **`templates/index.html`** — Single-page dashboard. Pure HTML/CSS/JS, no build step.
-- Polls `GET /data` every 8 seconds; `refresh()` updates counts, history, next-feed card, sleep cards, and all three Chart.js charts in one pass.
+- Polls `GET /data` every 8 seconds; `refresh()` updates counts, history, next-feed card, and all three Chart.js charts in one pass.
+- The next-feed card sits at the top (above the count cards).
+- Sleep UI (status card + timeline) is **commented out** — camera-based detection was unreliable ("always wrong"). The HTML block and the `updateSleepCard`/`updateSleepTimeline`/`calibrateSleep` JS are left in place behind comments; the backend daemon and `data.sleep` payload still run. Re-enable both the HTML block and the `if (data.sleep)` call in `refresh()` once detection is trustworthy.
+- History rows have an edit (✎) and delete (✕) button. Edit opens a modal (`#editOverlay`) to change an entry's type + time, sent via `PATCH /log/entry`.
 - Chart.js 4.5.1 loaded from CDN with SHA-384 SRI.
 - Event type colors and sleep color are defined as CSS custom properties in `:root` and must match `COLORS` in the JS `<script>` block.
 
@@ -131,6 +134,7 @@ sudo journalctl -u nursery-sleep-monitor -f
 | POST | `/log` | Add event `{"type": "Wet\|Dirty\|Play\|Feed"}` |
 | DELETE | `/log/today` | Remove all of today's entries |
 | DELETE | `/log/entry` | Remove one entry `{"id": <int>}` |
+| PATCH | `/log/entry` | Edit one entry `{"id": <int>, "type": "Wet\|Dirty\|Play\|Feed", "time": <ISO>}` |
 | GET | `/settings` | Get `feed_interval_minutes` |
 | POST | `/settings` | Set `feed_interval_minutes` (multiple of 15, 15–720) |
 | POST | `/sleep/calibrate` | Save current frame as empty-crib reference baseline (crib must be empty) |
