@@ -1,6 +1,7 @@
 import threading
 import logging
 import os
+import errno
 import time
 from datetime import datetime, timedelta
 from flask import Flask, render_template, jsonify, request
@@ -94,6 +95,12 @@ def listen_one_interface(dev):
                 except Exception:
                     pass
 
+        except OSError as e:
+            if e.errno == errno.ENODEV:
+                logging.error("Device %s disappeared (ENODEV) — exiting thread for rescan", dev.path)
+                return
+            logging.error("Error on %s: %s — retrying in 2s", dev.path, e)
+            time.sleep(2)
         except Exception as e:
             logging.error("Error on %s: %s — retrying in 2s", dev.path, e)
             time.sleep(2)
