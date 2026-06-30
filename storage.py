@@ -28,7 +28,7 @@ DEFAULT_SETTINGS = {
     "sleep_min_minutes":        10,
     "sleep_wake_seconds":       20,
     "sleep_max_session_hours":  14,    # sanity cap: force-end a sleep session open longer than this
-    "debounce_minutes":         {"Feed": 5, "Wet": 1, "Dirty": 1, "Play": 5},  # discard repeat presses of a type within N min (0 = off)
+    "debounce_minutes":         {"Feed": 5, "Wet": 1, "Dirty": 1, "Play": 5, "Probiotic": 720},  # discard repeat presses of a type within N min (0 = off)
     "huckleberry_email":        "",
     "huckleberry_password":     "",
     "huckleberry_child_index":  0,
@@ -182,7 +182,12 @@ def load_settings():
     if os.path.exists(SETTINGS_FILE):
         try:
             with open(SETTINGS_FILE) as f:
-                return {**DEFAULT_SETTINGS, **json.load(f)}
+                saved = json.load(f)
+            merged = {**DEFAULT_SETTINGS, **saved}
+            # debounce_minutes is nested — merge per-type so a newly added type's
+            # default isn't shadowed by an older saved dict that predates it.
+            merged["debounce_minutes"] = {**DEFAULT_SETTINGS["debounce_minutes"], **saved.get("debounce_minutes", {})}
+            return merged
         except json.JSONDecodeError as e:
             logging.warning("settings.json is corrupt (%s) — using defaults and resetting file", e)
             save_settings(dict(DEFAULT_SETTINGS))

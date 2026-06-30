@@ -156,7 +156,7 @@ def is_debounced(event_type, now=None):
 def today_stats(entries):
     today = datetime.now().date().isoformat()
     today_entries = [e for e in entries if e["time"].startswith(today)]
-    counts = {label: 0 for label in ["Wet", "Dirty", "Play", "Feed"]}
+    counts = {label: 0 for label in ["Wet", "Dirty", "Play", "Feed", "Probiotic"]}
     for e in today_entries:
         if e["type"] in counts:
             counts[e["type"]] += 1
@@ -168,7 +168,7 @@ def daily_stats(entries, days=7):
     result = []
     for i in range(days - 1, -1, -1):
         d = (today - timedelta(days=i)).isoformat()
-        counts = {label: 0 for label in ["Wet", "Dirty", "Play", "Feed"]}
+        counts = {label: 0 for label in ["Wet", "Dirty", "Play", "Feed", "Probiotic"]}
         for e in entries:
             if e["time"].startswith(d) and e["type"] in counts:
                 counts[e["type"]] += 1
@@ -178,13 +178,13 @@ def daily_stats(entries, days=7):
 
 def hourly_stats(entries):
     today = datetime.now().date().isoformat()
-    result = [{"hour": h, "Wet": 0, "Dirty": 0, "Play": 0, "Feed": 0} for h in range(24)]
+    result = [{"hour": h, "Wet": 0, "Dirty": 0, "Play": 0, "Feed": 0, "Probiotic": 0} for h in range(24)]
     for e in entries:
         if not e["time"].startswith(today):
             continue
         try:
             h = datetime.fromisoformat(e["time"]).hour
-            if e["type"] in ("Wet", "Dirty", "Play", "Feed"):
+            if e["type"] in ("Wet", "Dirty", "Play", "Feed", "Probiotic"):
                 result[h][e["type"]] += 1
         except Exception:
             pass
@@ -298,7 +298,7 @@ def update_entry_route():
     time = data.get("time")
     if not isinstance(entry_id, int):
         return jsonify({"error": "missing id"}), 400
-    if event_type not in ["Wet", "Dirty", "Play", "Feed"]:
+    if event_type not in ["Wet", "Dirty", "Play", "Feed", "Probiotic"]:
         return jsonify({"error": "invalid type"}), 400
     try:
         time = datetime.fromisoformat(time).isoformat()
@@ -314,7 +314,7 @@ def update_entry_route():
 def log_event():
     data = request.get_json(silent=True) or {}
     event_type = data.get("type")
-    if event_type not in ["Wet", "Dirty", "Play", "Feed"]:
+    if event_type not in ["Wet", "Dirty", "Play", "Feed", "Probiotic"]:
         return jsonify({"error": "invalid type"}), 400
     if is_debounced(event_type):
         return jsonify({"ok": True, "discarded": True, "reason": "debounced"})
@@ -377,7 +377,7 @@ def history():
     entries = get_entries()
 
     etype = request.args.get("type")
-    if etype in ("Wet", "Dirty", "Play", "Feed"):
+    if etype in ("Wet", "Dirty", "Play", "Feed", "Probiotic"):
         entries = [e for e in entries if e["type"] == etype]
 
     date = request.args.get("date")
