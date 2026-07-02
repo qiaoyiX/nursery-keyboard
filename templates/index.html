@@ -573,11 +573,6 @@
     </div>
   </div>
 
-  <!-- Sleep monitoring UI is temporarily disabled: camera-based sleep
-       detection is currently not working (state is unreliable / "always wrong").
-       Backend daemon + /data sleep payload are left intact; re-enable this block
-       and the matching JS below once detection is trustworthy again.
-
   <div class="sleep-card" id="sleepCard">
     <div class="sleep-card-title">😴 Sleep</div>
     <div class="sleep-state-text is-unknown" id="sleepStateText">⋯ Camera offline</div>
@@ -593,7 +588,6 @@
       <span>12p</span><span>3p</span><span>6p</span><span>9p</span><span>12a</span>
     </div>
   </div>
-  -->
 
   <div class="buttons">
     <button class="action-btn btn-wet"   onclick="logEvent('Wet')">💧 Wet</button>
@@ -1075,12 +1069,8 @@
       }
     }
 
-    // --- Sleep monitoring (temporarily disabled) ---
-    // Camera-based sleep detection is currently not working — the reported
-    // state was unreliable, so the sleep cards above and these consumers are
-    // commented out. The backend still emits `data.sleep`; re-enable here and
-    // in refresh() once detection is trustworthy again.
-    /*
+    // --- Sleep monitoring ---
+
     function fmtElapsed(isoStr) {
       const mins = Math.round((Date.now() - new Date(isoStr)) / 60000);
       return fmtInterval(Math.max(0, mins)) + " ago";
@@ -1159,7 +1149,6 @@
         track.appendChild(block);
       }
     }
-    */
 
     // --- Polling ---
 
@@ -1177,11 +1166,10 @@
         }
         updateNextFeed(data);
         updateCharts(data);
-        // Sleep display disabled (detection not working) — re-enable with the block above:
-        // if (data.sleep) {
-        //   updateSleepCard(data.sleep);
-        //   updateSleepTimeline(data.sleep.sessions_today || []);
-        // }
+        if (data.sleep) {
+          updateSleepCard(data.sleep);
+          updateSleepTimeline(data.sleep.sessions_today || []);
+        }
       } catch (_) {
         notifyOffline();
       }

@@ -3,3 +3,5 @@ __pycache__/
 *.pyc
 log.json
 reference_frame.npy
+reference_frame_meta.json
+recordings/

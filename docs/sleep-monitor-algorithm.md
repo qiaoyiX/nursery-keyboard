@@ -1,5 +1,13 @@
 # Sleep-Monitor Algorithm Specification
 
+> **⚠️ SUPERSEDED (2026-07-02).** This document specifies the **v4** algorithm, which was replaced
+> by **v5 "event-gated latched presence"** after v4's presence detection proved unreliable
+> (dashboard UI had been disabled). The current algorithm, the failure analysis of v1–v4, and the
+> tuning plan live in [`sleep-detection-research.md`](sleep-detection-research.md). The
+> `active_fraction` primitive, IR guard, backdating, and cap described below carry over unchanged;
+> the per-frame presence decision, 2-frame hysteresis, and bootstrap-only reference management do
+> not. Kept for historical reference.
+
 How `sleep_monitor.py` decides whether the baby is AWAY, AWAKE, or ASLEEP from a camera feed.
 
 See also: [`architecture.md`](architecture.md) (ADR-004/005/006/007 cover the design rationale)

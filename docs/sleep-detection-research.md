@@ -209,6 +209,15 @@ Stillness ≥ `sleep_min_minutes` → ASLEEP (start backdated to stillness start
 
 ## 6. Tuning & validation plan
 
+**Data collection tooling (added with v5):** `record_camera.sh [minutes]` on the Pi captures the
+RTSP stream as 10-minute .mp4 segments with `-c copy` (no transcode, ~0% CPU; 2 h of the 640×360
+sub-stream ≈ 400–700 MB) into `recordings/`. Needs `sudo apt install ffmpeg`. `replay_sleep.py`
+then runs the **identical** resize→gray→ROI→`active_fraction` pipeline over the recordings on any
+machine with opencv and prints per-file motion/presence percentiles plus threshold guidance —
+record with the crib empty, with the baby asleep, and across a real put-down/pickup, and the
+numbers below become measurements instead of guesses. Recordings are also the training corpus if
+the custom-detector option (§7) is ever pursued.
+
 Per-frame logs now include the disturbance/probation flags:
 `state=asleep presence=0.0312 (thr 0.020) motion=0.0007 (thr 0.010) micro=0.002 dist=0.100 [probation]`
 
