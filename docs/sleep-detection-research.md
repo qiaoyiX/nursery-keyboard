@@ -1,6 +1,8 @@
 # Sleep Detection Research — Why It Failed, What We Learned, and the v5 Algorithm
 
-**Status:** research complete, v5 ("event-gated latched presence") implemented 2026-07-02.
+**Status:** v5 ("event-gated latched presence") implemented 2026-07-02 and **validated the same day
+against 2 h of real footage** (§6a) — empty side + put-down + sleeping baby all behave; a real
+pickup while ASLEEP remains unexercised.
 **Audience:** any agent or human picking up this work. This doc is self-contained; read it before
 touching `sleep_monitor.py`. See also `sleep-monitor-algorithm.md` (mechanical spec of the code),
 `architecture.md` ADR-004…007 (decision records), `backlog.md` H-2/TODO-1 (the overcount bug).
@@ -159,9 +161,13 @@ motion. At the moment it ends:
   probation. *This makes a poisoned reference self-healing: the first pickup after a bad bootstrap
   ends in probation → no micro-motion → AWAY + correct reference saved.*
 
-**Path 2 — Micro-motion override (AWAY → AWAKE).** While AWAY, ≥3 micro-motion frames within a
-rolling 10-minute window flips to AWAKE (prior P2). Catches: daemon started with baby already in
-crib, a placement whose disturbance was missed (camera reconnecting), bootstrap-with-baby.
+**Path 2 — Micro-motion override (AWAY → AWAKE).** While AWAY, micro-motion in **≥3 distinct
+minutes** within a rolling 10-minute window flips to AWAKE (prior P2). Catches: daemon started with
+baby already in crib, a placement whose disturbance was missed (camera reconnecting),
+bootstrap-with-baby. The distinct-minutes spread requirement came from real footage (§6): a brief
+parent reach-in produces a single 2–4 s motion cluster whose magnitude (~0.004–0.017) overlaps the
+sleeping-baby twitch range (~0.002–0.012) — magnitude cannot separate them, temporal spread can.
+Probation clearing (Path 1) similarly requires micro-motion in **≥2 distinct minutes**.
 
 **Path 3 — Manual calibration.** The "📷 Crib is empty" button: save reference, force AWAY, end any
 open session. Unchanged; still authoritative.
@@ -207,7 +213,32 @@ Stillness ≥ `sleep_min_minutes` → ASLEEP (start backdated to stillness start
 
 ---
 
-## 6. Tuning & validation plan
+## 6a. Measured results (2026-07-02 footage — thresholds are now measurements, not guesses)
+
+2 h recorded via `record_camera.sh` (12 × 10-min segments, 1280×720 @ 15 fps, IR mode).
+Ground truth from visual frame inspection: **empty crib 18:04→19:55** (with three brief parent
+visits), **put-down 19:54:40–19:55:00**, **swaddled baby asleep 19:55→20:04**. Analysis at 1 fps
+through the exact daemon pipeline, crib ROI `[0.10, 0.07, 0.80, 1.00]`:
+
+| Signal (crib ROI) | Measured | Threshold it validates |
+|---|---|---|
+| Empty-crib motion noise floor | p50 = p90 = **0.00000**, quiet-period max ≈ 0.0005 | `sleep_micromotion_fraction` 0.002 has real margin — **but only inside the ROI** |
+| Full-frame motion (OSD clock!) | constant 0.0001–0.0017 | The TAPO timestamp overlay alone nearly reaches the micro-motion threshold: **the ROI must exclude it** (or disable the OSD in the Tapo app) |
+| Sleeping-baby twitches | 3 frames > 0.002 in 9 min (0.0027–0.012), spread across minutes | Probation confirm (≥2 distinct minutes in 15 min) clears; `sleep_motion_fraction` 0.01 correctly reads the baby as "still" |
+| Parent reach-in (19:01) | one 3 s cluster, 0.004–**0.017** | Below disturbance (0.10), overlaps twitch range → motivated the distinct-minutes rules |
+| Put-down / parent-over-crib | 0.57–**1.00** | `sleep_disturbance_fraction` 0.10 catches every real event with huge margin |
+| Baby presence vs empty reference | **0.116** stable | 5.8× above `sleep_presence_threshold` 0.02 — clean separation |
+| Empty-crib presence drift | 0.005 → 0.0116 over 2 h | Would near the 0.02 threshold in ~4 h if static — the settle-time refresh + AWAY drift keep it pinned in practice |
+
+**End-to-end simulation** (`replay_sleep.py --simulate`, the real `SleepStateMachine` over all 2 h):
+state stayed AWAY through the empty period (both parent visits resolved back to AWAY within
+minutes via settle evaluation, one after a self-healing probation); the 19:01 reach-in caused **no**
+transition; the put-down produced AWAKE with probation cleared by genuine baby micro-motion; zero
+phantom sessions. With `sleep_min_minutes` lowered to 5 (footage ends 9 min after put-down), the
+ASLEEP transition fired with a correctly backdated session start. **Still unexercised on real
+footage: ASLEEP → pickup → session close** — capture a pickup in the next recording.
+
+## 6b. Tuning & validation plan
 
 **Data collection tooling (added with v5):** `record_camera.sh [minutes]` on the Pi captures the
 RTSP stream as 10-minute .mp4 segments with `-c copy` (no transcode, ~0% CPU; 2 h of the 640×360

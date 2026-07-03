@@ -2,7 +2,8 @@
 Sleep monitoring daemon — runs as a separate systemd service (nursery-sleep-monitor).
 
 v5 algorithm — event-gated latched presence (see docs/sleep-detection-research.md for the
-full rationale and the failure history of v1–v4):
+full rationale, the failure history of v1–v4, and the 2026-07-02 footage measurements
+that set the thresholds):
 
   Presence (baby in crib vs empty) is a LATCHED state, never re-decided per frame. A baby
   cannot enter or leave the crib without a parent-scale disturbance, so presence changes
@@ -11,10 +12,13 @@ full rationale and the failure history of v1–v4):
     1. Settle evaluation — after a disturbance (motion ≥ sleep_disturbance_fraction for
        2+ frames) quiets down for sleep_settle_seconds: if the settled frame matches the
        empty-crib reference → AWAY (and the reference is refreshed from the settled frame);
-       otherwise → AWAKE on PROBATION: micro-motion must appear within
-       sleep_probation_minutes or the "presence" is ruled a bedding ghost → AWAY.
-    2. Micro-motion override — while AWAY, repeated micro-motion frames (living-thing
-       evidence, needs no reference) flip to AWAKE.
+       otherwise → AWAKE on PROBATION: micro-motion in ≥2 distinct minutes must appear
+       within sleep_probation_minutes or the "presence" is ruled a bedding ghost → AWAY.
+    2. Micro-motion override — while AWAY, micro-motion in ≥3 distinct minutes within a
+       10-minute window flips to AWAKE. The distinct-minutes spread requirement is what
+       separates a real baby (twitches spread over minutes) from a brief parent reach-in
+       (one 2–4s cluster whose motion overlaps the baby-twitch range — observed in real
+       footage; magnitude alone cannot separate them).
     3. Manual "📷 Crib is empty" button — saves reference, forces AWAY.
     4. sleep_max_session_hours cap — backstop force-end.
 
@@ -24,13 +28,14 @@ full rationale and the failure history of v1–v4):
   Both signals use one robust primitive: active_fraction(a, b) = fraction of pixels that
   meaningfully changed (absdiff → per-pixel threshold → MORPH_OPEN speck removal), computed
   inside the crib ROI (sleep_crib_roi). Motion = vs previous frame; presence = vs reference.
+  The ROI must exclude the TAPO OSD timestamp (top-left) — its per-second digit changes
+  register as constant motion on the full frame.
 
 States: AWAY (not in crib) → AWAKE (in crib, moving) → ASLEEP (in crib, still)
 
-Every frame logs all metrics + thresholds at INFO so you can tune from real numbers:
-  sudo journalctl -u nursery-sleep-monitor -f
-Tuning order (details in docs/sleep-detection-research.md §6): noise floor first, then
-micro-motion sensitivity, then disturbance detection, then one full nap end-to-end.
+The per-frame decision logic lives in SleepStateMachine so the identical code runs live
+(this daemon) and offline over recorded footage (replay_sleep.py --simulate). Every frame
+logs all metrics + thresholds at INFO:  sudo journalctl -u nursery-sleep-monitor -f
 
 Configuration (settings.json):
   camera_rtsp_url            — rtsp://user:pass@IP:554/stream2
@@ -89,8 +94,9 @@ DENOISE_KERNEL       = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
 REFERENCE_UPDATE_LR  = 0.02   # slow drift of reference toward current during trusted-empty periods
 BOOTSTRAP_FRAMES     = 5      # frames median-averaged on startup to build initial reference (~5s)
 DISTURBANCE_FRAMES   = 2      # consecutive disturbance-level frames to open an episode
-MICRO_OVERRIDE_EVENTS = 3     # micro-motion frames within the window to flip AWAY → AWAKE
-MICRO_OVERRIDE_WINDOW = 600   # seconds (rolling) for the AWAY micro-motion override
+MICRO_OVERRIDE_MINUTES  = 3   # distinct minutes with micro-motion to flip AWAY → AWAKE …
+MICRO_OVERRIDE_WINDOW   = 600  # … within this rolling window (seconds)
+PROBATION_CONFIRM_MINUTES = 2  # distinct minutes with micro-motion to clear probation
 
 
 # ── Core primitive ────────────────────────────────────────────────────────────
@@ -149,25 +155,6 @@ def bootstrap_reference(cap, roi):
     return ref
 
 
-def maybe_update_reference(reference_gray, curr_gray, state, motion_frac,
-                           micromotion_fraction, presence_threshold):
-    """
-    Triple-gated slow drift: refine the reference only during trusted-empty periods so it
-    tracks lighting changes without ever absorbing a present baby.
-      Gate 1: state == AWAY (never absorb a present baby)
-      Gate 2: scene genuinely still (motion below the micro-motion floor)
-      Gate 3: current already closely matches reference (prevents inversion entrenchment)
-    """
-    if state != STATE_AWAY:
-        return reference_gray
-    if motion_frac >= micromotion_fraction:
-        return reference_gray
-    if active_fraction(curr_gray, reference_gray) > presence_threshold:
-        return reference_gray
-    return cv2.addWeighted(reference_gray, 1.0 - REFERENCE_UPDATE_LR,
-                           curr_gray,       REFERENCE_UPDATE_LR, 0)
-
-
 # ── RTSP capture ──────────────────────────────────────────────────────────────
 
 def open_capture(rtsp_url):
@@ -201,7 +188,253 @@ def read_frame_gray(cap, roi):
     return gray[r0:r1, c0:c1]
 
 
-# ── State machine ─────────────────────────────────────────────────────────────
+# ── State machine (pure decision logic — shared by daemon and replay) ─────────
+
+class SleepStateMachine:
+    """
+    Per-frame decision core. Feed it ROI-cropped grayscale frames via step(); it calls
+    back on session start/end and reference saves. No I/O of its own, so the identical
+    logic runs against the live RTSP stream and recorded footage (replay_sleep.py).
+    """
+
+    def __init__(self, cfg, reference=None, log=logging,
+                 on_session_start=None, on_session_end=None, on_reference_save=None):
+        self.cfg  = cfg
+        self.log  = log
+        self.on_session_start  = on_session_start or (lambda t: None)
+        self.on_session_end    = on_session_end or (lambda sid, t: None)
+        self.on_reference_save = on_reference_save or (lambda ref: None)
+
+        self.reference = reference
+        self.prev      = None
+        self.state     = STATE_AWAY
+        self.session_id    = None
+        self.sleep_start   = None
+        self.still_since   = None
+        self.motion_since  = None
+        self.dist_streak        = 0
+        self.in_disturbance     = False
+        self.disturbance_start  = None
+        self.settle_quiet_since = None
+        self.probation_deadline = None
+        self.probation_anchor   = None
+        self.probation_minutes_seen = set()   # distinct minute buckets with micro-motion
+        self.micro_events = deque()           # micro-motion timestamps (AWAY override)
+
+    # ── external controls ─────────────────────────────────────────────────────
+
+    def resume_session(self, session_id, sleep_start, now):
+        """Daemon restart/reconnect with an open session: resume ASLEEP, on probation
+        (we may have missed a pickup while offline)."""
+        self.state       = STATE_ASLEEP
+        self.session_id  = session_id
+        self.sleep_start = sleep_start
+        self._start_probation(now)
+        self.log.info("Resumed open sleep session id=%s started %s (on probation until %s)",
+                      session_id, sleep_start, self.probation_deadline.isoformat())
+
+    def calibrate(self, curr_gray, now):
+        """Manual 'Crib is empty': authoritative reference + forced AWAY."""
+        self._set_reference(curr_gray)
+        self._close_session(now, "manual calibration")
+        self._to_away()
+        self.prev = curr_gray
+        self.log.info("Reference frame saved manually — empty crib baseline updated")
+
+    # ── internals ─────────────────────────────────────────────────────────────
+
+    def _set_reference(self, gray):
+        self.reference = gray
+        self.on_reference_save(gray)
+
+    def _close_session(self, end_time, why):
+        if self.session_id is not None:
+            self.on_session_end(self.session_id, end_time)
+            self.log.info("Sleep session %s ended at %s (%s)",
+                          self.session_id, end_time.isoformat(), why)
+        self.session_id  = None
+        self.sleep_start = None
+
+    def _to_away(self):
+        self.state = STATE_AWAY
+        self.still_since = self.motion_since = None
+        self.probation_deadline = self.probation_anchor = None
+        self.probation_minutes_seen.clear()
+        self.micro_events.clear()
+
+    def _start_probation(self, now):
+        self.probation_deadline = now + timedelta(minutes=self.cfg["probation_minutes"])
+        self.probation_anchor   = now
+        self.probation_minutes_seen.clear()
+
+    def _maybe_update_reference(self, curr_gray, motion_frac):
+        """Triple-gated slow drift: track lighting only during trusted-empty stillness."""
+        if (self.state == STATE_AWAY
+                and motion_frac < self.cfg["micromotion_fraction"]
+                and self.reference is not None
+                and active_fraction(curr_gray, self.reference) <= self.cfg["presence_threshold"]):
+            self.reference = cv2.addWeighted(self.reference, 1.0 - REFERENCE_UPDATE_LR,
+                                             curr_gray,       REFERENCE_UPDATE_LR, 0)
+
+    # ── per-frame step ────────────────────────────────────────────────────────
+
+    def step(self, curr_gray, now):
+        """Process one ROI-cropped gray frame. Returns the state after the frame."""
+        cfg = self.cfg
+
+        if self.prev is None:
+            self.prev = curr_gray
+            return self.state
+
+        # Lighting-change guard: IR day/night toggle flips nearly every pixel — skip.
+        if active_fraction(self.prev, curr_gray, pixel_thresh=25) > LIGHTING_CEILING:
+            self.prev = curr_gray
+            return self.state
+
+        motion_frac   = active_fraction(self.prev, curr_gray)
+        presence_frac = (active_fraction(curr_gray, self.reference)
+                         if self.reference is not None else 0.0)
+        is_disturb = motion_frac >= cfg["disturbance_fraction"]
+        is_micro   = motion_frac > cfg["micromotion_fraction"]
+        is_motion  = motion_frac > cfg["motion_fraction"]
+
+        flags = ([""] if not (self.in_disturbance or self.probation_deadline) else
+                 [" [" + ",".join(f for f, on in
+                                  [("disturbance", self.in_disturbance),
+                                   ("probation", self.probation_deadline is not None)] if on) + "]"])
+        self.log.info("state=%s presence=%.4f (thr %.3f) motion=%.4f (thr %.3f) "
+                      "micro=%.3f dist=%.3f%s",
+                      self.state, presence_frac, cfg["presence_threshold"],
+                      motion_frac, cfg["motion_fraction"],
+                      cfg["micromotion_fraction"], cfg["disturbance_fraction"], flags[0])
+
+        # ── Disturbance episode tracking (Path 1 trigger) ─────────────────────
+        if is_disturb:
+            self.dist_streak       += 1
+            self.settle_quiet_since = None
+            if not self.in_disturbance and self.dist_streak >= DISTURBANCE_FRAMES:
+                self.in_disturbance    = True
+                self.disturbance_start = now - timedelta(
+                    seconds=(DISTURBANCE_FRAMES - 1) * FRAME_INTERVAL)
+                self.log.info("Disturbance started (motion %.3f ≥ %.3f)",
+                              motion_frac, cfg["disturbance_fraction"])
+                # A parent handling the crib is a wake by definition.
+                if self.state == STATE_ASLEEP:
+                    self._close_session(self.disturbance_start, "disturbance")
+                    self.state = STATE_AWAKE
+                self.still_since = self.motion_since = None
+                self.probation_deadline = None
+                self.probation_minutes_seen.clear()
+        else:
+            self.dist_streak = 0
+            if self.in_disturbance:
+                if self.settle_quiet_since is None:
+                    self.settle_quiet_since = now
+                elif (now - self.settle_quiet_since).total_seconds() >= cfg["settle_seconds"]:
+                    self._settle_evaluation(curr_gray, presence_frac, now)
+
+        if self.in_disturbance:
+            # Parent motion must not read as baby motion — suspend normal transitions.
+            self.prev = curr_gray
+            return self.state
+
+        # ── Micro-motion bookkeeping (minute-bucketed) ────────────────────────
+        if is_micro:
+            self.micro_events.append(now)
+            if self.probation_deadline is not None:
+                self.probation_minutes_seen.add(int(now.timestamp() // 60))
+        while self.micro_events and (now - self.micro_events[0]).total_seconds() > MICRO_OVERRIDE_WINDOW:
+            self.micro_events.popleft()
+
+        # ── Probation: occupancy claimed by the reference must be confirmed ───
+        if self.probation_deadline is not None:
+            if len(self.probation_minutes_seen) >= PROBATION_CONFIRM_MINUTES:
+                self.log.info("Probation cleared — micro-motion in %d distinct minutes "
+                              "confirms occupancy", len(self.probation_minutes_seen))
+                self.probation_deadline = self.probation_anchor = None
+                self.probation_minutes_seen.clear()
+            elif now >= self.probation_deadline:
+                self._close_session(self.probation_anchor, "probation expired — no micro-motion")
+                self.log.warning("Probation expired with micro-motion in %d minute(s) — ruling "
+                                 "crib empty, reference refreshed", len(self.probation_minutes_seen))
+                self._to_away()
+                if self.reference is not None:
+                    self._set_reference(curr_gray)
+
+        self._maybe_update_reference(curr_gray, motion_frac)
+
+        # ── State transitions (presence is latched; only Path 2 & timers) ─────
+        if self.state == STATE_AWAY:
+            # Path 2: micro-motion spread across distinct minutes = living thing.
+            # A brief parent reach-in produces one 2–4s cluster (same magnitudes as
+            # baby twitches) and must NOT fire this.
+            minutes = {int(t.timestamp() // 60) for t in self.micro_events}
+            if len(minutes) >= MICRO_OVERRIDE_MINUTES:
+                self.state = STATE_AWAKE
+                self.still_since = None
+                self.micro_events.clear()
+                self.log.info("Micro-motion override — activity in %d distinct minutes, AWAKE",
+                              len(minutes))
+
+        elif self.state == STATE_AWAKE:
+            if not is_motion:
+                if self.still_since is None:
+                    self.still_since  = now
+                    self.motion_since = None
+                elif (now - self.still_since).total_seconds() >= cfg["sleep_min_seconds"]:
+                    self.sleep_start = self.still_since
+                    self.session_id  = self.on_session_start(self.still_since)
+                    self.state       = STATE_ASLEEP
+                    self.still_since = None
+                    self.log.info("ASLEEP — session %s started at %s",
+                                  self.session_id, self.sleep_start)
+            else:
+                self.still_since = None
+
+        elif self.state == STATE_ASLEEP:
+            # Path 4: sanity cap — a session this old is detection loss, not sleep.
+            if (self.sleep_start is not None
+                    and (now - self.sleep_start).total_seconds() >= cfg["max_session_seconds"]):
+                self.log.warning("Session exceeded %.1fh cap — force-ending",
+                                 cfg["max_session_seconds"] / 3600)
+                self._close_session(now, "max-session cap")
+                self.state = STATE_AWAKE
+                self.motion_since = self.still_since = None
+            elif is_motion:
+                if self.motion_since is None:
+                    self.motion_since = now
+                    self.still_since  = None
+                elif (now - self.motion_since).total_seconds() >= cfg["wake_seconds"]:
+                    self._close_session(self.motion_since, "sustained motion")
+                    self.state = STATE_AWAKE
+                    self.motion_since = None
+            else:
+                self.motion_since = None
+
+        self.prev = curr_gray
+        return self.state
+
+    def _settle_evaluation(self, curr_gray, presence_frac, now):
+        """Path 1: a disturbance episode just ended — decide AWAY vs occupied-on-probation."""
+        self.in_disturbance     = False
+        self.settle_quiet_since = None
+        if self.reference is not None and presence_frac <= self.cfg["presence_threshold"]:
+            self._close_session(now, "settled empty")  # safety; normally closed already
+            self._to_away()
+            self._set_reference(curr_gray)
+            self.log.info("Settle: crib empty (presence %.4f ≤ %.3f) — AWAY, reference "
+                          "refreshed", presence_frac, self.cfg["presence_threshold"])
+        else:
+            self.state = STATE_AWAKE
+            self.still_since = self.motion_since = None
+            self._start_probation(now)
+            self.log.info("Settle: presence %.4f suggests occupied — AWAKE on probation "
+                          "until %s (micro-motion in %d distinct minutes must confirm)",
+                          presence_frac, self.probation_deadline.isoformat(),
+                          PROBATION_CONFIRM_MINUTES)
+
+
+# ── Daemon loop ───────────────────────────────────────────────────────────────
 
 def run_state_machine(rtsp_url, cfg):
     roi = roi_pixels(cfg["crib_roi"])
@@ -212,16 +445,14 @@ def run_state_machine(rtsp_url, cfg):
 
     logging.info("RTSP stream opened: %s (ROI rows %d–%d, cols %d–%d)", rtsp_url, *roi)
 
-    prev_gray = read_frame_gray(cap, roi)  # seed motion diff + validate reference shape
+    first_gray = read_frame_gray(cap, roi)  # validates reference shape, seeds motion diff
 
-    # ── Load or bootstrap reference frame ─────────────────────────────────────
-    expected_shape = prev_gray.shape if prev_gray is not None else None
-    reference_gray = load_reference_frame(expected_shape)
-    if reference_gray is None:
+    reference = load_reference_frame(first_gray.shape if first_gray is not None else None)
+    if reference is None:
         logging.info("No usable saved reference — building provisional reference from %d frames…",
                      BOOTSTRAP_FRAMES)
-        reference_gray = bootstrap_reference(cap, roi)
-        if reference_gray is not None:
+        reference = bootstrap_reference(cap, roi)
+        if reference is not None:
             logging.info("Provisional reference built. If the crib was NOT empty just now, the "
                          "first pickup will self-correct it; or press 'Crib is empty' to override.")
         else:
@@ -229,43 +460,27 @@ def run_state_machine(rtsp_url, cfg):
     else:
         logging.info("Reference frame loaded from disk")
 
-    # ── Resume open session from DB (daemon restart / RTSP reconnect) ─────────
+    def on_session_end(sid, end_time):
+        end_sleep_session(sid, end_time)
+        if HUCKLEBERRY_AVAILABLE and machine.sleep_start:
+            push_sleep(machine.sleep_start, end_time)
+
+    machine = SleepStateMachine(
+        cfg, reference=reference,
+        on_session_start=start_sleep_session,
+        on_session_end=on_session_end,
+        on_reference_save=save_reference_frame,
+    )
+    machine.prev = first_gray
+
     open_session = get_open_sleep_session()
     if open_session:
-        state               = STATE_ASLEEP
-        current_session_id  = open_session["id"]
-        t                   = open_session["start_time"]
-        current_sleep_start = t if isinstance(t, datetime) else datetime.fromisoformat(str(t))
-        # We may have missed a pickup while offline — demand micro-motion to keep the session.
-        probation_deadline  = datetime.now() + timedelta(minutes=cfg["probation_minutes"])
-        probation_anchor    = datetime.now()
-        logging.info("Resuming open sleep session id=%s started %s (on probation until %s)",
-                     current_session_id, current_sleep_start, probation_deadline.isoformat())
-    else:
-        state               = STATE_AWAY
-        current_session_id  = None
-        current_sleep_start = None
-        probation_deadline  = None
-        probation_anchor    = None
-
-    still_since        = None
-    motion_since       = None
-    dist_streak        = 0      # consecutive disturbance-level frames
-    in_disturbance     = False
-    disturbance_start  = None
-    settle_quiet_since = None   # first sub-disturbance frame after an episode
-    micro_events       = deque()  # timestamps of micro-motion frames (AWAY override window)
-
-    def close_session(end_time, why):
-        nonlocal current_session_id, current_sleep_start
-        if current_session_id is not None:
-            end_sleep_session(current_session_id, end_time)
-            if HUCKLEBERRY_AVAILABLE and current_sleep_start:
-                push_sleep(current_sleep_start, end_time)
-            logging.info("Sleep session %s ended at %s (%s)",
-                         current_session_id, end_time.isoformat(), why)
-        current_session_id  = None
-        current_sleep_start = None
+        t = open_session["start_time"]
+        machine.resume_session(
+            open_session["id"],
+            t if isinstance(t, datetime) else datetime.fromisoformat(str(t)),
+            datetime.now(),
+        )
 
     try:
         while True:
@@ -278,190 +493,38 @@ def run_state_machine(rtsp_url, cfg):
 
             now = datetime.now()
 
-            # ── Calibration flag (user pressed "Crib is empty" button) ────────
             if os.path.exists(CALIBRATE_FLAG):
                 try:
                     os.remove(CALIBRATE_FLAG)
-                    save_reference_frame(curr_gray)
-                    reference_gray = curr_gray
-                    logging.info("Reference frame saved manually — empty crib baseline updated")
-                    close_session(now, "manual calibration")
-                    state              = STATE_AWAY
-                    still_since        = None
-                    motion_since       = None
-                    dist_streak        = 0
-                    in_disturbance     = False
-                    settle_quiet_since = None
-                    probation_deadline = None
-                    micro_events.clear()
-                    prev_gray          = curr_gray
+                    machine.calibrate(curr_gray, now)
                 except Exception as e:
                     logging.warning("Calibration error: %s", e)
 
-            # ── Lighting-change guard (skip IR-toggle frames entirely) ─────────
-            if prev_gray is not None:
-                if active_fraction(prev_gray, curr_gray, pixel_thresh=25) > LIGHTING_CEILING:
-                    prev_gray = curr_gray
-                    write_sleep_heartbeat(state)
-                    time.sleep(max(0.0, FRAME_INTERVAL - (time.monotonic() - loop_start)))
-                    continue
-
-            # ── Per-frame signals ──────────────────────────────────────────────
-            motion_frac   = active_fraction(prev_gray, curr_gray) if prev_gray is not None else 0.0
-            presence_frac = (active_fraction(curr_gray, reference_gray)
-                             if reference_gray is not None else 0.0)
-            is_disturb    = motion_frac >= cfg["disturbance_fraction"]
-            is_micro      = motion_frac > cfg["micromotion_fraction"]
-            is_motion     = motion_frac > cfg["motion_fraction"]
-
-            flags = []
-            if in_disturbance:
-                flags.append("disturbance")
-            if probation_deadline is not None:
-                flags.append("probation")
-            logging.info("state=%s presence=%.4f (thr %.3f) motion=%.4f (thr %.3f) "
-                         "micro=%.3f dist=%.3f%s",
-                         state, presence_frac, cfg["presence_threshold"],
-                         motion_frac, cfg["motion_fraction"],
-                         cfg["micromotion_fraction"], cfg["disturbance_fraction"],
-                         " [" + ",".join(flags) + "]" if flags else "")
-
-            # ── Disturbance episode tracking (Path 1 trigger) ─────────────────
-            if is_disturb:
-                dist_streak       += 1
-                settle_quiet_since = None
-                if not in_disturbance and dist_streak >= DISTURBANCE_FRAMES:
-                    in_disturbance    = True
-                    disturbance_start = now - timedelta(seconds=(DISTURBANCE_FRAMES - 1) * FRAME_INTERVAL)
-                    logging.info("Disturbance started (motion %.3f ≥ %.3f)",
-                                 motion_frac, cfg["disturbance_fraction"])
-                    # A parent handling the crib is a wake by definition.
-                    if state == STATE_ASLEEP:
-                        close_session(disturbance_start, "disturbance")
-                        state = STATE_AWAKE
-                    still_since        = None
-                    motion_since       = None
-                    probation_deadline = None
-            else:
-                dist_streak = 0
-                if in_disturbance:
-                    if settle_quiet_since is None:
-                        settle_quiet_since = now
-                    elif (now - settle_quiet_since).total_seconds() >= cfg["settle_seconds"]:
-                        # ── Settle evaluation (Path 1) ─────────────────────────
-                        in_disturbance     = False
-                        settle_quiet_since = None
-                        if reference_gray is not None and presence_frac <= cfg["presence_threshold"]:
-                            close_session(now, "settled empty")  # safety; normally closed already
-                            state = STATE_AWAY
-                            save_reference_frame(curr_gray)
-                            reference_gray = curr_gray
-                            micro_events.clear()
-                            still_since = motion_since = None
-                            logging.info("Settle: crib empty (presence %.4f ≤ %.3f) — AWAY, "
-                                         "reference refreshed", presence_frac, cfg["presence_threshold"])
-                        else:
-                            state              = STATE_AWAKE
-                            still_since        = None
-                            motion_since       = None
-                            probation_deadline = now + timedelta(minutes=cfg["probation_minutes"])
-                            probation_anchor   = now
-                            logging.info("Settle: presence %.4f suggests occupied — AWAKE on "
-                                         "probation until %s (micro-motion must confirm)",
-                                         presence_frac, probation_deadline.isoformat())
-
-            if in_disturbance:
-                # Parent motion must not read as baby motion — suspend normal transitions.
-                write_sleep_heartbeat(state)
-                prev_gray = curr_gray
-                time.sleep(max(0.0, FRAME_INTERVAL - (time.monotonic() - loop_start)))
-                continue
-
-            # ── Micro-motion bookkeeping ───────────────────────────────────────
-            if is_micro:
-                micro_events.append(now)
-            while micro_events and (now - micro_events[0]).total_seconds() > MICRO_OVERRIDE_WINDOW:
-                micro_events.popleft()
-
-            # ── Probation (ambiguous settle / resumed session must be confirmed) ──
-            if probation_deadline is not None:
-                if is_micro:
-                    logging.info("Probation cleared — micro-motion confirms occupancy")
-                    probation_deadline = None
-                elif now >= probation_deadline:
-                    close_session(probation_anchor, "probation expired — no micro-motion")
-                    state = STATE_AWAY
-                    if reference_gray is not None:
-                        save_reference_frame(curr_gray)
-                        reference_gray = curr_gray
-                    micro_events.clear()
-                    still_since = motion_since = None
-                    probation_deadline = None
-                    logging.warning("Probation expired with zero micro-motion — ruling crib "
-                                    "empty, reference refreshed")
-
-            # ── Reference self-correction (lighting drift, empty crib only) ───
-            if reference_gray is not None:
-                reference_gray = maybe_update_reference(
-                    reference_gray, curr_gray, state, motion_frac,
-                    cfg["micromotion_fraction"], cfg["presence_threshold"]
-                )
-
-            # ── State transitions (presence is latched; only paths 2 & timers) ──
-            if state == STATE_AWAY:
-                # Path 2: living-thing evidence needs no reference frame.
-                if len(micro_events) >= MICRO_OVERRIDE_EVENTS:
-                    state       = STATE_AWAKE
-                    still_since = None
-                    micro_events.clear()
-                    logging.info("Micro-motion override — baby detected, AWAKE")
-
-            elif state == STATE_AWAKE:
-                if not is_motion:
-                    if still_since is None:
-                        still_since  = now
-                        motion_since = None
-                    elif (now - still_since).total_seconds() >= cfg["sleep_min_seconds"]:
-                        current_sleep_start = still_since
-                        current_session_id  = start_sleep_session(still_since)
-                        state               = STATE_ASLEEP
-                        still_since         = None
-                        logging.info("ASLEEP — session %s started at %s",
-                                     current_session_id, current_sleep_start)
-                else:
-                    still_since = None
-
-            elif state == STATE_ASLEEP:
-                # Path 4: sanity cap — a session this old is detection loss, not sleep.
-                if (current_sleep_start is not None
-                        and (now - current_sleep_start).total_seconds() >= cfg["max_session_seconds"]):
-                    logging.warning("Session exceeded %.1fh cap — force-ending",
-                                    cfg["max_session_seconds"] / 3600)
-                    close_session(now, "max-session cap")
-                    state        = STATE_AWAKE
-                    motion_since = None
-                    still_since  = None
-                elif is_motion:
-                    if motion_since is None:
-                        motion_since = now
-                        still_since  = None
-                    elif (now - motion_since).total_seconds() >= cfg["wake_seconds"]:
-                        close_session(motion_since, "sustained motion")
-                        state        = STATE_AWAKE
-                        motion_since = None
-                else:
-                    motion_since = None
-
+            state = machine.step(curr_gray, now)
             write_sleep_heartbeat(state)
-            prev_gray = curr_gray
-            elapsed   = time.monotonic() - loop_start
-            time.sleep(max(0.0, FRAME_INTERVAL - elapsed))
 
+            elapsed = time.monotonic() - loop_start
+            time.sleep(max(0.0, FRAME_INTERVAL - elapsed))
     finally:
         cap.release()
 
 
 # ── Reconnect loop ────────────────────────────────────────────────────────────
+
+def build_cfg(settings):
+    return {
+        "crib_roi":             settings.get("sleep_crib_roi", [0.0, 0.0, 1.0, 1.0]),
+        "presence_threshold":   float(settings.get("sleep_presence_threshold",  0.02)),
+        "motion_fraction":      float(settings.get("sleep_motion_fraction",     0.01)),
+        "micromotion_fraction": float(settings.get("sleep_micromotion_fraction", 0.002)),
+        "disturbance_fraction": float(settings.get("sleep_disturbance_fraction", 0.10)),
+        "settle_seconds":       float(settings.get("sleep_settle_seconds",      10)),
+        "probation_minutes":    float(settings.get("sleep_probation_minutes",   15)),
+        "sleep_min_seconds":    int(settings.get("sleep_min_minutes",           10)) * 60,
+        "wake_seconds":         int(settings.get("sleep_wake_seconds",          20)),
+        "max_session_seconds":  float(settings.get("sleep_max_session_hours",   14)) * 3600,
+    }
+
 
 def main():
     RECONNECT_DELAY = 10
@@ -475,21 +538,8 @@ def main():
             time.sleep(30)
             continue
 
-        cfg = {
-            "crib_roi":             settings.get("sleep_crib_roi", [0.0, 0.0, 1.0, 1.0]),
-            "presence_threshold":   float(settings.get("sleep_presence_threshold",  0.02)),
-            "motion_fraction":      float(settings.get("sleep_motion_fraction",     0.01)),
-            "micromotion_fraction": float(settings.get("sleep_micromotion_fraction", 0.002)),
-            "disturbance_fraction": float(settings.get("sleep_disturbance_fraction", 0.10)),
-            "settle_seconds":       float(settings.get("sleep_settle_seconds",      10)),
-            "probation_minutes":    float(settings.get("sleep_probation_minutes",   15)),
-            "sleep_min_seconds":    int(settings.get("sleep_min_minutes",           10)) * 60,
-            "wake_seconds":         int(settings.get("sleep_wake_seconds",          20)),
-            "max_session_seconds":  float(settings.get("sleep_max_session_hours",   14)) * 3600,
-        }
-
         try:
-            run_state_machine(rtsp_url, cfg)
+            run_state_machine(rtsp_url, build_cfg(settings))
         except Exception as exc:
             logging.error("Unexpected error: %s", exc, exc_info=True)
 
