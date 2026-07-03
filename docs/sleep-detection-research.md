@@ -1,8 +1,10 @@
 # Sleep Detection Research — Why It Failed, What We Learned, and the v5 Algorithm
 
-**Status:** v5 ("event-gated latched presence") implemented 2026-07-02 and **validated the same day
-against 2 h of real footage** (§6a) — empty side + put-down + sleeping baby all behave; a real
-pickup while ASLEEP remains unexercised.
+**Status:** v5 ("event-gated latched presence") implemented 2026-07-02, validated against 2 h of
+real footage the same day and against overnight footage with a real pickup on 2026-07-03 (§6a).
+Empty crib, put-down, sleeping baby, awake baby, pickup, and bootstrap-poisoned-reference
+self-healing all match ground truth in simulation. Remaining unexercised on real footage: a pickup
+that starts from confirmed ASLEEP (the 2026-07-03 pickup started from awake).
 **Audience:** any agent or human picking up this work. This doc is self-contained; read it before
 touching `sleep_monitor.py`. See also `sleep-monitor-algorithm.md` (mechanical spec of the code),
 `architecture.md` ADR-004…007 (decision records), `backlog.md` H-2/TODO-1 (the overcount bug).
@@ -137,7 +139,7 @@ reference comparison says.** Motion (relative, trustworthy) is primary; referenc
 | Signal | Definition | Threshold (setting) |
 |---|---|---|
 | `motion_frac` | `active_fraction(curr, prev)` | — |
-| disturbance | `motion_frac ≥ sleep_disturbance_fraction` (default **0.10**) for ≥2 consecutive frames | parent-scale event |
+| disturbance | `motion_frac ≥ sleep_disturbance_fraction` (default **0.30**) for ≥2 consecutive frames | parent-scale event (above awake-baby squirming 0.10–0.17, below pickup peaks 0.57–1.0) |
 | micro-motion | `motion_frac > sleep_micromotion_fraction` (default **0.002**) | living-thing evidence |
 | "moving" (awake) | `motion_frac > sleep_motion_fraction` (default 0.01) | unchanged from v4 |
 | `presence_frac` | `active_fraction(curr, reference)` | `sleep_presence_threshold` (0.02) |
@@ -155,11 +157,14 @@ motion. At the moment it ends:
   disturbance start**. The settled frame is **saved as the new reference** (prior P3 — this is what
   keeps the reference from ever going stale for long).
 - Else → **AWAKE, on probation**: presence says occupied, but the reference might be lying (stale /
-  bootstrap-poisoned), so demand corroboration: if no micro-motion frame occurs within
-  `sleep_probation_minutes` (default 15), conclude the "presence" was a bedding ghost → **AWAY**,
-  backdated to the disturbance end, and refresh the reference. One micro-motion frame clears
-  probation. *This makes a poisoned reference self-healing: the first pickup after a bad bootstrap
-  ends in probation → no micro-motion → AWAY + correct reference saved.*
+  bootstrap-poisoned), so demand corroboration: if micro-motion doesn't appear in ≥2 distinct
+  minutes within `sleep_probation_minutes` (default 15), conclude the "presence" was a bedding
+  ghost → **AWAY**, backdated to the disturbance end, and refresh the reference. *This makes a
+  poisoned reference self-healing: the first pickup after a bad bootstrap ends in probation → no
+  micro-motion → AWAY + correct reference saved.* **While probation is pending, the AWAKE→ASLEEP
+  stillness timer is held** — a sleep session must never start on unconfirmed occupancy (observed
+  on real footage: 10 min of empty-crib stillness during probation produced a phantom ASLEEP
+  before this guard existed).
 
 **Path 2 — Micro-motion override (AWAY → AWAKE).** While AWAY, micro-motion in **≥3 distinct
 minutes** within a rolling 10-minute window flips to AWAKE (prior P2). Catches: daemon started with
@@ -229,6 +234,23 @@ through the exact daemon pipeline, crib ROI `[0.10, 0.07, 0.80, 1.00]`:
 | Put-down / parent-over-crib | 0.57–**1.00** | `sleep_disturbance_fraction` 0.10 catches every real event with huge margin |
 | Baby presence vs empty reference | **0.116** stable | 5.8× above `sleep_presence_threshold` 0.02 — clean separation |
 | Empty-crib presence drift | 0.005 → 0.0116 over 2 h | Would near the 0.02 threshold in ~4 h if static — the settle-time refresh + AWAY drift keep it pinned in practice |
+
+**Night footage (2026-07-03 00:40–01:10, awake baby → pickup at 00:41 → empty)** added the
+occupied-awake side and a real pickup:
+
+| Signal (crib ROI) | Measured | Consequence |
+|---|---|---|
+| Awake baby squirming | p50 = **0.104**, max 0.17 | Overlapped the old 0.10 disturbance threshold — half of awake frames opened bogus "parent" episodes. **`sleep_disturbance_fraction` raised to 0.30** (pickups peak 0.57–1.0; clean gap both ways). |
+| Pickup | first crossing 0.53, peak 0.94 | Fires the 0.30 threshold with margin |
+| Empty crib at night (IR, 20 min) | motion max **0.00000** | Noise floor holds at night |
+
+This recording also exercised the **bootstrap-poisoned reference end-to-end**: the recording opens
+with the baby in frame, so the simulated bootstrap baked the baby into the reference; after the
+pickup, settle evaluation read "occupied" (empty crib ≠ baby-reference), probation got zero
+micro-motion, ruled AWAY, and refreshed the reference — self-healing exactly as designed. It also
+exposed the **phantom-ASLEEP bug**: the stillness timer ran during that unconfirmed probation and
+declared ASLEEP on an empty crib at the 10-min mark. Fixed by holding the stillness timer while
+probation is pending (§5 Path 1).
 
 **End-to-end simulation** (`replay_sleep.py --simulate`, the real `SleepStateMachine` over all 2 h):
 state stayed AWAY through the empty period (both parent visits resolved back to AWAY within

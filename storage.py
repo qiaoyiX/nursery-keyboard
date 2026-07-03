@@ -35,7 +35,8 @@ DEFAULT_SETTINGS = {
     "huckleberry_timezone":     "America/New_York",
     "sleep_presence_threshold": 0.02,  # fraction of ROI that must differ from empty-crib reference
     "sleep_crib_roi":            [0.0, 0.0, 1.0, 1.0],  # crib region as [x0, y0, x1, y1] fractions of the frame
-    "sleep_disturbance_fraction": 0.10,  # motion fraction = parent-scale disturbance; presence re-evaluated after it settles
+    "sleep_disturbance_fraction": 0.30,  # motion fraction = parent-scale disturbance; presence re-evaluated after it settles.
+                                         # Measured: awake baby squirming reaches 0.10-0.17, pickups/put-downs 0.57-1.0 — 0.30 splits the gap.
     "sleep_settle_seconds":      10,    # quiet seconds after a disturbance before re-evaluating presence
     "sleep_micromotion_fraction": 0.002, # motion fraction counting as living-thing micro-motion (must sit above camera noise floor)
     "sleep_probation_minutes":   15,    # micro-motion must appear within this window after an ambiguous settle, else crib ruled empty

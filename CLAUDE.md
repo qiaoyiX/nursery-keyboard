@@ -118,7 +118,7 @@ sudo journalctl -u nursery-sleep-monitor -f
 | `sleep_presence_threshold` | `0.02` | ROI fraction differing from the empty-crib reference for a settle evaluation to say "occupied" |
 | `sleep_motion_fraction` | `0.01` | ROI fraction changed vs the previous frame above which baby is "moving" (awake) |
 | `sleep_micromotion_fraction` | `0.002` | ROI fraction counting as living-thing micro-motion; must sit above the camera noise floor |
-| `sleep_disturbance_fraction` | `0.10` | ROI fraction = parent-scale disturbance; presence is only re-evaluated after one settles |
+| `sleep_disturbance_fraction` | `0.30` | ROI fraction = parent-scale disturbance; presence is only re-evaluated after one settles. Measured: awake-baby squirming 0.10–0.17, pickups 0.57–1.0 |
 | `sleep_settle_seconds` | `10` | Quiet seconds that end a disturbance episode and trigger the settle evaluation |
 | `sleep_probation_minutes` | `15` | After an ambiguous settle (reference says occupied), micro-motion must appear within this window or the crib is ruled empty |
 | `sleep_min_minutes` | `10` | Stillness minutes before marking asleep |

@@ -43,7 +43,8 @@ Configuration (settings.json):
   sleep_presence_threshold   — ROI fraction differing from reference = "occupied" hint (default 0.02)
   sleep_motion_fraction      — ROI fraction changed vs prev frame = "moving/awake" (default 0.01)
   sleep_micromotion_fraction — ROI fraction = living-thing micro-motion (default 0.002)
-  sleep_disturbance_fraction — ROI fraction = parent-scale disturbance (default 0.10)
+  sleep_disturbance_fraction — ROI fraction = parent-scale disturbance (default 0.30; awake-baby
+                               squirming measured 0.10–0.17, pickups 0.57–1.0)
   sleep_settle_seconds       — quiet seconds ending a disturbance episode (default 10)
   sleep_probation_minutes    — micro-motion deadline after an ambiguous settle (default 15)
   sleep_min_minutes          — stillness minutes before marking asleep (default 10)
@@ -377,7 +378,12 @@ class SleepStateMachine:
                               len(minutes))
 
         elif self.state == STATE_AWAKE:
-            if not is_motion:
+            if self.probation_deadline is not None:
+                # Occupancy unconfirmed — a sleep session must never start on what may be
+                # an empty crib (observed: 10 min of empty-crib stillness during probation
+                # produced a phantom ASLEEP before this guard existed).
+                self.still_since = None
+            elif not is_motion:
                 if self.still_since is None:
                     self.still_since  = now
                     self.motion_since = None
@@ -517,7 +523,7 @@ def build_cfg(settings):
         "presence_threshold":   float(settings.get("sleep_presence_threshold",  0.02)),
         "motion_fraction":      float(settings.get("sleep_motion_fraction",     0.01)),
         "micromotion_fraction": float(settings.get("sleep_micromotion_fraction", 0.002)),
-        "disturbance_fraction": float(settings.get("sleep_disturbance_fraction", 0.10)),
+        "disturbance_fraction": float(settings.get("sleep_disturbance_fraction", 0.30)),
         "settle_seconds":       float(settings.get("sleep_settle_seconds",      10)),
         "probation_minutes":    float(settings.get("sleep_probation_minutes",   15)),
         "sleep_min_seconds":    int(settings.get("sleep_min_minutes",           10)) * 60,
