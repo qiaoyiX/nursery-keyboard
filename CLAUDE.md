@@ -121,8 +121,8 @@ sudo journalctl -u nursery-sleep-monitor -f
 | `sleep_disturbance_fraction` | `0.30` | ROI fraction = parent-scale disturbance; presence is only re-evaluated after one settles. Measured: awake-baby squirming 0.10–0.17, pickups 0.57–1.0 |
 | `sleep_settle_seconds` | `10` | Quiet seconds that end a disturbance episode and trigger the settle evaluation |
 | `sleep_probation_minutes` | `15` | After an ambiguous settle (reference says occupied), micro-motion must appear within this window or the crib is ruled empty |
-| `sleep_min_minutes` | `10` | Stillness minutes before marking asleep |
-| `sleep_wake_seconds` | `20` | Sustained motion seconds before marking awake |
+| `sleep_min_minutes` | `10` | Stillness minutes before marking asleep. Brief sleep stirs (1–7 s clusters) do NOT reset the timer |
+| `sleep_wake_seconds` | `20` | Window for the sustained-motion test: motion in ≥60% of its frames = genuinely awake (wakes a session / resets stillness) |
 | `sleep_max_session_hours` | `14` | Force-end backstop for a stuck-open session |
 
 **How it works (v5 — full rationale in `docs/sleep-detection-research.md`):** Presence is latched; it changes only at events. A parent-scale disturbance (motion ≥ `sleep_disturbance_fraction`) opens an episode; when it settles, the frame is compared to the empty-crib reference: match → AWAY + reference refreshed from the settled frame; differ → AWAKE on probation (micro-motion must confirm within `sleep_probation_minutes`, else AWAY + reference refreshed — this self-heals stale/poisoned references). While AWAY, repeated micro-motion flips to AWAKE without needing any reference. AWAKE ↔ ASLEEP uses stillness/motion timers with backdated start/end times; a disturbance during ASLEEP ends the session at the disturbance start. Lighting-change guard: frame diff > 80% (IR flip) skips the frame. Heartbeat written every frame; Flask shows "Camera offline" if stale > 60s.

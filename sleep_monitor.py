@@ -98,6 +98,10 @@ DISTURBANCE_FRAMES   = 2      # consecutive disturbance-level frames to open an 
 MICRO_OVERRIDE_MINUTES  = 3   # distinct minutes with micro-motion to flip AWAY → AWAKE …
 MICRO_OVERRIDE_WINDOW   = 600  # … within this rolling window (seconds)
 PROBATION_CONFIRM_MINUTES = 2  # distinct minutes with micro-motion to clear probation
+MOTION_DENSITY          = 0.6  # fraction of the trailing wake_seconds window that must be
+                               # motion frames to count as "sustained" (genuinely awake).
+                               # Sleep stirs are 1–7s clusters minutes apart (density ~0.05);
+                               # awake squirming fills ~98% of frames — measured 2026-07-04.
 
 
 # ── Core primitive ────────────────────────────────────────────────────────────
@@ -212,7 +216,7 @@ class SleepStateMachine:
         self.session_id    = None
         self.sleep_start   = None
         self.still_since   = None
-        self.motion_since  = None
+        self.motion_frames = deque()          # timestamps of recent "moving" frames
         self.dist_streak        = 0
         self.in_disturbance     = False
         self.disturbance_start  = None
@@ -258,7 +262,8 @@ class SleepStateMachine:
 
     def _to_away(self):
         self.state = STATE_AWAY
-        self.still_since = self.motion_since = None
+        self.still_since = None
+        self.motion_frames.clear()
         self.probation_deadline = self.probation_anchor = None
         self.probation_minutes_seen.clear()
         self.micro_events.clear()
@@ -267,6 +272,24 @@ class SleepStateMachine:
         self.probation_deadline = now + timedelta(minutes=self.cfg["probation_minutes"])
         self.probation_anchor   = now
         self.probation_minutes_seen.clear()
+
+    def _sustained_motion(self, now, is_motion):
+        """
+        Rolling density test for genuine wakefulness: motion frames must fill
+        ≥ MOTION_DENSITY of the trailing wake_seconds window. Brief sleep stirs
+        (a newborn in active sleep moves 1–7 s every 1–3 min) never reach that;
+        awake squirming (~98% of frames moving) reaches it within ~wake_seconds.
+        Replaces both the old single-frame stillness reset (which kept an active-sleep
+        baby "awake" forever) and the old consecutive-frames wake test (which one
+        quiet frame could postpone).
+        """
+        if is_motion:
+            self.motion_frames.append(now)
+        window = self.cfg["wake_seconds"]
+        while self.motion_frames and (now - self.motion_frames[0]).total_seconds() > window:
+            self.motion_frames.popleft()
+        needed = max(3, int(MOTION_DENSITY * window / FRAME_INTERVAL))
+        return len(self.motion_frames) >= needed
 
     def _maybe_update_reference(self, curr_gray, motion_frac):
         """Triple-gated slow drift: track lighting only during trusted-empty stillness."""
@@ -323,7 +346,8 @@ class SleepStateMachine:
                 if self.state == STATE_ASLEEP:
                     self._close_session(self.disturbance_start, "disturbance")
                     self.state = STATE_AWAKE
-                self.still_since = self.motion_since = None
+                self.still_since = None
+                self.motion_frames.clear()
                 self.probation_deadline = None
                 self.probation_minutes_seen.clear()
         else:
@@ -350,8 +374,9 @@ class SleepStateMachine:
         # ── Probation: occupancy claimed by the reference must be confirmed ───
         if self.probation_deadline is not None:
             if len(self.probation_minutes_seen) >= PROBATION_CONFIRM_MINUTES:
-                self.log.info("Probation cleared — micro-motion in %d distinct minutes "
-                              "confirms occupancy", len(self.probation_minutes_seen))
+                self.log.info("Probation cleared at %s — micro-motion in %d distinct minutes "
+                              "confirms occupancy", now.isoformat(),
+                              len(self.probation_minutes_seen))
                 self.probation_deadline = self.probation_anchor = None
                 self.probation_minutes_seen.clear()
             elif now >= self.probation_deadline:
@@ -363,6 +388,9 @@ class SleepStateMachine:
                     self._set_reference(curr_gray)
 
         self._maybe_update_reference(curr_gray, motion_frac)
+
+        # Genuine wakefulness = sustained motion density, not isolated stirs.
+        sustained = self._sustained_motion(now, is_motion)
 
         # ── State transitions (presence is latched; only Path 2 & timers) ─────
         if self.state == STATE_AWAY:
@@ -378,24 +406,24 @@ class SleepStateMachine:
                               len(minutes))
 
         elif self.state == STATE_AWAKE:
-            if self.probation_deadline is not None:
-                # Occupancy unconfirmed — a sleep session must never start on what may be
-                # an empty crib (observed: 10 min of empty-crib stillness during probation
-                # produced a phantom ASLEEP before this guard existed).
+            if sustained:
+                self.still_since = None   # genuinely restless — not falling asleep
+            elif self.still_since is None:
+                if not is_motion:
+                    self.still_since = now
+            elif ((now - self.still_since).total_seconds() >= cfg["sleep_min_seconds"]
+                    and self.probation_deadline is None):
+                # The probation gate: a session must never start on unconfirmed
+                # occupancy (observed: 10 min of empty-crib stillness during probation
+                # produced a phantom ASLEEP). The timer itself keeps running through
+                # probation so a confirmed baby's session start stays backdated to
+                # when stillness truly began; probation expiry wipes the timer.
+                self.sleep_start = self.still_since
+                self.session_id  = self.on_session_start(self.still_since)
+                self.state       = STATE_ASLEEP
                 self.still_since = None
-            elif not is_motion:
-                if self.still_since is None:
-                    self.still_since  = now
-                    self.motion_since = None
-                elif (now - self.still_since).total_seconds() >= cfg["sleep_min_seconds"]:
-                    self.sleep_start = self.still_since
-                    self.session_id  = self.on_session_start(self.still_since)
-                    self.state       = STATE_ASLEEP
-                    self.still_since = None
-                    self.log.info("ASLEEP — session %s started at %s",
-                                  self.session_id, self.sleep_start)
-            else:
-                self.still_since = None
+                self.log.info("ASLEEP — session %s started at %s",
+                              self.session_id, self.sleep_start)
 
         elif self.state == STATE_ASLEEP:
             # Path 4: sanity cap — a session this old is detection loss, not sleep.
@@ -405,17 +433,14 @@ class SleepStateMachine:
                                  cfg["max_session_seconds"] / 3600)
                 self._close_session(now, "max-session cap")
                 self.state = STATE_AWAKE
-                self.motion_since = self.still_since = None
-            elif is_motion:
-                if self.motion_since is None:
-                    self.motion_since = now
-                    self.still_since  = None
-                elif (now - self.motion_since).total_seconds() >= cfg["wake_seconds"]:
-                    self._close_session(self.motion_since, "sustained motion")
-                    self.state = STATE_AWAKE
-                    self.motion_since = None
-            else:
-                self.motion_since = None
+                self.still_since = None
+                self.motion_frames.clear()
+            elif sustained:
+                # Wake backdated to the first motion frame of the sustained burst.
+                self._close_session(self.motion_frames[0], "sustained motion")
+                self.state = STATE_AWAKE
+                self.still_since = None
+                self.motion_frames.clear()
 
         self.prev = curr_gray
         return self.state
@@ -432,7 +457,8 @@ class SleepStateMachine:
                           "refreshed", presence_frac, self.cfg["presence_threshold"])
         else:
             self.state = STATE_AWAKE
-            self.still_since = self.motion_since = None
+            self.still_since = None
+            self.motion_frames.clear()
             self._start_probation(now)
             self.log.info("Settle: presence %.4f suggests occupied — AWAKE on probation "
                           "until %s (micro-motion in %d distinct minutes must confirm)",

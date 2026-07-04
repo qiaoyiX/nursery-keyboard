@@ -1,10 +1,12 @@
 # Sleep Detection Research — Why It Failed, What We Learned, and the v5 Algorithm
 
-**Status:** v5 ("event-gated latched presence") implemented 2026-07-02, validated against 2 h of
-real footage the same day and against overnight footage with a real pickup on 2026-07-03 (§6a).
-Empty crib, put-down, sleeping baby, awake baby, pickup, and bootstrap-poisoned-reference
-self-healing all match ground truth in simulation. Remaining unexercised on real footage: a pickup
-that starts from confirmed ASLEEP (the 2026-07-03 pickup started from awake).
+**Status:** v5 ("event-gated latched presence") implemented 2026-07-02; validated against three
+real recordings (§6a): 2 h empty+put-down (7/2), overnight awake-baby pickup (7/3), and a full
+put-down-to-ASLEEP cycle (7/4, which drove the stir-tolerant stillness rule). Empty crib,
+put-down, active/quiet sleep, awake baby, pickup, bedding changes, and
+bootstrap-poisoned-reference self-healing all match ground truth in simulation. Remaining
+unexercised on real footage: a pickup that starts from confirmed ASLEEP (the 7/3 pickup started
+from awake).
 **Audience:** any agent or human picking up this work. This doc is self-contained; read it before
 touching `sleep_monitor.py`. See also `sleep-monitor-algorithm.md` (mechanical spec of the code),
 `architecture.md` ADR-004…007 (decision records), `backlog.md` H-2/TODO-1 (the overcount bug).
@@ -180,10 +182,21 @@ open session. Unchanged; still authoritative.
 **Path 4 — Max-session cap.** `sleep_max_session_hours` (14 h) force-end. Unchanged; now expected
 to ~never fire.
 
-### ASLEEP/AWAKE (unchanged mechanics, two adjustments)
+### ASLEEP/AWAKE (stir-tolerant stillness, density-based wakefulness)
 
-Stillness ≥ `sleep_min_minutes` → ASLEEP (start backdated to stillness start); sustained motion ≥
-`sleep_wake_seconds` → AWAKE (end backdated to motion start). Adjustments:
+Stillness ≥ `sleep_min_minutes` → ASLEEP (start backdated to stillness start); **sustained** motion
+→ AWAKE (end backdated to the first frame of the sustained burst). "Sustained" is a rolling density
+test (`MOTION_DENSITY = 0.6`): motion frames must fill ≥60% of the trailing `sleep_wake_seconds`
+window. This came from 2026-07-04 footage: a newborn in *active sleep* stirs for 1–7 s every 1–3
+minutes (longest fully-still stretch observed: 7.5 min), so the earlier rule — any single moving
+frame resets the stillness timer — kept a visibly sleeping baby "awake" forever. Awake squirming
+fills ~98% of frames, so density separates the two cleanly where magnitude cannot (stirs reach
+0.077, awake p50 is 0.104). Isolated stirs neither reset the stillness timer nor wake a session.
+Further rules:
+- **The AWAKE→ASLEEP transition is gated on probation being clear** — a session must never start
+  on unconfirmed occupancy (10 min of empty-crib stillness during probation once produced a
+  phantom ASLEEP). The stillness *timer* keeps running through probation, so once micro-motion
+  confirms the baby, the session start is still backdated to when stillness truly began.
 - A **disturbance while ASLEEP ends the session immediately**, backdated to the disturbance start —
   a parent handling the crib is a wake by definition, and we shouldn't wait out `wake_seconds` of
   ambiguity. If the baby stays asleep after a blanket-adjust, the stillness timer simply restarts
@@ -251,6 +264,19 @@ micro-motion, ruled AWAY, and refreshed the reference — self-healing exactly a
 exposed the **phantom-ASLEEP bug**: the stillness timer ran during that unconfirmed probation and
 declared ASLEEP on an empty crib at the 10-min mark. Fixed by holding the stillness timer while
 probation is pending (§5 Path 1).
+
+**Put-down footage (2026-07-04 17:19–17:49, empty-with-blanket → put-down 17:25 → swaddled baby
+asleep from ~17:32)** added the settle-into-sleep phase:
+
+| Signal (crib ROI) | Measured | Consequence |
+|---|---|---|
+| Active-sleep stirs | 0.010–0.077 in 1–7 s clusters, every 1–3 min; longest fully-still stretch **7.5 min** | Single-frame stillness resets meant ASLEEP never fired → replaced with the 60%-density sustained-motion rule |
+| Put-down + swaddling | three disturbance episodes 17:25–17:32, peaks 0.49–0.78 | Multi-episode put-downs handled; probation restarted per settle, cleared at 17:35 by real micro-motion |
+
+Simulated result after the fix: AWAKE at 17:25:34, **ASLEEP at 17:42:07 with the session backdated
+to 17:32:06** — the same minute the parent finished swaddling per the frames. The bedding change
+across this put-down (draped blanket removed) also confirmed reference refreshes handle scene
+changes.
 
 **End-to-end simulation** (`replay_sleep.py --simulate`, the real `SleepStateMachine` over all 2 h):
 state stayed AWAY through the empty period (both parent visits resolved back to AWAY within
