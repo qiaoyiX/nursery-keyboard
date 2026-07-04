@@ -255,6 +255,72 @@
       padding: 0 2px;
     }
 
+    /* ── Nap journal list (rows = legend for the timeline blocks) ── */
+    .nap-list {
+      margin-top: 12px;
+      border-top: 1px solid var(--cream-2);
+    }
+    .nap-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 9px 4px;
+      border-bottom: 1px solid var(--cream-2);
+    }
+    .nap-row:last-child { border-bottom: none; padding-bottom: 3px; }
+    .nap-row.is-open {
+      background: linear-gradient(90deg, var(--sleep-a), transparent 75%);
+      border-radius: 10px;
+    }
+    .nap-ordinal {
+      flex: none;
+      width: 26px;
+      height: 26px;
+      border-radius: 50%;
+      background: var(--sleep-a);
+      color: var(--sleep);
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: 0.85rem;
+      line-height: 26px;
+      text-align: center;
+    }
+    .nap-range {
+      flex: 1;
+      min-width: 0;
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: 1.02rem;
+      color: var(--brown-deep);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .nap-row.is-open .nap-range { color: var(--sleep); }
+    .nap-dur {
+      flex: none;
+      font-size: 0.78rem;
+      color: var(--text-muted);
+      font-variant-numeric: tabular-nums;
+    }
+    .nap-live-dot {
+      display: inline-block;
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--sleep);
+      margin: 0 1px 2px 5px;
+      vertical-align: middle;
+      animation: nap-pulse 2.4s ease-in-out infinite;
+    }
+    @keyframes nap-pulse { 0%, 100% { opacity: .35; } 50% { opacity: 1; } }
+    @media (prefers-reduced-motion: reduce) { .nap-live-dot { animation: none; } }
+    .nap-empty {
+      font-size: 0.85rem;
+      font-style: italic;
+      color: var(--text-muted);
+      text-align: center;
+      padding: 12px 0 6px;
+    }
+
     /* ── Action buttons ──────────────────── */
     .buttons {
       display: grid;
@@ -581,12 +647,13 @@
   </div>
 
   <div class="sleep-timeline-card">
-    <div class="sleep-card-title" style="margin-bottom:10px">Today's Timeline</div>
+    <div class="sleep-card-title" style="margin-bottom:10px">Today's Sleep</div>
     <div class="sleep-timeline-track" id="sleepTrack"></div>
     <div class="sleep-timeline-labels">
       <span>12a</span><span>3a</span><span>6a</span><span>9a</span>
       <span>12p</span><span>3p</span><span>6p</span><span>9p</span><span>12a</span>
     </div>
+    <div class="nap-list" id="napList"></div>
   </div>
 
   <div class="buttons">
@@ -1150,6 +1217,58 @@
       }
     }
 
+    function fmtClock(iso) {
+      return new Date(iso).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+    }
+
+    // "2:15 – 3:05 PM" — drop the start meridiem when it matches the end's
+    function fmtNapRange(startIso, endIso) {
+      const s = fmtClock(startIso), e = fmtClock(endIso);
+      const sStripped = s.slice(-2) === e.slice(-2) ? s.replace(/\s?[AP]M$/, "") : s;
+      return `${sStripped} – ${e}`;
+    }
+
+    function updateNapList(sessions) {
+      const list = document.getElementById("napList");
+      list.replaceChildren();
+
+      if (!sessions.length) {
+        const empty = document.createElement("div");
+        empty.className = "nap-empty";
+        empty.textContent = "No naps yet today";
+        list.appendChild(empty);
+        return;
+      }
+
+      sessions.forEach((s, i) => {
+        const row = document.createElement("div");
+        row.className = "nap-row" + (s.is_open ? " is-open" : "");
+
+        const ord = document.createElement("div");
+        ord.className = "nap-ordinal";
+        ord.textContent = i + 1;
+
+        const range = document.createElement("div");
+        range.className = "nap-range";
+        if (s.is_open) {
+          range.textContent = `${fmtClock(s.start_iso)} – now`;
+          const dot = document.createElement("span");
+          dot.className = "nap-live-dot";
+          dot.setAttribute("aria-label", "nap in progress");
+          range.appendChild(dot);
+        } else {
+          range.textContent = fmtNapRange(s.start_iso, s.end_iso);
+        }
+
+        const dur = document.createElement("div");
+        dur.className = "nap-dur";
+        dur.textContent = fmtInterval(Math.round(s.duration_minutes)) + (s.is_open ? " so far" : "");
+
+        row.append(ord, range, dur);
+        list.appendChild(row);
+      });
+    }
+
     // --- Polling ---
 
     async function refresh() {
@@ -1169,6 +1288,7 @@
         if (data.sleep) {
           updateSleepCard(data.sleep);
           updateSleepTimeline(data.sleep.sessions_today || []);
+          updateNapList(data.sleep.sessions_today || []);
         }
       } catch (_) {
         notifyOffline();
