@@ -159,22 +159,27 @@ motion. At the moment it ends:
   disturbance start**. The settled frame is **saved as the new reference** (prior P3 — this is what
   keeps the reference from ever going stale for long).
 - Else → **AWAKE, on probation**: presence says occupied, but the reference might be lying (stale /
-  bootstrap-poisoned), so demand corroboration: if micro-motion doesn't appear in ≥2 distinct
-  minutes within `sleep_probation_minutes` (default 15), conclude the "presence" was a bedding
-  ghost → **AWAY**, backdated to the disturbance end, and refresh the reference. *This makes a
+  bootstrap-poisoned), so demand life evidence: sustained motion, or ≥2 micro-motion episodes
+  separated by ≥60 s, within `sleep_probation_minutes` (default 15) — otherwise conclude the
+  "presence" was a bedding ghost → **AWAY**, backdated to the disturbance end, and refresh the
+  reference. *This makes a
   poisoned reference self-healing: the first pickup after a bad bootstrap ends in probation → no
   micro-motion → AWAY + correct reference saved.* **While probation is pending, the AWAKE→ASLEEP
   stillness timer is held** — a sleep session must never start on unconfirmed occupancy (observed
   on real footage: 10 min of empty-crib stillness during probation produced a phantom ASLEEP
   before this guard existed).
 
-**Path 2 — Micro-motion override (AWAY → AWAKE).** While AWAY, micro-motion in **≥3 distinct
-minutes** within a rolling 10-minute window flips to AWAKE (prior P2). Catches: daemon started with
-baby already in crib, a placement whose disturbance was missed (camera reconnecting),
-bootstrap-with-baby. The distinct-minutes spread requirement came from real footage (§6): a brief
-parent reach-in produces a single 2–4 s motion cluster whose magnitude (~0.004–0.017) overlaps the
-sleeping-baby twitch range (~0.002–0.012) — magnitude cannot separate them, temporal spread can.
-Probation clearing (Path 1) similarly requires micro-motion in **≥2 distinct minutes**.
+**Path 2 — Life-evidence override (AWAY → AWAKE).** While AWAY, either **sustained motion** (the
+60%-density test — an awake baby; an empty crib can produce at most 1–3 stray frames at a time,
+never density) or **≥3 micro-motion episodes separated by ≥60 s of quiet** within a rolling
+10-minute window flips to AWAKE (prior P2). Catches: daemon started with baby already in crib, a
+placement whose disturbance was missed (camera reconnecting), bootstrap-with-baby. The episode
+separation came from real footage (§6): a brief parent reach-in produces a single 2–4 s motion
+cluster whose magnitude (~0.004–0.017) overlaps the sleeping-baby twitch range (~0.002–0.012) —
+magnitude cannot separate them, temporal spread can. (Episodes, not calendar-minute buckets: a
+single cluster straddling a minute boundary must not count as two pieces of evidence.) Probation
+clearing (Path 1) uses the same evidence with a lower bar: sustained motion or **≥2 separated
+episodes**.
 
 **Path 3 — Manual calibration.** The "📷 Crib is empty" button: save reference, force AWAY, end any
 open session. Unchanged; still authoritative.
@@ -277,6 +282,17 @@ Simulated result after the fix: AWAKE at 17:25:34, **ASLEEP at 17:42:07 with the
 to 17:32:06** — the same minute the parent finished swaddling per the frames. The bedding change
 across this put-down (draped blanket removed) also confirmed reference refreshes handle scene
 changes.
+
+**Pickup footage (2026-07-04 18:15–18:45, awake baby → pickup 18:16 → empty crib with the unwrapped
+swaddle left crumpled → blanket removed 18:35)** exercised the bedding-ghost pickup and exposed the
+last holes in the evidence rules:
+
+| Finding | Measured | Consequence |
+|---|---|---|
+| Stray micro-motion on empty crib during probation | one frame, 0.0046, at 18:21:27 (≈1 per 15–35 min across recordings) | A second stray would have falsely confirmed occupancy — and with probation cleared, empty-crib stillness would have produced a phantom ASLEEP session. **Confirm rules hardened.** |
+| Minute-bucket boundary bug | (analysis) a single 2–4 s cluster straddling a minute boundary counted as 2 "distinct minutes" | Replaced calendar-minute buckets with **episodes separated by ≥60 s of quiet** — one cluster can never be two pieces of evidence |
+| Awake baby = strongest signal | sustained 60%-density motion detected occupancy in 16 s | **Sustained motion now clears probation / fires the AWAY override instantly**; an empty crib cannot produce it |
+| Blanket left behind at pickup | settle read presence 0.127 vs poisoned ref; after blanket removal 0.028 vs blanket-ref | Bedding ghosts correctly resolved by probation expiry + reference refresh, at the cost of one bounded false-AWAKE window (≤ `sleep_probation_minutes`) per bedding change |
 
 **End-to-end simulation** (`replay_sleep.py --simulate`, the real `SleepStateMachine` over all 2 h):
 state stayed AWAY through the empty period (both parent visits resolved back to AWAY within
