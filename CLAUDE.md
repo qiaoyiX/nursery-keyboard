@@ -79,15 +79,25 @@ To add or rename an event type, update `KEYPAD_KEYS`, the validation list in `lo
 
 `is_debounced()` in `app.py` drops a repeat press of the same type within a per-type window, before `add_entry()`/`push_event()`. It guards both the keypad path (`listen_one_interface`) and the `/log` route (which returns `{"ok": true, "discarded": true}`). Windows are in `settings.json` `debounce_minutes` (minutes; `0` = off), default `{"Feed": 5, "Wet": 1, "Dirty": 1, "Play": 5}`.
 
-## Storage backends
+## Storage: local-first, Neon as snapshot backup
 
-**JSON (default — no config needed)**
-- Events in `log.json`, sleep sessions in `sleep_sessions.json`, daemon heartbeat in `sleep_state.json`.
+**Architecture (since 2026-07-04):** the services read and write ONLY the local JSON files; Neon
+Postgres is an optional off-site backup that a systemd timer snapshots to every 6 hours. Do NOT set
+`DATABASE_URL` on `nursery-tracker` or `nursery-sleep-monitor` — live reads at the dashboard's 8s
+poll keep Neon's compute awake 24/7 and burn ~180 free-tier compute-hours/month (the free tier's
+5-min autosuspend cannot be tuned; billing is effectively "wake episodes × 5+ min"). Batched
+snapshot sync costs ~2–3 h/month.
+
+**Local JSON (primary)**
+- Events in `log.json`, sleep sessions in `sleep_sessions.json`, daemon heartbeat in `sleep_state.json`. All writes are atomic (tmp + `os.replace`, fsync for events).
 - `_json_delete_entry` uses list index as `id`; indices shift after any deletion, but the client always gets a fresh list before showing delete buttons, so this is safe.
+- The `_pg_*` paths in `storage.py` remain for the backup/export scripts (which run with `DATABASE_URL` set); `db()` commits on clean exit, rolls back on exception, always closes.
 
-**Postgres (Neon)**
-- Set `DATABASE_URL=postgresql://...` in the systemd unit (`sudo systemctl edit nursery-tracker`, add `Environment=DATABASE_URL=...` under `[Service]`).
-- Also set it in `nursery-sleep-monitor.service` the same way.
+**Neon backup (optional)**
+- `backup_sync.py` — full-snapshot mirror (one transaction: delete + insert both tables). Idempotent; refuses to run if local files are missing/unparseable or local counts collapsed below half of the remote's (a broken Pi must never overwrite a good backup). Writes `last_sync.json`.
+- Scheduled by `nursery-backup.timer` (installed by `install.sh`, every 6 h, `Persistent=true`); the `DATABASE_URL` lives ONLY in `/etc/nursery-tracker/backup.env` (chmod 600). Manual run: `sudo systemctl start nursery-backup.service`; logs: `journalctl -u nursery-backup`.
+- `export_db.py` — the reverse direction (Neon → JSON): one-time switchover tool and the disaster-recovery restore after an SD-card death (`--force` to overwrite non-empty local files). Run with both services stopped.
+- `migrate_log.py` (JSON → Postgres one-shot import) is superseded by `backup_sync.py`.
 - Required schema:
   ```sql
   CREATE TABLE events (id BIGSERIAL PRIMARY KEY, type VARCHAR(10) NOT NULL, time TIMESTAMP NOT NULL);
@@ -97,8 +107,6 @@ To add or rename an event type, update `KEYPAD_KEYS`, the validation list in `lo
       end_time TIMESTAMP, duration_minutes NUMERIC(8,2));
   CREATE INDEX ON sleep_sessions (start_time);
   ```
-- `migrate_log.py` imports an existing `log.json` into Postgres (idempotent).
-- `db()` context manager in `storage.py`: commits on clean exit, rolls back on exception, always closes.
 
 ## Sleep monitoring
 

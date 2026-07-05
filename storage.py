@@ -109,8 +109,14 @@ def _json_load():
 
 
 def _json_save(entries):
-    with open(DATA_FILE, "w") as f:
+    # Atomic replace + fsync: as the primary store, a power cut mid-write must
+    # never be able to destroy the whole event history.
+    tmp = DATA_FILE + ".tmp"
+    with open(tmp, "w") as f:
         json.dump(entries, f)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, DATA_FILE)
 
 
 def _json_get_entries():

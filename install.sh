@@ -74,6 +74,46 @@ EOF
 sudo systemctl daemon-reload
 sudo systemctl enable nursery-sleep-monitor
 
+echo "==> Installing Neon backup sync timer (runs only if configured)..."
+BACKUP_ENV_FILE=/etc/nursery-tracker/backup.env
+sudo mkdir -p /etc/nursery-tracker
+if [ ! -f "$BACKUP_ENV_FILE" ]; then
+    sudo tee "$BACKUP_ENV_FILE" > /dev/null <<EOF
+# Neon backup target for backup_sync.py (leave unset to disable off-site backup).
+# DATABASE_URL=postgresql://user:pass@host/db?sslmode=require
+EOF
+    sudo chmod 600 "$BACKUP_ENV_FILE"
+fi
+
+sudo tee /etc/systemd/system/nursery-backup.service > /dev/null <<EOF
+[Unit]
+Description=Nursery Tracker - snapshot local JSON store to Neon backup
+# Skips (not fails) when no backup target is configured
+ConditionPathExists=$BACKUP_ENV_FILE
+
+[Service]
+Type=oneshot
+User=$USER_NAME
+WorkingDirectory=$WORK_DIR
+EnvironmentFile=$BACKUP_ENV_FILE
+ExecStart=$PYTHON_BIN backup_sync.py
+EOF
+
+sudo tee /etc/systemd/system/nursery-backup.timer > /dev/null <<EOF
+[Unit]
+Description=Nursery Tracker backup sync every 6 hours
+
+[Timer]
+OnCalendar=00/6:20
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now nursery-backup.timer
+
 echo ""
 echo "==> Done!"
 echo ""
