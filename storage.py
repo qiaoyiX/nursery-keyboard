@@ -40,7 +40,8 @@ DEFAULT_SETTINGS = {
                                          # Measured: awake baby squirming reaches 0.10-0.17, pickups/put-downs 0.57-1.0 — 0.30 splits the gap.
     "sleep_settle_seconds":      10,    # quiet seconds after a disturbance before re-evaluating presence
     "sleep_micromotion_fraction": 0.002, # motion fraction counting as living-thing micro-motion (must sit above camera noise floor)
-    "sleep_probation_minutes":   15,    # micro-motion must appear within this window after an ambiguous settle, else crib ruled empty
+    "sleep_probation_minutes":   10,    # life evidence must appear within this window after an ambiguous settle, else crib ruled empty.
+                                        # Measured: real-baby confirms in 13s-4.2min across 3 clips; empty-crib windows never produced >=2 episodes.
 }
 
 log_lock      = threading.Lock()

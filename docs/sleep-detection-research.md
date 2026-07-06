@@ -325,6 +325,23 @@ last holes in the evidence rules:
 | Awake baby = strongest signal | sustained 60%-density motion detected occupancy in 16 s | **Sustained motion now clears probation / fires the AWAY override instantly**; an empty crib cannot produce it |
 | Blanket left behind at pickup | settle read presence 0.127 vs poisoned ref; after blanket removal 0.028 vs blanket-ref | Bedding ghosts correctly resolved by probation expiry + reference refresh, at the cost of one bounded false-AWAKE window (≤ `sleep_probation_minutes`) per bedding change |
 
+**Double-pickup footage (2026-07-05 21:53–22:53: asleep baby → pickup 21:58 → put back awake 22:01
+→ pickup 22:04 → empty 49 min)** validated the arousal-rescoring release end-to-end and set the
+probation window from data:
+
+| Finding | Measured | Consequence |
+|---|---|---|
+| Empty crib, 49 min | **zero** micro-motion frames | Cleanest empty data yet; stray rate lower than earlier estimates |
+| Awake baby after put-back | p50 0.089, 79% frames moving — probation cleared in **13 s** (sustained) | Real-baby confirms are fast |
+| Probation confirm times across all clips | 13 s / 3.2 min / 4.2 min (real baby); empty-crib windows never reached 2 episodes | **`sleep_probation_minutes` 15 → 10** — phantom-awake windows a third shorter, 2.4× margin over slowest observed confirm |
+| Pickup peaks | 0.57–0.88 | 0.30 disturbance threshold margin re-confirmed |
+
+Both pickups resolved correctly through a baby-poisoned bootstrap reference; zero phantom sessions.
+Note: this footage contains **no in-sleep arousal or self-wake**, so `sleep_wake_minutes` (=3)
+remains a sleep-science default awaiting a real false-wake clip. Also fixed here: `build_cfg()` had
+its own hardcoded fallbacks that silently diverged from `storage.DEFAULT_SETTINGS` — it now merges
+`DEFAULT_SETTINGS` as the single source of truth.
+
 **End-to-end simulation** (`replay_sleep.py --simulate`, the real `SleepStateMachine` over all 2 h):
 state stayed AWAY through the empty period (both parent visits resolved back to AWAY within
 minutes via settle evaluation, one after a self-healing probation); the 19:01 reach-in caused **no**

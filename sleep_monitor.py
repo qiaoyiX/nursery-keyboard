@@ -73,6 +73,7 @@ import numpy as np
 
 from storage import (
     CALIBRATE_FLAG,
+    DEFAULT_SETTINGS,
     end_sleep_session,
     get_open_sleep_session,
     load_settings,
@@ -654,18 +655,21 @@ def run_state_machine(rtsp_url, cfg):
 # ── Reconnect loop ────────────────────────────────────────────────────────────
 
 def build_cfg(settings):
+    # Single source of truth for defaults is storage.DEFAULT_SETTINGS — no per-key
+    # fallbacks here (a duplicated default silently diverged once already).
+    s = {**DEFAULT_SETTINGS, **settings}
     return {
-        "crib_roi":             settings.get("sleep_crib_roi", [0.0, 0.0, 1.0, 1.0]),
-        "presence_threshold":   float(settings.get("sleep_presence_threshold",  0.02)),
-        "motion_fraction":      float(settings.get("sleep_motion_fraction",     0.01)),
-        "micromotion_fraction": float(settings.get("sleep_micromotion_fraction", 0.002)),
-        "disturbance_fraction": float(settings.get("sleep_disturbance_fraction", 0.30)),
-        "settle_seconds":       float(settings.get("sleep_settle_seconds",      10)),
-        "probation_minutes":    float(settings.get("sleep_probation_minutes",   15)),
-        "sleep_min_seconds":    int(settings.get("sleep_min_minutes",           10)) * 60,
-        "wake_seconds":         int(settings.get("sleep_wake_seconds",          20)),
-        "wake_minutes":         float(settings.get("sleep_wake_minutes",        3)),
-        "max_session_seconds":  float(settings.get("sleep_max_session_hours",   14)) * 3600,
+        "crib_roi":             s["sleep_crib_roi"],
+        "presence_threshold":   float(s["sleep_presence_threshold"]),
+        "motion_fraction":      float(s["sleep_motion_fraction"]),
+        "micromotion_fraction": float(s["sleep_micromotion_fraction"]),
+        "disturbance_fraction": float(s["sleep_disturbance_fraction"]),
+        "settle_seconds":       float(s["sleep_settle_seconds"]),
+        "probation_minutes":    float(s["sleep_probation_minutes"]),
+        "sleep_min_seconds":    int(s["sleep_min_minutes"]) * 60,
+        "wake_seconds":         int(s["sleep_wake_seconds"]),
+        "wake_minutes":         float(s["sleep_wake_minutes"]),
+        "max_session_seconds":  float(s["sleep_max_session_hours"]) * 3600,
     }
 
 
