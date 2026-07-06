@@ -169,17 +169,25 @@ motion. At the moment it ends:
   on real footage: 10 min of empty-crib stillness during probation produced a phantom ASLEEP
   before this guard existed).
 
-**Path 2 — Life-evidence override (AWAY → AWAKE).** While AWAY, either **sustained motion** (the
+**Path 2 — Life-evidence override (AWAY → AWAKE).** While AWAY, **sustained motion** (the
 60%-density test — an awake baby; an empty crib can produce at most 1–3 stray frames at a time,
-never density) or **≥3 micro-motion episodes separated by ≥60 s of quiet** within a rolling
-10-minute window flips to AWAKE (prior P2). Catches: daemon started with baby already in crib, a
+never density) flips to AWAKE outright; **≥2 micro-motion episodes separated by ≥60 s of quiet**
+within a rolling 10-minute window flips to AWAKE **on probation** — weaker evidence (two parent
+reach-ins could fake it), so the probation machinery guards the flip and a false fire self-corrects
+to AWAY (prior P2). Catches: daemon started with baby already in crib, a
 placement whose disturbance was missed (camera reconnecting), bootstrap-with-baby. The episode
 separation came from real footage (§6): a brief parent reach-in produces a single 2–4 s motion
 cluster whose magnitude (~0.004–0.017) overlaps the sleeping-baby twitch range (~0.002–0.012) —
 magnitude cannot separate them, temporal spread can. (Episodes, not calendar-minute buckets: a
 single cluster straddling a minute boundary must not count as two pieces of evidence.) Probation
 clearing (Path 1) uses the same evidence with a lower bar: sustained motion or **≥2 separated
-episodes**.
+episodes**. Two hardening rules on episode evidence (both from real footage, 2026-07-06):
+an episode earns credit only after ending quietly for `EPISODE_CONFIRM_COOLDOWN` (15 s) —
+micro-motion that escalates straight into a disturbance is a **parent approaching**, not the baby
+(observed to falsely clear probation 11 s before a blanket-removal disturbance and mint a 28-min
+phantom session in regression); and a probation deadline reached with **exactly 1** episode is
+ambiguous (empty cribs measured 0 episodes ×3 clips, 1 ×1; sleeping baby averages 1 per ~3 min) —
+it extends once rather than ruling the crib empty.
 
 **Path 3 — Manual calibration.** The "📷 Crib is empty" button: save reference, force AWAY, end any
 open session. Unchanged; still authoritative.
@@ -341,6 +349,18 @@ Note: this footage contains **no in-sleep arousal or self-wake**, so `sleep_wake
 remains a sleep-science default awaiting a real false-wake clip. Also fixed here: `build_cfg()` had
 its own hardcoded fallbacks that silently diverged from `storage.DEFAULT_SETTINGS` — it now merges
 `DEFAULT_SETTINGS` as the single source of truth.
+
+**Sleeping-baby night footage (2026-07-06 01:00–01:30, IR, asleep throughout)** — the first
+sleeping-baby-only data; it validated the arousal work and drove the empty-vs-asleep separation
+tuning:
+
+| Finding | Measured | Consequence |
+|---|---|---|
+| Night sleep micro-motion | **10 episodes / 30 min** (~1 per 3 min; peaks 0.014–0.157, biggest bout 75 frames) vs empty crib **0 in 49 min** | The discriminator is enormous — rules were the bottleneck, not the signal |
+| Worst 10-min window | exactly **2** episodes | Old bars (2 to confirm probation, 3 to override) sat at/over her quiet-night rate → `MICRO_OVERRIDE_EPISODES` 3→2 (landing on probation), probation gains a one-shot extension on partial evidence |
+| Old 20 s sustained wake test | fires on **98 frames** of this *sleeping* baby | Reproduces the original false-wake complaint on real data |
+| New epoch wake test | longest run 3 active epochs vs 6 needed | **`sleep_wake_minutes` = 3 validated with 2× margin** — no longer just a sleep-science default |
+| Parent-approach contamination | micro-frames 11 s before a disturbance falsely cleared probation in regression (7/4 clip) → 28-min phantom | Episodes must end quietly for 15 s before counting (`EPISODE_CONFIRM_COOLDOWN`) |
 
 **End-to-end simulation** (`replay_sleep.py --simulate`, the real `SleepStateMachine` over all 2 h):
 state stayed AWAY through the empty period (both parent visits resolved back to AWAY within

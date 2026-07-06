@@ -15,11 +15,14 @@ that set the thresholds):
        otherwise → AWAKE on PROBATION: life evidence — sustained motion, or ≥2 micro-motion
        episodes separated by ≥60s of quiet — must appear within sleep_probation_minutes or
        the "presence" is ruled a bedding ghost → AWAY.
-    2. Micro-motion override — while AWAY, sustained motion (awake baby) or ≥3 separated
-       micro-motion episodes within a 10-minute window flips to AWAKE. The episode-separation
-       requirement is what distinguishes a real baby (twitches spread over minutes) from a
-       brief parent reach-in (one 2–4s cluster whose motion overlaps the baby-twitch range —
-       observed in real footage; magnitude alone cannot separate them).
+    2. Micro-motion override — while AWAY, sustained motion (awake baby) flips to AWAKE
+       outright; ≥2 separated micro-motion episodes within a 10-minute window flips to
+       AWAKE **on probation** (weaker evidence — two parent reach-ins could fake it, so the
+       probation machinery guards the flip; a sleeping baby confirms with her ~3-minute
+       episode cadence, measured 2026-07-06). The episode-separation requirement is what
+       distinguishes a real baby (twitches spread over minutes) from a brief parent reach-in
+       (one 2–4s cluster whose motion overlaps the baby-twitch range — observed in real
+       footage; magnitude alone cannot separate them).
     3. Manual "📷 Crib is empty" button — saves reference, forces AWAY.
     4. sleep_max_session_hours cap — backstop force-end.
 
@@ -105,9 +108,20 @@ DENOISE_KERNEL       = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
 REFERENCE_UPDATE_LR  = 0.02   # slow drift of reference toward current during trusted-empty periods
 BOOTSTRAP_FRAMES     = 5      # frames median-averaged on startup to build initial reference (~5s)
 DISTURBANCE_FRAMES   = 2      # consecutive disturbance-level frames to open an episode
-MICRO_OVERRIDE_EPISODES = 3   # micro-motion episodes to flip AWAY → AWAKE …
-MICRO_OVERRIDE_WINDOW   = 600  # … within this rolling window (seconds)
+MICRO_OVERRIDE_EPISODES = 2   # micro-motion episodes to flip AWAY → AWAKE-on-probation …
+MICRO_OVERRIDE_WINDOW   = 600  # … within this rolling window (seconds).
+                              # 2 (not 3): a sleeping baby's worst measured 10-min window has
+                              # exactly 2 episodes, while an empty crib has never produced 2 in
+                              # any window — and the episode-path override lands on probation,
+                              # so even a false fire self-corrects to AWAY.
 PROBATION_CONFIRM_EPISODES = 2  # micro-motion episodes to clear probation
+PROBATION_EXTEND_ON_PARTIAL = True  # exactly 1 episode at the deadline = ambiguous → extend once
+                                    # (empty-crib probations measured 0 episodes ×3, 1 episode ×1)
+EPISODE_CONFIRM_COOLDOWN = 15  # an episode counts as life evidence only after ending quietly for
+                               # this many seconds. Micro-motion that escalates straight into a
+                               # disturbance is a PARENT APPROACHING, not the baby — observed to
+                               # falsely clear probation 11s before a blanket-removal disturbance
+                               # and mint a phantom session. Baby episodes all end quietly.
 MICRO_EPISODE_GAP       = 60  # quiet seconds separating two micro-motion episodes.
                               # Counting episodes (not calendar-minute buckets) means a single
                               # 2–4s reach-in can never look like two pieces of evidence, no
@@ -249,6 +263,7 @@ class SleepStateMachine:
         self.probation_deadline = None
         self.probation_anchor   = None
         self.probation_micro    = []          # micro-motion timestamps since probation start
+        self.probation_extended = False       # one-shot partial-evidence extension used?
         self.micro_events = deque()           # micro-motion timestamps (AWAY override)
         # Wake scoring (ASLEEP → AWAKE): rolling epoch verdicts + current-epoch accumulation
         self.wake_epochs        = deque()     # (epoch_start, active_bool) recent epochs
@@ -307,17 +322,27 @@ class SleepStateMachine:
         self.probation_deadline = now + timedelta(minutes=self.cfg["probation_minutes"])
         self.probation_anchor   = now
         self.probation_micro.clear()
+        self.probation_extended = False
 
     @staticmethod
-    def _count_episodes(timestamps):
-        """Number of micro-motion episodes: groups separated by ≥ MICRO_EPISODE_GAP of quiet."""
-        episodes = 0
+    def _count_episodes(timestamps, now=None):
+        """
+        Number of micro-motion episodes: groups separated by ≥ MICRO_EPISODE_GAP of quiet.
+        With `now`, only credits episodes that ended ≥ EPISODE_CONFIRM_COOLDOWN ago —
+        motion still running (or escalating into a disturbance) is not yet evidence.
+        """
+        episodes = []   # last-frame timestamp of each episode
         prev = None
         for t in timestamps:
             if prev is None or (t - prev).total_seconds() >= MICRO_EPISODE_GAP:
-                episodes += 1
+                episodes.append(t)
+            else:
+                episodes[-1] = t
             prev = t
-        return episodes
+        if now is None:
+            return len(episodes)
+        return sum(1 for last in episodes
+                   if (now - last).total_seconds() >= EPISODE_CONFIRM_COOLDOWN)
 
     def _sustained_motion(self, now, is_motion):
         """
@@ -462,7 +487,7 @@ class SleepStateMachine:
 
         # ── Probation: occupancy claimed by the reference must be confirmed ───
         if self.probation_deadline is not None:
-            episodes = self._count_episodes(self.probation_micro)
+            episodes = self._count_episodes(self.probation_micro, now)
             if sustained or episodes >= PROBATION_CONFIRM_EPISODES:
                 self.log.info("Probation cleared at %s — %s confirms occupancy", now.isoformat(),
                               "sustained motion" if sustained
@@ -470,29 +495,51 @@ class SleepStateMachine:
                 self.probation_deadline = self.probation_anchor = None
                 self.probation_micro.clear()
             elif now >= self.probation_deadline:
-                self._close_session(self.probation_anchor, "probation expired — no micro-motion")
-                self.log.warning("Probation expired with %d micro-motion episode(s) — ruling "
-                                 "crib empty, reference refreshed", episodes)
-                self._to_away()
-                if self.reference is not None:
-                    self._set_reference(curr_gray)
+                if (PROBATION_EXTEND_ON_PARTIAL and episodes == 1
+                        and not self.probation_extended):
+                    # Exactly one episode is ambiguous — an empty crib almost never
+                    # produces even one, a quiet sleeping baby averages one per ~3 min.
+                    # Buy one more window rather than rule the crib empty on a coin flip.
+                    self.probation_deadline = now + timedelta(
+                        minutes=self.cfg["probation_minutes"])
+                    self.probation_extended = True
+                    self.log.info("Probation deadline reached with 1 micro-motion episode — "
+                                  "ambiguous, extending once until %s",
+                                  self.probation_deadline.isoformat())
+                else:
+                    self._close_session(self.probation_anchor,
+                                        "probation expired — no micro-motion")
+                    self.log.warning("Probation expired with %d micro-motion episode(s) — "
+                                     "ruling crib empty, reference refreshed", episodes)
+                    self._to_away()
+                    if self.reference is not None:
+                        self._set_reference(curr_gray)
 
         self._maybe_update_reference(curr_gray, motion_frac)
 
         # ── State transitions (presence is latched; only Path 2 & timers) ─────
         if self.state == STATE_AWAY:
             # Path 2: life evidence with no reference needed — sustained motion
-            # (awake baby) or micro-motion episodes separated by ≥60s of quiet
-            # (sleeping baby). A brief parent reach-in is a single episode with
-            # magnitudes overlapping baby twitches and must NOT fire this.
-            episodes = self._count_episodes(self.micro_events)
-            if sustained or episodes >= MICRO_OVERRIDE_EPISODES:
+            # (awake baby, unambiguous) or micro-motion episodes separated by ≥60s
+            # of quiet (sleeping baby). A brief parent reach-in is a single episode
+            # with magnitudes overlapping baby twitches and must NOT fire this.
+            episodes = self._count_episodes(self.micro_events, now)
+            if sustained:
                 self.state = STATE_AWAKE
                 self.still_since = None
                 self.micro_events.clear()
-                self.log.info("Override — %s, AWAKE",
-                              "sustained motion" if sustained
-                              else f"{episodes} separated micro-motion episodes")
+                self.log.info("Override — sustained motion, AWAKE")
+            elif episodes >= MICRO_OVERRIDE_EPISODES:
+                # Episode evidence is weaker (2 reach-ins in 10 min could fake it),
+                # so land on probation: a real baby confirms with her next episodes
+                # (~every 3 min asleep); a false fire self-corrects to AWAY.
+                self.state = STATE_AWAKE
+                self.still_since = None
+                self.micro_events.clear()
+                self._start_probation(now)
+                self.log.info("Override — %d separated micro-motion episodes, AWAKE on "
+                              "probation until %s", episodes,
+                              self.probation_deadline.isoformat())
 
         elif self.state == STATE_AWAKE:
             if sustained:
