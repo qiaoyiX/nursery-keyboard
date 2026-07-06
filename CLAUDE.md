@@ -56,8 +56,8 @@ Three files form the core:
 
 **`templates/index.html`** — Single-page dashboard. Pure HTML/CSS/JS, no build step.
 - Polls `GET /data` every 8 seconds; `refresh()` updates counts, history, next-feed card, and all three Chart.js charts in one pass.
-- The next-feed card sits at the top (above the count cards).
-- Sleep UI (status card + timeline) is live again (re-enabled 2026-07-02 together with the v5 detection algorithm). `updateSleepCard`/`updateSleepTimeline` consume `data.sleep`; the "📷 Crib is empty" button POSTs `/sleep/calibrate`.
+- Section order (PRD hierarchy pass, 2026-07-06): next-feed card → log buttons → history → "😴 Today's Sleep" card (live state line + 24h timeline + per-nap list, one merged card) → count cards → charts → maintenance row ("Clear today" + "📷 Crib is empty" calibrate, deliberately at the bottom away from the one-handed logging zone).
+- Sleep UI: `updateSleepCard` fills the state/summary lines, `updateSleepTimeline` + `updateNapList` the track and rows; all consume `data.sleep`; calibrate POSTs `/sleep/calibrate`.
 - History rows have an edit (✎) and delete (✕) button. Edit opens a modal (`#editOverlay`) to change an entry's type + time, sent via `PATCH /log/entry`.
 - Chart.js 4.5.1 loaded from CDN with SHA-384 SRI.
 - Event type colors and sleep color are defined as CSS custom properties in `:root` and must match `COLORS` in the JS `<script>` block.

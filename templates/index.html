@@ -169,14 +169,7 @@
     }
     .nf-interval select:focus-visible { outline: 2px solid var(--feed); outline-offset: 2px; }
 
-    /* ── Sleep cards ────────────────────── */
-    .sleep-card {
-      border-radius: var(--r);
-      padding: 18px 16px 14px;
-      box-shadow: var(--shadow-card);
-      margin-bottom: 14px;
-      background: linear-gradient(150deg, var(--surface) 50%, var(--sleep-a));
-    }
+    /* ── Sleep card (status + timeline + nap list merged) ── */
     .sleep-card-title {
       font-size: 0.68rem;
       font-weight: 600;
@@ -202,7 +195,6 @@
       font-size: 0.9rem;
     }
     .btn-calibrate {
-      margin-top: 10px;
       font-size: 0.72rem;
       background: none;
       border: 1px solid var(--cream-2);
@@ -225,15 +217,15 @@
       border-radius: var(--r);
       padding: 18px 16px 14px;
       box-shadow: var(--shadow-card);
-      background: var(--surface);
-      margin-bottom: 14px;
+      background: linear-gradient(150deg, var(--surface) 50%, var(--sleep-a));
+      margin: 14px 0;
     }
     .sleep-timeline-track {
       position: relative;
       height: 20px;
       border-radius: 10px;
       background: var(--cream-2);
-      margin-bottom: 6px;
+      margin: 12px 0 6px;
       overflow: hidden;
     }
     .sleep-block {
@@ -358,8 +350,13 @@
     .btn-feed  { background: linear-gradient(155deg, #68bf80 0%, #47975c 100%); }
     .btn-probiotic { background: linear-gradient(155deg, #d27aae 0%, #a8447e 100%); }
 
-    /* ── Clear button ────────────────────── */
-    .clear-wrap { text-align: center; margin-bottom: 26px; }
+    /* ── Maintenance actions (bottom of page) ── */
+    .maintenance {
+      display: flex;
+      justify-content: center;
+      gap: 10px;
+      margin: 6px 0 26px;
+    }
     .btn-clear {
       background: transparent;
       border: 1px solid rgba(192,81,58,.22);
@@ -616,56 +613,12 @@
     </div>
   </div>
 
-  <div class="counts">
-    <div class="count-card wet">
-      <div class="num" id="cnt-Wet">{{ counts.Wet }}</div>
-      <div class="label">Wet</div>
-    </div>
-    <div class="count-card dirty">
-      <div class="num" id="cnt-Dirty">{{ counts.Dirty }}</div>
-      <div class="label">Dirty</div>
-    </div>
-    <div class="count-card play">
-      <div class="num" id="cnt-Play">{{ counts.Play }}</div>
-      <div class="label">Play Time</div>
-    </div>
-    <div class="count-card feed">
-      <div class="num" id="cnt-Feed">{{ counts.Feed }}</div>
-      <div class="label">Feed</div>
-    </div>
-    <div class="count-card probiotic">
-      <div class="num" id="cnt-Probiotic">{{ counts.Probiotic }}</div>
-      <div class="label">Probiotic</div>
-    </div>
-  </div>
-
-  <div class="sleep-card" id="sleepCard">
-    <div class="sleep-card-title">😴 Sleep</div>
-    <div class="sleep-state-text is-unknown" id="sleepStateText">⋯ Camera offline</div>
-    <div class="sleep-summary-text" id="sleepSummaryText"></div>
-    <button class="btn-calibrate" id="btnCalibrate" onclick="calibrateSleep()">📷 Crib is empty</button>
-  </div>
-
-  <div class="sleep-timeline-card">
-    <div class="sleep-card-title" style="margin-bottom:10px">Today's Sleep</div>
-    <div class="sleep-timeline-track" id="sleepTrack"></div>
-    <div class="sleep-timeline-labels">
-      <span>12a</span><span>3a</span><span>6a</span><span>9a</span>
-      <span>12p</span><span>3p</span><span>6p</span><span>9p</span><span>12a</span>
-    </div>
-    <div class="nap-list" id="napList"></div>
-  </div>
-
   <div class="buttons">
     <button class="action-btn btn-wet"   onclick="logEvent('Wet')">💧 Wet</button>
     <button class="action-btn btn-dirty" onclick="logEvent('Dirty')">💩 Dirty</button>
     <button class="action-btn btn-play"  onclick="logEvent('Play')">🧸 Play</button>
     <button class="action-btn btn-feed"  onclick="logEvent('Feed')">🍼 Feed</button>
     <button class="action-btn btn-probiotic" onclick="logEvent('Probiotic')">💊 Probiotic</button>
-  </div>
-
-  <div class="clear-wrap">
-    <button class="btn-clear" onclick="clearData()">Clear today</button>
   </div>
 
   <p class="section-label">History</p>
@@ -692,6 +645,41 @@
     {% endif %}
   </div>
 
+  <div class="sleep-timeline-card">
+    <div class="sleep-card-title">😴 Today's Sleep</div>
+    <div class="sleep-state-text is-unknown" id="sleepStateText">⋯ Camera offline</div>
+    <div class="sleep-summary-text" id="sleepSummaryText"></div>
+    <div class="sleep-timeline-track" id="sleepTrack"></div>
+    <div class="sleep-timeline-labels">
+      <span>12a</span><span>3a</span><span>6a</span><span>9a</span>
+      <span>12p</span><span>3p</span><span>6p</span><span>9p</span><span>12a</span>
+    </div>
+    <div class="nap-list" id="napList"></div>
+  </div>
+
+  <div class="counts">
+    <div class="count-card wet">
+      <div class="num" id="cnt-Wet">{{ counts.Wet }}</div>
+      <div class="label">Wet</div>
+    </div>
+    <div class="count-card dirty">
+      <div class="num" id="cnt-Dirty">{{ counts.Dirty }}</div>
+      <div class="label">Dirty</div>
+    </div>
+    <div class="count-card play">
+      <div class="num" id="cnt-Play">{{ counts.Play }}</div>
+      <div class="label">Play Time</div>
+    </div>
+    <div class="count-card feed">
+      <div class="num" id="cnt-Feed">{{ counts.Feed }}</div>
+      <div class="label">Feed</div>
+    </div>
+    <div class="count-card probiotic">
+      <div class="num" id="cnt-Probiotic">{{ counts.Probiotic }}</div>
+      <div class="label">Probiotic</div>
+    </div>
+  </div>
+
   <div class="chart-card">
     <p class="section-label">Today's Breakdown</p>
     <div class="doughnut-wrap">
@@ -707,6 +695,12 @@
   <div class="chart-card">
     <p class="section-label">Last 7 Days</p>
     <div class="chart-wrap"><canvas id="chartDaily"></canvas></div>
+  </div>
+
+  <!-- Maintenance actions: rarely used, kept away from the one-handed logging zone -->
+  <div class="maintenance">
+    <button class="btn-clear" onclick="clearData()">Clear today</button>
+    <button class="btn-calibrate" id="btnCalibrate" onclick="calibrateSleep()">📷 Crib is empty</button>
   </div>
 
   <div class="modal-overlay" id="editOverlay" hidden onclick="if(event.target===this)closeEdit()">
