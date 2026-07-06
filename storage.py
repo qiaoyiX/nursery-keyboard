@@ -26,7 +26,8 @@ DEFAULT_SETTINGS = {
     "camera_rtsp_url":          "",
     "sleep_motion_fraction":    0.01,  # fraction of pixels changed vs previous frame = "moving"
     "sleep_min_minutes":        10,
-    "sleep_wake_seconds":       20,
+    "sleep_wake_seconds":       20,   # short window for "life evidence" (probation/away override), NOT for waking a nap
+    "sleep_wake_minutes":       3,    # sustained-motion minutes to END a sleep session; brief in-sleep arousals (startles, active-sleep squirms) below this are kept as sleep
     "sleep_max_session_hours":  14,    # sanity cap: force-end a sleep session open longer than this
     "debounce_minutes":         {"Feed": 5, "Wet": 1, "Dirty": 1, "Play": 5, "Probiotic": 720},  # discard repeat presses of a type within N min (0 = off)
     "huckleberry_email":        "",

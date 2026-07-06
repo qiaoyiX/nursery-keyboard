@@ -26,6 +26,14 @@ that set the thresholds):
   Between those events the latch holds no matter what the reference comparison says, which
   is what makes stale/poisoned references self-healing instead of fatal.
 
+  Waking from ASLEEP is deliberately hard to trigger (actigraphy-style, see the WAKE_EPOCH
+  constants): infants spend ~half of sleep in active/REM sleep — startles, limb-flings,
+  squirms — without waking. A disturbance while asleep is a CANDIDATE arousal, not an
+  automatic wake: the settle evaluation ends the nap only if the crib is now empty (a real
+  pickup); if still occupied the nap resumes (arousal rescored as sleep). A self-wake (no
+  pickup) ends the nap only when motion is sustained across several consecutive epochs
+  spanning sleep_wake_minutes — a brief arousal never reaches it.
+
   Both signals use one robust primitive: active_fraction(a, b) = fraction of pixels that
   meaningfully changed (absdiff → per-pixel threshold → MORPH_OPEN speck removal), computed
   inside the crib ROI (sleep_crib_roi). Motion = vs previous frame; presence = vs reference.
@@ -103,6 +111,17 @@ MICRO_EPISODE_GAP       = 60  # quiet seconds separating two micro-motion episod
                               # Counting episodes (not calendar-minute buckets) means a single
                               # 2–4s reach-in can never look like two pieces of evidence, no
                               # matter where it falls relative to a minute boundary.
+
+# ── Wake confirmation (actigraphy-style) ──────────────────────────────────────
+# A sleeping infant spends ~50% of sleep in active/REM sleep: startles, limb-flings,
+# position shifts, squirms — all WITHOUT waking. Wrist-actigraphy scoring (Cole-Kripke,
+# Sadeh, Webster rescoring) never scores one epoch alone: a genuine wake is a RUN of
+# active epochs lasting minutes, and short active blocks embedded in sleep are rescored
+# back to sleep. We mirror that: end an ASLEEP session only when motion is sustained
+# across several consecutive epochs — a brief arousal is absorbed back into the nap.
+WAKE_EPOCH_SECONDS      = 30    # epoch length for wake scoring
+WAKE_EPOCH_ACTIVE_FRAC  = 0.5   # an epoch is "active" if ≥ this fraction of its frames moved
+                                # (≥15s of motion in a 30s epoch — well above active-sleep stirs)
 MOTION_DENSITY          = 0.6  # fraction of the trailing wake_seconds window that must be
                                # motion frames to count as "sustained" (genuinely awake).
                                # Sleep stirs are 1–7s clusters minutes apart (density ~0.05);
@@ -230,6 +249,14 @@ class SleepStateMachine:
         self.probation_anchor   = None
         self.probation_micro    = []          # micro-motion timestamps since probation start
         self.micro_events = deque()           # micro-motion timestamps (AWAY override)
+        # Wake scoring (ASLEEP → AWAKE): rolling epoch verdicts + current-epoch accumulation
+        self.wake_epochs        = deque()     # (epoch_start, active_bool) recent epochs
+        self._epoch_start       = None        # start time of the epoch being accumulated
+        self._epoch_frames      = 0
+        self._epoch_motion      = 0
+        # True when a disturbance interrupted an ASLEEP nap: on settle-to-occupied the nap
+        # resumes (arousal rescored as sleep) instead of the session ending.
+        self.arousal_from_sleep = False
 
     # ── external controls ─────────────────────────────────────────────────────
 
@@ -272,6 +299,8 @@ class SleepStateMachine:
         self.probation_deadline = self.probation_anchor = None
         self.probation_micro.clear()
         self.micro_events.clear()
+        self.arousal_from_sleep = False
+        self._reset_wake_epochs()
 
     def _start_probation(self, now):
         self.probation_deadline = now + timedelta(minutes=self.cfg["probation_minutes"])
@@ -306,6 +335,43 @@ class SleepStateMachine:
             self.motion_frames.popleft()
         needed = max(3, int(MOTION_DENSITY * window / FRAME_INTERVAL))
         return len(self.motion_frames) >= needed
+
+    def _reset_wake_epochs(self):
+        self.wake_epochs.clear()
+        self._epoch_start  = None
+        self._epoch_frames = 0
+        self._epoch_motion = 0
+
+    def _update_wake_epochs(self, now, is_motion):
+        """
+        Actigraphy-style wake scoring. Accumulate frames into fixed epochs; an epoch is
+        "active" if ≥ WAKE_EPOCH_ACTIVE_FRAC of its frames moved. Wake is confirmed only
+        after K consecutive active epochs spanning ≥ sleep_wake_minutes — a brief arousal
+        (one active epoch, or scattered motion) never reaches it. Returns
+        (wake_confirmed, bout_start) where bout_start is the first of the confirming run.
+        """
+        if self._epoch_start is None:
+            self._epoch_start = now
+        self._epoch_frames += 1
+        if is_motion:
+            self._epoch_motion += 1
+
+        if (now - self._epoch_start).total_seconds() < WAKE_EPOCH_SECONDS:
+            return False, None
+
+        active = (self._epoch_frames > 0
+                  and self._epoch_motion / self._epoch_frames >= WAKE_EPOCH_ACTIVE_FRAC)
+        self.wake_epochs.append((self._epoch_start, active))
+        self._epoch_start  = now
+        self._epoch_frames = 0
+        self._epoch_motion = 0
+
+        need = max(2, round(self.cfg["wake_minutes"] * 60 / WAKE_EPOCH_SECONDS))
+        while len(self.wake_epochs) > need:
+            self.wake_epochs.popleft()
+        if len(self.wake_epochs) == need and all(a for _, a in self.wake_epochs):
+            return True, self.wake_epochs[0][0]
+        return False, None
 
     def _maybe_update_reference(self, curr_gray, motion_frac):
         """Triple-gated slow drift: track lighting only during trusted-empty stillness."""
@@ -358,10 +424,11 @@ class SleepStateMachine:
                     seconds=(DISTURBANCE_FRAMES - 1) * FRAME_INTERVAL)
                 self.log.info("Disturbance started (motion %.3f ≥ %.3f)",
                               motion_frac, cfg["disturbance_fraction"])
-                # A parent handling the crib is a wake by definition.
-                if self.state == STATE_ASLEEP:
-                    self._close_session(self.disturbance_start, "disturbance")
-                    self.state = STATE_AWAKE
+                # A disturbance while ASLEEP is a *candidate* arousal, NOT an automatic
+                # wake: a startle/limb-fling is a sleep phenomenon. Keep the session open
+                # and let the settle evaluation decide — crib empty ⇒ real pickup (end);
+                # still occupied ⇒ resume the nap (arousal rescored as sleep).
+                self.arousal_from_sleep = (self.state == STATE_ASLEEP)
                 self.still_since = None
                 self.motion_frames.clear()
                 self.probation_deadline = None
@@ -455,27 +522,49 @@ class SleepStateMachine:
                 self._close_session(now, "max-session cap")
                 self.state = STATE_AWAKE
                 self.still_since = None
-                self.motion_frames.clear()
-            elif sustained:
-                # Wake backdated to the first motion frame of the sustained burst.
-                self._close_session(self.motion_frames[0], "sustained motion")
-                self.state = STATE_AWAKE
-                self.still_since = None
-                self.motion_frames.clear()
+                self._reset_wake_epochs()
+            else:
+                # Wake requires motion sustained across several epochs (minutes), not a
+                # brief arousal. Active-sleep squirms and startles score one active epoch
+                # at most and are absorbed back into the nap (actigraphy rescoring).
+                wake_confirmed, bout_start = self._update_wake_epochs(now, is_motion)
+                if wake_confirmed:
+                    self._close_session(bout_start, "sustained wake (%d epochs)"
+                                        % len(self.wake_epochs))
+                    self.state = STATE_AWAKE
+                    self.still_since = None
+                    self._reset_wake_epochs()
+        else:
+            self._reset_wake_epochs()
 
         self.prev = curr_gray
         return self.state
 
     def _settle_evaluation(self, curr_gray, presence_frac, now):
-        """Path 1: a disturbance episode just ended — decide AWAY vs occupied-on-probation."""
+        """Path 1: a disturbance episode just ended — decide the state it settles into."""
         self.in_disturbance     = False
         self.settle_quiet_since = None
+        was_arousal             = self.arousal_from_sleep
+        self.arousal_from_sleep = False
+
         if self.reference is not None and presence_frac <= self.cfg["presence_threshold"]:
-            self._close_session(now, "settled empty")  # safety; normally closed already
+            # Crib empty — a real departure (pickup). Backdate a nap's end to the
+            # disturbance start; if we weren't asleep this is a no-op close.
+            self._close_session(self.disturbance_start or now, "settled empty (departure)")
             self._to_away()
             self._set_reference(curr_gray)
             self.log.info("Settle: crib empty (presence %.4f ≤ %.3f) — AWAY, reference "
                           "refreshed", presence_frac, self.cfg["presence_threshold"])
+        elif was_arousal and self.session_id is not None:
+            # Still occupied and we were asleep before the burst — a startle / position
+            # shift, not a wake. Resume the SAME nap; the epoch wake-scorer keeps watching
+            # and will still end it if genuine sustained activity follows.
+            self.state = STATE_ASLEEP
+            self.still_since = None
+            self._reset_wake_epochs()
+            self.log.info("Settle: presence %.4f still occupied after an in-sleep arousal — "
+                          "resuming nap %s (arousal kept as sleep)",
+                          presence_frac, self.session_id)
         else:
             self.state = STATE_AWAKE
             self.still_since = None
@@ -575,6 +664,7 @@ def build_cfg(settings):
         "probation_minutes":    float(settings.get("sleep_probation_minutes",   15)),
         "sleep_min_seconds":    int(settings.get("sleep_min_minutes",           10)) * 60,
         "wake_seconds":         int(settings.get("sleep_wake_seconds",          20)),
+        "wake_minutes":         float(settings.get("sleep_wake_minutes",        3)),
         "max_session_seconds":  float(settings.get("sleep_max_session_hours",   14)) * 3600,
     }
 

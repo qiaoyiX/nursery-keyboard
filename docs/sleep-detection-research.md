@@ -187,6 +187,37 @@ open session. Unchanged; still authoritative.
 **Path 4 — Max-session cap.** `sleep_max_session_hours` (14 h) force-end. Unchanged; now expected
 to ~never fire.
 
+### Waking from ASLEEP is deliberately hard (actigraphy rescoring)
+
+Infants spend ~50% of sleep in active/REM sleep — startles, Moro reflexes, limb-flings, rooting,
+position shifts, squirms — **without waking**. Wrist-actigraphy sleep scoring (Cole-Kripke's 7-min
+weighted window; Sadeh; [Webster rescoring](https://pmc.ncbi.nlm.nih.gov/articles/PMC12697920/):
+"a short wake block embedded in sleep is rescored back to sleep") exists precisely because a single
+active epoch does not mean awake — only a *run* of active epochs over minutes does. v5's original
+wake rule (motion in ≥60% of a **20 s** window, or any 2-frame ≥0.30 disturbance) was far too
+twitchy by that standard and scored ordinary in-sleep movement as waking. Two changes bring it in
+line:
+
+1. **A disturbance while ASLEEP is a candidate arousal, not an automatic wake.** It no longer closes
+   the session on the spot. The settle evaluation decides: crib now empty → real pickup, end the nap
+   (backdated to the disturbance start); still occupied → resume the *same* nap, the burst rescored
+   as sleep (no fragmentation, end-time untouched). A startle/limb-fling, however large, is absorbed.
+2. **A self-wake (no pickup) ends the nap only on sustained multi-epoch motion.** Frames are scored
+   into `WAKE_EPOCH_SECONDS` (30 s) epochs; an epoch is "active" if ≥ `WAKE_EPOCH_ACTIVE_FRAC` (0.5,
+   i.e. ≥15 s) of it moved; waking requires `sleep_wake_minutes` (default 3) of *consecutive* active
+   epochs, backdated to the start of that run. Active-sleep bouts (measured: 1–7 s runs, ≤1 active
+   epoch) never reach it; a genuinely waking baby sustaining motion for minutes does. This is
+   separate from the short 20 s `sustained` test, which is kept for the fast probation / AWAY life-
+   evidence checks (there we *want* to detect presence quickly).
+
+Validation: all four prior recordings regress identically (put-down still reaches ASLEEP with the
+same backdated start; both parent pickups still end as departures; empty crib unchanged, zero
+phantom sessions). Because no recording contains a baby *self-waking without a pickup*, the new wake
+path was proven with a synthetic driver — brief startle → nap continues; repeated active-sleep
+squirms → stays asleep; 3.5 min of continuous motion → wakes with correctly backdated end; pickup →
+ends as departure. **`sleep_wake_minutes` = 3 is a sleep-science default, not yet tuned to a real
+false-wake clip** — pending footage of the reported failure (baby scored awake while asleep).
+
 ### ASLEEP/AWAKE (stir-tolerant stillness, density-based wakefulness)
 
 Stillness ≥ `sleep_min_minutes` → ASLEEP (start backdated to stillness start); **sustained** motion
