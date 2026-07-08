@@ -4,9 +4,11 @@
 real recordings (§6a): 2 h empty+put-down (7/2), overnight awake-baby pickup (7/3), and a full
 put-down-to-ASLEEP cycle (7/4, which drove the stir-tolerant stillness rule). Empty crib,
 put-down, active/quiet sleep, awake baby, pickup, bedding changes, and
-bootstrap-poisoned-reference self-healing all match ground truth in simulation. Remaining
-unexercised on real footage: a pickup that starts from confirmed ASLEEP (the 7/3 pickup started
-from awake).
+bootstrap-poisoned-reference self-healing all match ground truth in simulation. The one path no
+recording exercises — a pickup that starts from confirmed ASLEEP — failed live on 2026-07-07
+(unconditional arousal-resume swallowed missed pickups → multi-hour phantom sessions); fixed by
+resume-on-probation and locked by the synthetic regression `tests/test_arousal_probation.py`.
+Still wanted: real footage of an ASLEEP→pickup to confirm on camera.
 **Audience:** any agent or human picking up this work. This doc is self-contained; read it before
 touching `sleep_monitor.py`. See also `sleep-monitor-algorithm.md` (mechanical spec of the code),
 `architecture.md` ADR-004…007 (decision records), `backlog.md` H-2/TODO-1 (the overcount bug).
@@ -208,8 +210,23 @@ line:
 
 1. **A disturbance while ASLEEP is a candidate arousal, not an automatic wake.** It no longer closes
    the session on the spot. The settle evaluation decides: crib now empty → real pickup, end the nap
-   (backdated to the disturbance start); still occupied → resume the *same* nap, the burst rescored
-   as sleep (no fragmentation, end-time untouched). A startle/limb-fling, however large, is absorbed.
+   (backdated to the disturbance start); still occupied → resume the *same* nap **on probation**, the
+   burst rescored as sleep (no fragmentation, end-time untouched). A startle/limb-fling, however
+   large, is absorbed once the baby's micro-motion cadence re-confirms occupancy.
+
+   ⚠️ **2026-07-07 field failure — why the probation is not optional.** As first shipped, the resume
+   was unconditional, and "still occupied" comes from the reference — which *always lies after a
+   pickup* (bedding rearranged; measured 0.127 presence over an empty crib on 7/4, vs the 0.02
+   threshold). Every missed pickup therefore resumed a nap over an empty crib, and since an empty
+   crib produces no active epochs and no further disturbance, nothing could end the session but the
+   14 h cap. Worse, each missed pickup also skipped the settle-time reference refresh, so the
+   reference grew staler and the next miss *more* likely — self-worsening, and the "📷 Crib is
+   empty" button only patched one incident at a time. Live symptom: multi-hour phantom "sleep"
+   periods. The resume-on-probation restores Path 1's self-healing guarantee: a sleeping baby
+   re-confirms at her ~3-min episode cadence (7/6 measurements) and the nap continues seamlessly;
+   zero evidence → probation expiry closes the session **backdated to the disturbance start** (the
+   real pickup) and refreshes the reference. Regression-locked by
+   `tests/test_arousal_probation.py` (synthetic ASLEEP→pickup, the one path no recording contains).
 2. **A self-wake (no pickup) ends the nap only on sustained multi-epoch motion.** Frames are scored
    into `WAKE_EPOCH_SECONDS` (30 s) epochs; an epoch is "active" if ≥ `WAKE_EPOCH_ACTIVE_FRAC` (0.5,
    i.e. ≥15 s) of it moved; waking requires `sleep_wake_minutes` (default 3) of *consecutive* active
@@ -368,7 +385,9 @@ minutes via settle evaluation, one after a self-healing probation); the 19:01 re
 transition; the put-down produced AWAKE with probation cleared by genuine baby micro-motion; zero
 phantom sessions. With `sleep_min_minutes` lowered to 5 (footage ends 9 min after put-down), the
 ASLEEP transition fired with a correctly backdated session start. **Still unexercised on real
-footage: ASLEEP → pickup → session close** — capture a pickup in the next recording.
+footage: ASLEEP → pickup → session close** — capture a pickup in the next recording. (2026-07-07:
+this exact gap failed live — see the ⚠️ note in §"actigraphy" above. Now covered synthetically by
+`tests/test_arousal_probation.py`; real footage still wanted.)
 
 ## 6b. Tuning & validation plan
 

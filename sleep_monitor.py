@@ -33,9 +33,12 @@ that set the thresholds):
   constants): infants spend ~half of sleep in active/REM sleep — startles, limb-flings,
   squirms — without waking. A disturbance while asleep is a CANDIDATE arousal, not an
   automatic wake: the settle evaluation ends the nap only if the crib is now empty (a real
-  pickup); if still occupied the nap resumes (arousal rescored as sleep). A self-wake (no
-  pickup) ends the nap only when motion is sustained across several consecutive epochs
-  spanning sleep_wake_minutes — a brief arousal never reaches it.
+  pickup); if still occupied the nap resumes ON PROBATION (arousal rescored as sleep once
+  micro-motion re-confirms; zero evidence means the "occupied" verdict was a bedding ghost
+  from a missed pickup, and probation expiry closes the session backdated to the
+  disturbance and refreshes the reference). A self-wake (no pickup) ends the nap only when
+  motion is sustained across several consecutive epochs spanning sleep_wake_minutes — a
+  brief arousal never reaches it.
 
   Both signals use one robust primitive: active_fraction(a, b) = fraction of pixels that
   meaningfully changed (absdiff → per-pixel threshold → MORPH_OPEN speck removal), computed
@@ -291,6 +294,13 @@ class SleepStateMachine:
         self._set_reference(curr_gray)
         self._close_session(now, "manual calibration")
         self._to_away()
+        # Cancel any in-flight disturbance episode: the button is often pressed right
+        # after walking away from the crib, and a pending settle evaluation against the
+        # just-saved reference would immediately re-open probation over an empty crib.
+        self.in_disturbance     = False
+        self.dist_streak        = 0
+        self.settle_quiet_since = None
+        self.disturbance_start  = None
         self.prev = curr_gray
         self.log.info("Reference frame saved manually — empty crib baseline updated")
 
@@ -605,14 +615,25 @@ class SleepStateMachine:
                           "refreshed", presence_frac, self.cfg["presence_threshold"])
         elif was_arousal and self.session_id is not None:
             # Still occupied and we were asleep before the burst — a startle / position
-            # shift, not a wake. Resume the SAME nap; the epoch wake-scorer keeps watching
-            # and will still end it if genuine sustained activity follows.
+            # shift, not a wake. Resume the SAME nap, but ON PROBATION: "still occupied"
+            # comes from the reference, and after a pickup the reference always lies
+            # (bedding rearranged ≫ presence threshold), so an unconditional resume turns
+            # every missed pickup into a session that only the max-hours cap can end.
+            # A sleeping baby re-confirms at her ~3-min micro-motion cadence (measured
+            # 2026-07-06) and the nap continues unfragmented; an empty crib produces zero
+            # episodes → probation expiry closes the session backdated to the disturbance
+            # (the real pickup) and refreshes the reference — self-healing restored.
             self.state = STATE_ASLEEP
             self.still_since = None
             self._reset_wake_epochs()
+            self._start_probation(now)
+            if self.disturbance_start is not None:
+                self.probation_anchor = self.disturbance_start
             self.log.info("Settle: presence %.4f still occupied after an in-sleep arousal — "
-                          "resuming nap %s (arousal kept as sleep)",
-                          presence_frac, self.session_id)
+                          "resuming nap %s on probation until %s (life evidence must "
+                          "confirm, else scored as a missed pickup)",
+                          presence_frac, self.session_id,
+                          self.probation_deadline.isoformat())
         else:
             self.state = STATE_AWAKE
             self.still_since = None
