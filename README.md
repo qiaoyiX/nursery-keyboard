@@ -94,10 +94,12 @@ Bookmark it to your home screen for one-tap access.
 |-----|-----------|--------|
 | 1   | Space     | Wet    |
 | 2   | PageUp    | Dirty  |
-| 3   | Down ↓    | Play   |
+| 3   | Down ↓    | Play (press once) / Probiotic (press twice within 3s) |
 | 4   | Up ↑      | Feed   |
 
-The on-screen buttons also work as a backup if the keypad isn't nearby.
+A single Play press is logged ~3 seconds after the press (the app waits to see if a
+second press turns it into Probiotic). The on-screen buttons also work as a backup if
+the keypad isn't nearby.
 
 ---
 

@@ -43,8 +43,55 @@ KEYPAD_KEYS = {
     "KEY_UP":     "Feed",
 }
 
+PLAY_DOUBLE_PRESS_SECONDS = 3.0   # second Play press within this window = Probiotic
+
 
 # ── Keypad listener ───────────────────────────────────────────────────────────
+
+def log_keypad_event(label):
+    """Shared log path for keypad events: debounce → store → Huckleberry."""
+    try:
+        if is_debounced(label):
+            logging.info("Debounced: %s — discarded (repeat within window)", label)
+            return
+        add_entry(label)
+        logging.info("Logged: %s", label)
+        if HUCKLEBERRY_AVAILABLE:
+            push_event(label, datetime.now())
+    except Exception as db_err:
+        logging.error("DB write failed for %s: %s — event dropped", label, db_err)
+
+
+# The 4-key pad has no free key for Probiotic, so Play is overloaded: a single
+# press logs Play (deferred by the double-press window, so its timestamp lands up
+# to PLAY_DOUBLE_PRESS_SECONDS late), a second press within the window logs
+# Probiotic instead. The lock is required: key events arrive on one thread per
+# SayoDevice interface and the deferred fire runs on a Timer thread.
+_play_timer = None
+_play_timer_lock = threading.Lock()
+
+
+def handle_play_press():
+    global _play_timer
+    with _play_timer_lock:
+        if _play_timer is not None:           # second press → Probiotic
+            _play_timer.cancel()
+            _play_timer = None
+            probiotic = True
+        else:                                 # first press → hold for the window
+            _play_timer = threading.Timer(PLAY_DOUBLE_PRESS_SECONDS, _fire_play)
+            _play_timer.daemon = True
+            _play_timer.start()
+            probiotic = False
+    if probiotic:
+        log_keypad_event("Probiotic")
+
+
+def _fire_play():
+    global _play_timer
+    with _play_timer_lock:
+        _play_timer = None
+    log_keypad_event("Play")
 
 def find_all_sayodevices():
     devices = []
@@ -78,17 +125,10 @@ def listen_one_interface(dev):
                                 key_name = key_name[0]
                             logging.info("[%s] Key event raw: %s", dev.path, key_name)
                             label = KEYPAD_KEYS.get(key_name)
-                            if label:
-                                try:
-                                    if is_debounced(label):
-                                        logging.info("Debounced: %s — discarded (repeat within window)", label)
-                                        continue
-                                    add_entry(label)
-                                    logging.info("Logged: %s", label)
-                                    if HUCKLEBERRY_AVAILABLE:
-                                        push_event(label, datetime.now())
-                                except Exception as db_err:
-                                    logging.error("DB write failed for %s: %s — event dropped", label, db_err)
+                            if label == "Play":
+                                handle_play_press()
+                            elif label:
+                                log_keypad_event(label)
             finally:
                 try:
                     dev.ungrab()

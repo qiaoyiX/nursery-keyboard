@@ -70,14 +70,16 @@ Three files form the core:
 |-----------|-----------|
 | KEY_SPACE  | Wet |
 | KEY_PAGEUP | Dirty |
-| KEY_DOWN   | Play |
+| KEY_DOWN   | Play (single press) / Probiotic (double press within `PLAY_DOUBLE_PRESS_SECONDS` = 3s) |
 | KEY_UP     | Feed |
+
+The Play key is overloaded (`handle_play_press()` in `app.py`): a first press arms a 3s timer; a second press within the window cancels it and logs Probiotic; otherwise the timer fires and logs Play — so single-press Play is timestamped up to 3s late. Both paths go through `log_keypad_event()` (debounce → `add_entry` → Huckleberry push).
 
 To add or rename an event type, update `KEYPAD_KEYS`, the validation list in `log_event()`, the counts dicts in all three stat helpers, the `TYPES` array and `COLORS` object in `index.html`, and the CSS color rules (`.type-*`, `.btn-*`, `.count-card.*`).
 
 ## Debounce
 
-`is_debounced()` in `app.py` drops a repeat press of the same type within a per-type window, before `add_entry()`/`push_event()`. It guards both the keypad path (`listen_one_interface`) and the `/log` route (which returns `{"ok": true, "discarded": true}`). Windows are in `settings.json` `debounce_minutes` (minutes; `0` = off), default `{"Feed": 5, "Wet": 1, "Dirty": 1, "Play": 5}`.
+`is_debounced()` in `app.py` drops a repeat press of the same type within a per-type window, before `add_entry()`/`push_event()`. It guards both the keypad path (`log_keypad_event`) and the `/log` route (which returns `{"ok": true, "discarded": true}`). Windows are in `settings.json` `debounce_minutes` (minutes; `0` = off), default `{"Feed": 5, "Wet": 1, "Dirty": 1, "Play": 5, "Probiotic": 720}`. For the overloaded Play key, debounce runs at fire time — after the double-press window resolves which event it is.
 
 ## Storage: local-first, Neon as snapshot backup
 
