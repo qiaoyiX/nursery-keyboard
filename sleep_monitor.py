@@ -9,12 +9,18 @@ that set the thresholds):
   cannot enter or leave the crib without a parent-scale disturbance, so presence changes
   only through four explicit paths:
 
-    1. Settle evaluation — after a disturbance (motion ≥ sleep_disturbance_fraction for
-       2+ frames) quiets down for sleep_settle_seconds: if the settled frame matches the
+    1. Settle evaluation — after a disturbance (motion ≥ sleep_disturbance_fraction on
+       2+ frames within DISTURBANCE_WINDOW, or a persistent >LIGHTING_CEILING scene
+       change) quiets down for sleep_settle_seconds: if the settled frame matches the
        empty-crib reference → AWAY (and the reference is refreshed from the settled frame);
        otherwise → AWAKE on PROBATION: life evidence — sustained motion, or ≥2 micro-motion
        episodes separated by ≥60s of quiet — must appear within sleep_probation_minutes or
-       the "presence" is ruled a bedding ghost → AWAY.
+       the "presence" is ruled a bedding ghost → AWAY. The verdict is deferred (capped)
+       while presence reads person-scale: the parent is still over the crib. Probation has
+       an affirmative-empty fast path: a sustained wide-margin match to the empty
+       reference closes the question immediately (see EMPTY_MATCH_MARGIN). Micro-motion
+       evidence is a band, not a floor — parent-scale frames and their flanks never count
+       (2026-07-09 missed-pickup lessons, all four).
     2. Micro-motion override — while AWAY, sustained motion (awake baby) flips to AWAKE
        outright; ≥2 separated micro-motion episodes within a 10-minute window flips to
        AWAKE **on probation** (weaker evidence — two parent reach-ins could fake it, so the
@@ -102,7 +108,14 @@ STATE_AWAY   = "away"
 STATE_AWAKE  = "awake"
 STATE_ASLEEP = "asleep"
 
-LIGHTING_CEILING     = 0.80   # frame-diff fraction above which we assume IR toggle, skip frame
+LIGHTING_CEILING     = 0.80   # frame-diff fraction above which per-frame motion is meaningless:
+                              # an IR day/night toggle, a corrupt decode, OR a pickup whose whole
+                              # departure landed on one frame gap. Judgment is deferred one frame
+                              # (see step()): a glitch reverts, a real scene change persists and
+                              # opens a disturbance episode. The old skip-and-forget behavior let a
+                              # parent leave with the baby invisibly (2026-07-09 missed pickup: the
+                              # departure coincided with an h264 hiccup, diff 0.86 → frame skipped,
+                              # no disturbance ever fired, session ran 3h over an empty crib).
 FRAME_INTERVAL       = 1.0    # seconds between sampled frames (~1 fps)
 PIXEL_THRESH         = 20     # per-pixel gray-level delta to count as "changed"
 REFERENCE_FRAME_FILE = os.path.join(os.path.dirname(__file__), "reference_frame.npy")
@@ -110,7 +123,12 @@ REFERENCE_META_FILE  = os.path.join(os.path.dirname(__file__), "reference_frame_
 DENOISE_KERNEL       = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
 REFERENCE_UPDATE_LR  = 0.02   # slow drift of reference toward current during trusted-empty periods
 BOOTSTRAP_FRAMES     = 5      # frames median-averaged on startup to build initial reference (~5s)
-DISTURBANCE_FRAMES   = 2      # consecutive disturbance-level frames to open an episode
+DISTURBANCE_FRAMES   = 2      # disturbance-level frames within DISTURBANCE_WINDOW to open an episode
+DISTURBANCE_WINDOW   = 4      # seconds. Was "2 consecutive frames", but decode hiccups drop frames
+                              # exactly when the scene is busiest (H.264 bitstream stress), and a
+                              # brief parent reach-in at ~1fps can alternate disturb/quiet frames —
+                              # observed 2026-07-09: spikes 0.72 and 0.80 thirteen seconds apart
+                              # never opened an episode, so the settle machinery never re-evaluated.
 MICRO_OVERRIDE_EPISODES = 2   # micro-motion episodes to flip AWAY → AWAKE-on-probation …
 MICRO_OVERRIDE_WINDOW   = 600  # … within this rolling window (seconds).
                               # 2 (not 3): a sleeping baby's worst measured 10-min window has
@@ -129,6 +147,35 @@ MICRO_EPISODE_GAP       = 60  # quiet seconds separating two micro-motion episod
                               # Counting episodes (not calendar-minute buckets) means a single
                               # 2–4s reach-in can never look like two pieces of evidence, no
                               # matter where it falls relative to a minute boundary.
+
+# Parent-scale motion is NEVER life evidence, and it taints the micro-motion around it:
+# a reach-in's flank frames (measured 0.04 right after a 0.80 spike, 2026-07-09) are the
+# same parent event, not baby twitches. Frames ≥ sleep_disturbance_fraction are excluded
+# from the micro band outright; micro events within MICRO_EPISODE_GAP before a
+# disturbance-scale frame are purged, and collection is suppressed for
+# EPISODE_CONFIRM_COOLDOWN after it. Without this, two parent visits during probation
+# read as two separated micro-motion episodes and falsely confirm occupancy of an empty
+# crib (the 2026-07-09 missed pickup ran 3h on exactly that).
+
+# Settle evaluations are meaningless while a person fills the crib ROI: a parent leaning
+# over the crib below disturbance-level motion for settle_seconds triggers a settle whose
+# presence is the PARENT (measured 0.77–0.89), not the crib contents (baby ≈ 0.07–0.12).
+# Defer the verdict while presence ≥ SETTLE_BLOCKED_PRESENCE, up to SETTLE_DEFER_LIMIT
+# (an IR flip against a stale reference can also read ≥0.5 forever — the cap guarantees
+# an eventual verdict, and the probation machinery absorbs a wrong one).
+SETTLE_BLOCKED_PRESENCE = 0.5
+SETTLE_DEFER_LIMIT      = 180  # seconds
+
+# Affirmative-empty fast path during probation: "differs from reference" can lie (bedding
+# ghost), but a sustained match to the known-empty reference at wide margin cannot be a
+# baby. If presence stays ≤ presence_threshold × EMPTY_MATCH_MARGIN for
+# PROBATION_EMPTY_MATCH_SECONDS, rule the crib empty immediately instead of waiting out
+# the probation deadline (2026-07-09: presence read 0.001 for nine straight minutes while
+# the state machine waited for micro-motion evidence that a parent visit then faked).
+# Also the fast recovery for daemon-restart resumes that missed a pickup while offline.
+# Measured margins: empty crib 0.0006–0.0022, baby present 0.06–0.12, bar = 0.025.
+PROBATION_EMPTY_MATCH_SECONDS = 60
+EMPTY_MATCH_MARGIN            = 0.5
 
 # ── Wake confirmation (actigraphy-style) ──────────────────────────────────────
 # A sleeping infant spends ~50% of sleep in active/REM sleep: startles, limb-flings,
@@ -259,10 +306,14 @@ class SleepStateMachine:
         self.sleep_start   = None
         self.still_since   = None
         self.motion_frames = deque()          # timestamps of recent "moving" frames
-        self.dist_streak        = 0
+        self.disturb_times      = deque()     # timestamps of recent disturbance-scale frames
         self.in_disturbance     = False
         self.disturbance_start  = None
         self.settle_quiet_since = None
+        self.settle_blocked_since = None      # first blocked-scene settle attempt (deferral)
+        self.pending_guard      = None        # time a >LIGHTING_CEILING frame change fired
+        self.micro_suppress_until = None      # micro collection tainted by parent-scale motion
+        self.empty_match_since  = None        # probation: first frame of a sustained empty match
         self.probation_deadline = None
         self.probation_anchor   = None
         self.probation_micro    = []          # micro-motion timestamps since probation start
@@ -298,9 +349,12 @@ class SleepStateMachine:
         # after walking away from the crib, and a pending settle evaluation against the
         # just-saved reference would immediately re-open probation over an empty crib.
         self.in_disturbance     = False
-        self.dist_streak        = 0
+        self.disturb_times.clear()
         self.settle_quiet_since = None
+        self.settle_blocked_since = None
         self.disturbance_start  = None
+        self.pending_guard      = None
+        self.micro_suppress_until = None
         self.prev = curr_gray
         self.log.info("Reference frame saved manually — empty crib baseline updated")
 
@@ -326,6 +380,7 @@ class SleepStateMachine:
         self.probation_micro.clear()
         self.micro_events.clear()
         self.arousal_from_sleep = False
+        self.empty_match_since  = None
         self._reset_wake_epochs()
 
     def _start_probation(self, now):
@@ -333,6 +388,24 @@ class SleepStateMachine:
         self.probation_anchor   = now
         self.probation_micro.clear()
         self.probation_extended = False
+        self.empty_match_since  = None
+
+    def _open_disturbance(self, start_time):
+        """Open a disturbance episode: suspend transitions until it settles."""
+        self.in_disturbance     = True
+        self.disturbance_start  = start_time
+        self.settle_quiet_since = None
+        self.settle_blocked_since = None
+        # A disturbance while ASLEEP is a *candidate* arousal, NOT an automatic wake:
+        # a startle/limb-fling is a sleep phenomenon. Keep the session open and let the
+        # settle evaluation decide — crib empty ⇒ real pickup (end); still occupied ⇒
+        # resume the nap (arousal rescored as sleep).
+        self.arousal_from_sleep = (self.state == STATE_ASLEEP)
+        self.still_since = None
+        self.motion_frames.clear()
+        self.probation_deadline = None
+        self.probation_micro.clear()
+        self.empty_match_since  = None
 
     @staticmethod
     def _count_episodes(timestamps, now=None):
@@ -428,16 +501,39 @@ class SleepStateMachine:
             self.prev = curr_gray
             return self.state
 
-        # Lighting-change guard: IR day/night toggle flips nearly every pixel — skip.
-        if active_fraction(self.prev, curr_gray, pixel_thresh=25) > LIGHTING_CEILING:
-            self.prev = curr_gray
+        # Scene-change guard: a near-total frame change (> LIGHTING_CEILING) is an IR
+        # day/night toggle, a corrupt decode, or a pickup whose whole departure landed in
+        # one frame gap. Per-frame motion is meaningless across it, so defer judgment one
+        # frame instead of deciding now: a glitch reverts (next frame matches the old
+        # scene again → process normally), while a real scene change persists → treat it
+        # as a disturbance so the settle evaluation gets to rule on the new scene.
+        if self.pending_guard is not None:
+            fired_at = self.pending_guard
+            self.pending_guard = None
+            if active_fraction(self.prev, curr_gray, pixel_thresh=25) > LIGHTING_CEILING:
+                self.log.info("Scene changed >%d%% and persisted (IR flip or unseen "
+                              "pickup) — treating as a disturbance",
+                              int(LIGHTING_CEILING * 100))
+                if self.in_disturbance:
+                    self.settle_quiet_since = None
+                else:
+                    self._open_disturbance(fired_at)
+                self.prev = curr_gray
+                return self.state
+            # else: single-frame glitch — fall through, compare against the pre-glitch prev
+        elif active_fraction(self.prev, curr_gray, pixel_thresh=25) > LIGHTING_CEILING:
+            self.pending_guard = now      # judgment deferred one frame; prev unchanged
             return self.state
 
         motion_frac   = active_fraction(self.prev, curr_gray)
         presence_frac = (active_fraction(curr_gray, self.reference)
                          if self.reference is not None else 0.0)
         is_disturb = motion_frac >= cfg["disturbance_fraction"]
-        is_micro   = motion_frac > cfg["micromotion_fraction"]
+        micro_suppressed = (self.micro_suppress_until is not None
+                            and now < self.micro_suppress_until)
+        # Micro-motion is a band, not a floor: parent-scale frames are never life evidence.
+        is_micro   = (not is_disturb and not micro_suppressed
+                      and motion_frac > cfg["micromotion_fraction"])
         is_motion  = motion_frac > cfg["motion_fraction"]
 
         flags = ([""] if not (self.in_disturbance or self.probation_deadline) else
@@ -451,30 +547,41 @@ class SleepStateMachine:
                       cfg["micromotion_fraction"], cfg["disturbance_fraction"], flags[0])
 
         # ── Disturbance episode tracking (Path 1 trigger) ─────────────────────
+        while self.disturb_times and (now - self.disturb_times[0]).total_seconds() > DISTURBANCE_WINDOW:
+            self.disturb_times.popleft()
         if is_disturb:
-            self.dist_streak       += 1
+            self.disturb_times.append(now)
             self.settle_quiet_since = None
-            if not self.in_disturbance and self.dist_streak >= DISTURBANCE_FRAMES:
-                self.in_disturbance    = True
-                self.disturbance_start = now - timedelta(
-                    seconds=(DISTURBANCE_FRAMES - 1) * FRAME_INTERVAL)
+            # Parent-scale motion taints nearby micro-motion: purge the trailing episode
+            # gap (the flank frames were the same parent event) and suppress collection
+            # while the event's tail plays out.
+            self.micro_suppress_until = now + timedelta(seconds=EPISODE_CONFIRM_COOLDOWN)
+            cutoff = now - timedelta(seconds=MICRO_EPISODE_GAP)
+            self.probation_micro = [t for t in self.probation_micro if t < cutoff]
+            while self.micro_events and self.micro_events[-1] >= cutoff:
+                self.micro_events.pop()
+            if not self.in_disturbance and len(self.disturb_times) >= DISTURBANCE_FRAMES:
+                self._open_disturbance(self.disturb_times[0])
                 self.log.info("Disturbance started (motion %.3f ≥ %.3f)",
                               motion_frac, cfg["disturbance_fraction"])
-                # A disturbance while ASLEEP is a *candidate* arousal, NOT an automatic
-                # wake: a startle/limb-fling is a sleep phenomenon. Keep the session open
-                # and let the settle evaluation decide — crib empty ⇒ real pickup (end);
-                # still occupied ⇒ resume the nap (arousal rescored as sleep).
-                self.arousal_from_sleep = (self.state == STATE_ASLEEP)
-                self.still_since = None
-                self.motion_frames.clear()
-                self.probation_deadline = None
-                self.probation_micro.clear()
-        else:
-            self.dist_streak = 0
-            if self.in_disturbance:
-                if self.settle_quiet_since is None:
-                    self.settle_quiet_since = now
-                elif (now - self.settle_quiet_since).total_seconds() >= cfg["settle_seconds"]:
+        elif self.in_disturbance:
+            if self.settle_quiet_since is None:
+                self.settle_quiet_since = now
+            elif (now - self.settle_quiet_since).total_seconds() >= cfg["settle_seconds"]:
+                # A settle verdict is about the crib contents; while a person still fills
+                # the ROI (presence at parent scale) it would be about the person. Defer
+                # until the scene clears — capped, so a stale-reference IR flip (which
+                # also reads high forever) still gets an eventual verdict for the
+                # probation machinery to absorb.
+                blocked = (self.reference is not None
+                           and presence_frac >= SETTLE_BLOCKED_PRESENCE)
+                if blocked and self.settle_blocked_since is None:
+                    self.settle_blocked_since = now
+                    self.log.info("Settle deferred — presence %.2f is person-scale, the "
+                                  "crib is still blocked; waiting up to %ds",
+                                  presence_frac, SETTLE_DEFER_LIMIT)
+                if not blocked or ((now - self.settle_blocked_since).total_seconds()
+                                   >= SETTLE_DEFER_LIMIT):
                     self._settle_evaluation(curr_gray, presence_frac, now)
 
         if self.in_disturbance:
@@ -497,6 +604,34 @@ class SleepStateMachine:
 
         # ── Probation: occupancy claimed by the reference must be confirmed ───
         if self.probation_deadline is not None:
+            # Affirmative-empty fast path: "differs from reference" can lie (bedding
+            # ghost), but a sustained wide-margin MATCH to the known-empty reference
+            # cannot be a baby. Don't wait out the deadline — and don't leave a window
+            # for a parent visit to fake the evidence (2026-07-09 missed pickup).
+            # Gated on an OPEN session: while a nap runs, the reference predates it and
+            # was validated empty, so a match refutes occupancy. Session-less probations
+            # (AWAY override, put-down settle) may run under a provisional/bootstrap
+            # reference that CONTAINS the baby — there "matches reference" ≠ "empty"
+            # (replaying 20260709_165351 without this gate closed a real nap at 60s).
+            if (self.session_id is not None
+                    and self.reference is not None
+                    and presence_frac <= cfg["presence_threshold"] * EMPTY_MATCH_MARGIN):
+                if self.empty_match_since is None:
+                    self.empty_match_since = now
+                elif ((now - self.empty_match_since).total_seconds()
+                        >= PROBATION_EMPTY_MATCH_SECONDS):
+                    self._close_session(self.probation_anchor or now,
+                                        "probation empty-match (crib matches empty reference)")
+                    self.log.warning("Probation: presence ≤ %.4f sustained %ds — crib is "
+                                     "empty, ruling AWAY now, reference refreshed",
+                                     cfg["presence_threshold"] * EMPTY_MATCH_MARGIN,
+                                     PROBATION_EMPTY_MATCH_SECONDS)
+                    self._to_away()
+                    self._set_reference(curr_gray)
+                    self.prev = curr_gray
+                    return self.state
+            else:
+                self.empty_match_since = None
             episodes = self._count_episodes(self.probation_micro, now)
             if sustained or episodes >= PROBATION_CONFIRM_EPISODES:
                 self.log.info("Probation cleared at %s — %s confirms occupancy", now.isoformat(),
@@ -602,6 +737,7 @@ class SleepStateMachine:
         """Path 1: a disturbance episode just ended — decide the state it settles into."""
         self.in_disturbance     = False
         self.settle_quiet_since = None
+        self.settle_blocked_since = None
         was_arousal             = self.arousal_from_sleep
         self.arousal_from_sleep = False
 

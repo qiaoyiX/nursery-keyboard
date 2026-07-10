@@ -389,6 +389,35 @@ footage: ASLEEP → pickup → session close** — capture a pickup in the next 
 this exact gap failed live — see the ⚠️ note in §"actigraphy" above. Now covered synthetically by
 `tests/test_arousal_probation.py`; real footage still wanted.)
 
+**Missed-pickup incident (2026-07-09, `docs/pickup_miss_1.log.gz` + recording `20260709_165351`)** — the
+first real ASLEEP → pickup data, from a live 3-hour phantom session. Timeline (log times UTC):
+session started 05:38; parent arrived 06:39:23 (disturbance fired correctly); the settle at
+06:40:01 read presence **0.888** — the *parent leaning over the crib*, not the crib — and ruled
+"still occupied"; the parent left with the baby at 06:41:12 during an h264 decode hiccup, the
+frame-to-frame change (0.86) exceeded `LIGHTING_CEILING`, and the old guard **silently skipped the
+frame** — the departure produced zero disturbance frames; the crib then read presence
+**0.0006–0.0022** (a near-perfect match to the healthy empty reference) for nine minutes while the
+arousal probation waited for micro-motion; the parent's brief return at 06:50 (isolated spikes
+0.72 and 0.80, thirteen seconds apart — never 2 consecutive frames, so no episode; flank frame
+0.043) was **counted as 2 separated micro-motion episodes** and falsely cleared probation. The
+session then survived every later settle (bedding ghosts and more parent visits) until the log
+ends 3 h later, still "asleep" over an empty crib.
+
+Four fixes, each independently sufficient for this incident (all in `sleep_monitor.py`,
+regression scenarios D–F in `tests/test_arousal_probation.py`):
+
+| Defect | Fix |
+|---|---|
+| Guard swallowed the departure | Guard now defers judgment one frame: a decode glitch reverts (frame ignored as before); a persisted >80% scene change **opens a disturbance episode** so the settle machinery rules on the new scene. IR flips settle into the probation machinery and self-heal as usual. |
+| Settle verdict taken about the parent | Settle is **deferred while presence ≥ 0.5** (`SETTLE_BLOCKED_PRESENCE`; a baby measures 0.07–0.12, a person over the crib 0.77–0.89), capped at `SETTLE_DEFER_LIMIT` 180 s so a stale-reference IR flip still gets an eventual verdict. |
+| Parent-scale motion read as life evidence | Micro-motion is now a **band, not a floor**: frames ≥ `sleep_disturbance_fraction` never count; a disturbance-scale frame purges micro events in the preceding `MICRO_EPISODE_GAP` and suppresses collection for `EPISODE_CONFIRM_COOLDOWN` after (its flanks are the same parent event). Also: disturbance episodes now open on 2 frames within `DISTURBANCE_WINDOW` 4 s rather than 2 *consecutive* frames — decode drops hit exactly when the scene is busiest. |
+| Empty crib held hostage by the evidence deadline | **Affirmative-empty fast path**: during probation *with an open session*, presence ≤ `presence_threshold × 0.5` sustained 60 s closes the session immediately, backdated to the probation anchor (measured margins: empty 0.0006–0.0022, baby 0.06–0.12, bar 0.025). Gated on an open session because session-less probations can run under a bootstrap reference that *contains the baby* — ungated, replaying `20260709_165351` closed a real nap at the 60 s mark ("matches reference" ≠ "empty" unless the reference is trusted-empty). |
+
+The `20260709_165351` recording itself (local afternoon, a *second* pickup that day) showed the
+probation-expiry self-heal working (nap 17:05→17:27 closed backdated to the 0.72-motion pickup,
+15 min late on the live state) and serves as the regression baseline: the fixed pipeline
+reproduces the identical timeline and session.
+
 ## 6b. Tuning & validation plan
 
 **Data collection tooling (added with v5):** `record_camera.sh [minutes]` on the Pi captures the
