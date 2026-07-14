@@ -28,6 +28,10 @@ Scenarios:
      clear probation → session closes at expiry, backdated to the pickup
   F  probation over a crib that matches the empty reference → affirmative-empty fast
      path closes the session in ~1 min instead of waiting out the deadline
+  G  faint put-down (2026-07-14 shape): a baby whose settled presence is only ~1.7× the
+     default threshold must be ruled occupied and reach ASLEEP; the same footage under
+     the incident Pi's sleep_presence_threshold=0.05 settles as "empty" (AWAY, no
+     session, reference poisoned) — locking the default at 0.02
 """
 
 import logging
@@ -56,6 +60,11 @@ EMPTY   = np.zeros((SIZE, SIZE), dtype=np.uint8)
 BEDDING = EMPTY.copy();  BEDDING[48:60, :] = 150   # crumpled swaddle left behind (~20% of ROI)
 BABY    = EMPTY.copy();  BABY[5:25, :]     = 200   # swaddled baby (~33% of ROI)
 BABY2   = EMPTY.copy();  BABY2[10:30, :]   = 200   # baby after a position shift
+# Faint baby: presence ~0.033 — between the default presence threshold (0.02) and the
+# 2026-07-14 incident Pi's override (0.05). Real sleeping-baby frames measured
+# 0.06–0.075 against the live reference (pickup_miss_1.log), so a slightly stale
+# reference or a small swaddle puts a real put-down exactly in this band.
+BABY_FAINT = EMPTY.copy();  BABY_FAINT[5:10, 18:42] = 200
 
 # Parent-scale disturbance: two frames differing in ~40% of pixels, alternated.
 DIST_A = EMPTY.copy();  DIST_A[0:24, :] = 255
@@ -107,6 +116,12 @@ def check_magnitudes(cfg):
     r = active_fraction(REACH, BEDDING)
     assert cfg["disturbance_fraction"] <= r, f"reach spike {r:.2f} below disturbance"
     assert active_fraction(REACH, BEDDING, pixel_thresh=25) <= LIGHTING_CEILING
+    # Scenario G band: above the default threshold, below the incident override.
+    pf = active_fraction(BABY_FAINT, EMPTY)
+    assert cfg["presence_threshold"] < pf < 0.05, f"faint baby {pf:.4f} out of band"
+    tw = active_fraction(BABY_FAINT, twitch(BABY_FAINT))
+    assert cfg["micromotion_fraction"] < tw < cfg["motion_fraction"], \
+        f"faint-baby twitch {tw:.4f} not in micro band"
 
 
 class Driver:
@@ -277,6 +292,35 @@ def scenario_f(cfg):
     print(f"  F empty-match fast path: closed within probation, backdated {err:.0f}s  ✓")
 
 
+def scenario_g(cfg):
+    """2026-07-14 missed put-down: baby deposited, dashboard said the crib was empty.
+    The Pi ran sleep_presence_threshold=0.05 (baked into settings.json long ago) against
+    sleeping-baby presence measured 0.06–0.075 — so a faint settled frame reads "empty",
+    the machine goes AWAY, and the reference is refreshed WITH the baby in it. A quiet
+    newborn then never produces enough micro-motion for the Path-2 override, and the
+    dashboard shows an empty crib all nap. The default 0.02 must keep this put-down."""
+    def run(c):
+        d = Driver(c)
+        d.still(EMPTY, 30)
+        d.disturbance(20)                                 # put-down
+        d.still(BABY_FAINT, 15)                           # settle verdict on faint baby
+        d.twitch_cluster(BABY_FAINT); d.still(BABY_FAINT, 100)   # sparse early twitches
+        d.twitch_cluster(BABY_FAINT); d.still(BABY_FAINT, 30)
+        d.still(BABY_FAINT, 25 * 60)                      # deep newborn stillness
+        return d
+    d = run(cfg)
+    assert d.m.state == STATE_ASLEEP, f"faint put-down lost: state={d.m.state}"
+    assert len(d.sessions) == 1 and d.sessions[0]["end"] is None, "nap not recorded"
+
+    bad = dict(cfg)
+    bad["presence_threshold"] = 0.05      # the incident Pi's settings.json override
+    d2 = run(bad)
+    assert d2.m.state == STATE_AWAY and not d2.sessions, \
+        "incident shape no longer reproduces under 0.05 — update this scenario's bands"
+    print("  G faint put-down: kept at default threshold (ASLEEP, session open); "
+          "incident override 0.05 loses the baby as documented  ✓")
+
+
 def main():
     cfg = build_cfg({})   # storage.DEFAULT_SETTINGS
     cfg["crib_roi"] = [0, 0, 1, 1]
@@ -288,6 +332,7 @@ def main():
     scenario_d(cfg)
     scenario_e(cfg)
     scenario_f(cfg)
+    scenario_g(cfg)
     print("All scenarios pass.")
 
 

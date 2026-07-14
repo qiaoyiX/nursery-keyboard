@@ -204,13 +204,34 @@ def load_settings():
             return merged
         except json.JSONDecodeError as e:
             logging.warning("settings.json is corrupt (%s) — using defaults and resetting file", e)
-            save_settings(dict(DEFAULT_SETTINGS))
+            save_settings({})
     return dict(DEFAULT_SETTINGS)
 
 
 def save_settings(s):
     with open(SETTINGS_FILE, "w") as f:
         json.dump(s, f)
+
+
+def update_setting(key, value):
+    """
+    Persist ONE explicit override, leaving every other key to follow the code defaults.
+
+    Never write the merged load_settings() dict back to disk: that bakes every default
+    of that moment into settings.json, where it shadows all future tuning of
+    DEFAULT_SETTINGS. That is how the Pi kept sleep_disturbance_fraction=0.10 (and its
+    era's companions) long after the measured default moved to 0.30 — the drift behind
+    the 2026-07-14 missed put-down.
+    """
+    saved = {}
+    if os.path.exists(SETTINGS_FILE):
+        try:
+            with open(SETTINGS_FILE) as f:
+                saved = json.load(f)
+        except json.JSONDecodeError:
+            pass   # corrupt file: rebuild it with just this override
+    saved[key] = value
+    save_settings(saved)
 
 
 # ── Sleep sessions — Postgres path ────────────────────────────────────────────

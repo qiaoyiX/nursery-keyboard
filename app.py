@@ -11,7 +11,7 @@ from storage import (
     CALIBRATE_FLAG,
     log_lock, settings_lock, sleep_lock,
     get_entries, add_entry, clear_today, delete_entry, update_entry,
-    load_settings, save_settings,
+    load_settings, update_setting,
     get_sleep_sessions_today, get_open_sleep_session, read_sleep_status,
 )
 
@@ -306,9 +306,9 @@ def update_settings():
     if not isinstance(interval, int) or interval % 15 != 0 or not (15 <= interval <= 720):
         return jsonify({"error": "feed_interval_minutes must be a multiple of 15 between 15 and 720"}), 400
     with settings_lock:
-        s = load_settings()
-        s["feed_interval_minutes"] = interval
-        save_settings(s)
+        # Write only the changed key — saving the merged dict bakes every current
+        # default into settings.json and freezes it against future tuning.
+        update_setting("feed_interval_minutes", interval)
     return jsonify({"ok": True})
 
 

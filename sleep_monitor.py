@@ -889,6 +889,20 @@ def main():
             time.sleep(30)
             continue
 
+        # Overridden thresholds shadow the measured defaults forever (settings.json wins
+        # over DEFAULT_SETTINGS), so make every divergence loud: the 2026-07-14 missed
+        # put-down traced to sleep_* values baked into the Pi's settings.json years of
+        # tuning ago. Delete a key from settings.json to return it to the code default.
+        overrides = {k: settings[k] for k, dflt in DEFAULT_SETTINGS.items()
+                     if k.startswith("sleep_") and k != "sleep_crib_roi"
+                     and settings.get(k) != dflt}
+        if overrides:
+            logging.warning(
+                "settings.json overrides tuned defaults: %s — check these against the "
+                "measured bands in docs/sleep-detection-research.md §6a",
+                ", ".join(f"{k}={settings[k]} (default {DEFAULT_SETTINGS[k]})"
+                          for k in sorted(overrides)))
+
         try:
             run_state_machine(rtsp_url, build_cfg(settings))
         except Exception as exc:

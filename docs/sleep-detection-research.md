@@ -418,6 +418,25 @@ probation-expiry self-heal working (nap 17:05→17:27 closed backdated to the 0.
 15 min late on the live state) and serves as the regression baseline: the fixed pipeline
 reproduces the identical timeline and session.
 
+### 2026-07-14 missed put-down — settings drift, not algorithm (pending journal confirmation)
+
+Live failure: baby put down, dashboard showed the crib empty. The 2026-07-09 journal proves the
+Pi runs `sleep_presence_threshold=0.05` and `sleep_disturbance_fraction=0.10` from its local
+`settings.json` — not the measured defaults (0.02 / 0.30). Both overrides sit inside the danger
+bands this doc documents: the sleeping baby logged presence **0.06–0.075**, only 1.4× the 0.05
+bar (vs 3–6× at 0.02), so a faint settled put-down frame reads "empty" → AWAY + reference
+refreshed WITH the baby in it; and awake-baby squirms (0.10–0.17) cross the 0.10 disturbance bar,
+where (since the 07-09 fixes) they purge the baby's own micro-motion life evidence.
+
+Root cause of the drift: `POST /settings` used to write the **merged** settings dict back to
+disk, baking every default of that day into `settings.json`, where it shadowed all later tuning
+of `DEFAULT_SETTINGS` (the 0.10→0.30 disturbance raise never reached the Pi). Fixed: the route
+now writes only the changed key (`storage.update_setting`), the monitor logs a WARNING at startup
+for every overridden `sleep_*` threshold, and scenario G locks the faint-put-down band (occupied
+at 0.02; reproduces the incident at 0.05). **Remediation on the Pi: delete the stale `sleep_*`
+keys from `settings.json` and restart both services** — deleting a key returns it to the code
+default.
+
 ## 6b. Tuning & validation plan
 
 **Data collection tooling (added with v5):** `record_camera.sh [minutes]` on the Pi captures the
