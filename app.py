@@ -12,7 +12,8 @@ from storage import (
     log_lock, settings_lock, sleep_lock,
     get_entries, add_entry, clear_today, delete_entry, update_entry,
     load_settings, update_setting,
-    get_sleep_sessions_today, get_open_sleep_session, read_sleep_status,
+    get_sleep_sessions_today, get_sleep_sessions_range, get_open_sleep_session,
+    read_sleep_status,
 )
 
 try:
@@ -283,6 +284,65 @@ def today_sleep_stats(sessions, max_open_minutes=None):
     }
 
 
+def weekly_pattern_stats(entries, sessions, days=7, max_open_minutes=None):
+    """Per-day sleep segments + feed times for the weekly pattern chart.
+
+    Midnight-spanning sessions are split into per-day segments HERE so the client
+    positions everything by minute-of-day (a segment ending at midnight is minute
+    1440, which the client's minuteOfDay() cannot express). start_iso / end_iso /
+    duration_minutes always describe the WHOLE session (for the tap toast);
+    is_open marks only the growing segment of a still-running session. Feeds ship
+    as raw ISO strings — point events don't split.
+    """
+    now = datetime.now()
+    day_dates = [now.date() - timedelta(days=days - 1 - i) for i in range(days)]
+    buckets = {d.isoformat(): {"date": d.isoformat(), "sleep": [], "feeds": []}
+               for d in day_dates}
+
+    for s in sessions:
+        start_raw = s["start_time"]
+        start = start_raw if isinstance(start_raw, datetime) else datetime.fromisoformat(str(start_raw))
+        end_raw = s.get("end_time")
+        is_open = end_raw is None
+        if is_open:
+            end = now
+            if max_open_minutes is not None:
+                end = min(end, start + timedelta(minutes=max_open_minutes))
+        else:
+            end = end_raw if isinstance(end_raw, datetime) else datetime.fromisoformat(str(end_raw))
+        if end <= start:
+            continue
+        duration = round((end - start).total_seconds() / 60, 1)
+
+        day = start.date()
+        while day <= end.date():
+            key = day.isoformat()
+            day_start = datetime.combine(day, datetime.min.time())
+            seg_start = max(start, day_start)
+            seg_end   = min(end, day_start + timedelta(days=1))
+            if key in buckets and seg_end > seg_start:
+                start_min = int((seg_start - day_start).total_seconds() // 60)
+                end_min   = int((seg_end - day_start).total_seconds() // 60)
+                buckets[key]["sleep"].append({
+                    "start_min": start_min,
+                    # a sub-minute sliver still gets 1 minute so it renders
+                    "end_min":   min(1440, max(end_min, start_min + 1)),
+                    "is_open":   is_open and day == end.date(),
+                    "start_iso": start.isoformat(),
+                    "end_iso":   None if is_open else end.isoformat(),
+                    "duration_minutes": duration,
+                })
+            day += timedelta(days=1)
+
+    for e in entries:
+        if e["type"] == "Feed":
+            bucket = buckets.get(str(e["time"])[:10])
+            if bucket:
+                bucket["feeds"].append(e["time"])
+
+    return {"days": [buckets[d.isoformat()] for d in day_dates]}
+
+
 # ── Routes ────────────────────────────────────────────────────────────────────
 
 @app.route("/")
@@ -401,6 +461,8 @@ def get_data():
             "nap_count":           sleep_summary["nap_count"],
             "sessions_today":      sleep_summary["sessions"],
         },
+        "week": weekly_pattern_stats(entries, get_sleep_sessions_range(7),
+                                     max_open_minutes=max_open_min),
     })
 
 

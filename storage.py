@@ -274,6 +274,26 @@ def _pg_get_sleep_sessions_today():
             return [dict(r) for r in cur.fetchall()]
 
 
+def _pg_get_sleep_sessions_range(days=7):
+    """Sessions overlapping the last `days` local calendar days (today inclusive):
+    any closed session ending on/after the window's first midnight, plus open
+    sessions started within the last 24h (same cutoff as the today variant)."""
+    window_start = datetime.combine(
+        datetime.now().date() - timedelta(days=days - 1), datetime.min.time())
+    cutoff = datetime.now() - timedelta(days=1)
+    with db() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """SELECT id, start_time, end_time, duration_minutes
+                   FROM sleep_sessions
+                   WHERE (end_time IS NOT NULL AND end_time >= %s)
+                      OR (end_time IS NULL AND start_time > %s)
+                   ORDER BY start_time""",
+                (window_start, cutoff)
+            )
+            return [dict(r) for r in cur.fetchall()]
+
+
 def _pg_get_open_sleep_session():
     with db() as conn:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
@@ -341,6 +361,24 @@ def _json_get_sleep_sessions_today():
     return sorted(result, key=lambda x: x["start_time"])
 
 
+def _json_get_sleep_sessions_range(days=7):
+    """JSON mirror of _pg_get_sleep_sessions_range — ISO timestamps compare
+    lexicographically, so no parsing needed for the closed-session filter."""
+    window_start = datetime.combine(
+        datetime.now().date() - timedelta(days=days - 1), datetime.min.time()).isoformat()
+    cutoff = datetime.now() - timedelta(days=1)
+    with sleep_lock:
+        sessions = _json_load_sleep()
+    result = []
+    for s in sessions:
+        if s["end_time"] is not None:
+            if s["end_time"] >= window_start:
+                result.append(s)
+        elif datetime.fromisoformat(s["start_time"]) > cutoff:
+            result.append(s)
+    return sorted(result, key=lambda x: x["start_time"])
+
+
 def _json_get_open_sleep_session():
     with sleep_lock:
         sessions = _json_load_sleep()
@@ -363,6 +401,10 @@ def end_sleep_session(session_id, end_time):
 
 def get_sleep_sessions_today():
     return _pg_get_sleep_sessions_today() if USE_DB else _json_get_sleep_sessions_today()
+
+
+def get_sleep_sessions_range(days=7):
+    return _pg_get_sleep_sessions_range(days) if USE_DB else _json_get_sleep_sessions_range(days)
 
 
 def get_open_sleep_session():

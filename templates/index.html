@@ -583,6 +583,109 @@
     .chart-wrap { position: relative; height: 160px; }
     canvas { display: block; }
 
+    /* ── Weekly pattern (7-day rhythm grid) ── */
+    .week-grid {
+      display: grid;
+      grid-template-columns: 26px repeat(7, 1fr);
+      gap: 3px;
+    }
+    .week-day-label {
+      text-align: center;
+      font-size: 0.68rem;
+      font-weight: 600;
+      color: var(--brown-mid);
+      line-height: 1.25;
+      padding-bottom: 2px;
+    }
+    .week-day-label.is-today { color: var(--sleep); font-weight: 700; }
+    .week-day-date {
+      display: block;
+      font-size: 0.6rem;
+      font-weight: 400;
+      color: var(--text-muted);
+    }
+    .week-axis { position: relative; height: 240px; }
+    .week-axis span {
+      position: absolute;
+      right: 3px;
+      transform: translateY(-50%);
+      font-size: 0.62rem;
+      color: var(--text-muted);
+      white-space: nowrap;
+    }
+    .week-axis span:first-child { transform: none; }           /* clamp at top */
+    .week-axis span:last-child  { transform: translateY(-100%); } /* clamp at bottom */
+    .week-track {
+      position: relative;
+      height: 240px;
+      border-radius: 6px;
+      overflow: hidden;
+      background-color: var(--cream-2);
+      /* hairlines at 6h marks + night band (7p–7a) — layers inherit dark mode */
+      background-image:
+        linear-gradient(180deg, transparent calc(25% - 1px), rgba(128,128,128,.16) calc(25% - 1px) 25%, transparent 25%),
+        linear-gradient(180deg, transparent calc(50% - 1px), rgba(128,128,128,.16) calc(50% - 1px) 50%, transparent 50%),
+        linear-gradient(180deg, transparent calc(75% - 1px), rgba(128,128,128,.16) calc(75% - 1px) 75%, transparent 75%),
+        linear-gradient(180deg, var(--sleep-a) 0 29.17%, transparent 29.17% 79.17%, var(--sleep-a) 79.17% 100%);
+    }
+    .week-track.is-today { box-shadow: inset 0 0 0 1.5px var(--sleep-2); }
+    .week-sleep-block {
+      position: absolute;
+      left: 2px; right: 2px;
+      background: var(--sleep-2);
+      border: 1px solid var(--sleep);
+      border-radius: 4px;
+      min-height: 3px;
+      cursor: pointer;
+    }
+    /* square off midnight-cut edges so split halves read as one run */
+    .week-sleep-block.starts-midnight { border-top-left-radius: 0; border-top-right-radius: 0; }
+    .week-sleep-block.ends-midnight   { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+    .week-sleep-block.is-open {
+      background: linear-gradient(180deg, var(--sleep-2) 70%, transparent);
+      border-bottom: none;
+    }
+    .week-feed-dot {
+      position: absolute;
+      width: 14px; height: 14px;      /* transparent tap target */
+      left: 50%;
+      transform: translate(-50%, -50%);
+      cursor: pointer;
+      z-index: 2;
+    }
+    .week-feed-dot::before {
+      content: '';
+      position: absolute;
+      left: 50%; top: 50%;
+      width: 6px; height: 6px;
+      margin: -3px 0 0 -3px;
+      border-radius: 50%;
+      background: var(--feed);
+      box-shadow: 0 0 0 1.5px var(--surface);
+    }
+    .week-legend {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      margin-top: 10px;
+      font-size: 0.62rem;
+      color: var(--text-muted);
+    }
+    .week-legend > span { display: inline-flex; align-items: center; gap: 4px; }
+    .week-swatch-sleep {
+      display: inline-block;
+      width: 10px; height: 6px;
+      background: var(--sleep-2);
+      border: 1px solid var(--sleep);
+      border-radius: 2px;
+    }
+    .week-swatch-feed {
+      display: inline-block;
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      background: var(--feed);
+    }
+
     /* ── Toast ───────────────────────────── */
     .toast {
       position: fixed;
@@ -695,6 +798,17 @@
   <div class="chart-card">
     <p class="section-label">Last 7 Days</p>
     <div class="chart-wrap"><canvas id="chartDaily"></canvas></div>
+  </div>
+
+  <div class="chart-card">
+    <p class="section-label">Weekly Pattern</p>
+    <div class="week-grid" id="weekGrid"></div>
+    <div class="week-legend">
+      <span><span class="week-swatch-sleep"></span>Sleep</span>
+      <span><span class="week-swatch-feed"></span>Feed</span>
+      <span>shaded = 7p–7a</span>
+    </div>
+    <div class="nap-empty" id="weekEmpty" hidden>Patterns appear here as feeds and sleep are logged.</div>
   </div>
 
   <!-- Maintenance actions: rarely used, kept away from the one-handed logging zone -->
@@ -1263,6 +1377,99 @@
       });
     }
 
+    // --- Weekly pattern (7-day rhythm grid) ---
+
+    function updateWeeklyPattern(week) {
+      if (!week || !week.days) return;
+      const grid = document.getElementById("weekGrid");
+      grid.replaceChildren();
+
+      const MINS_IN_DAY = 1440;
+      const TRACK_PX = 240;               // must match .week-track height
+      const todayIso = isoDate(new Date());
+      const wkday = iso => new Date(iso).toLocaleDateString("en-US", { weekday: "short" });
+
+      // Header row: empty cell over the axis gutter + 7 day labels.
+      grid.appendChild(document.createElement("div"));
+      for (const day of week.days) {
+        const [y, m, d] = day.date.split("-").map(Number);
+        const dt = new Date(y, m - 1, d);   // local, avoids UTC off-by-one
+        const label = document.createElement("div");
+        label.className = "week-day-label" + (day.date === todayIso ? " is-today" : "");
+        label.textContent = dt.toLocaleDateString("en-US", { weekday: "narrow" });
+        const sub = document.createElement("span");
+        sub.className = "week-day-date";
+        sub.textContent = `${m}/${d}`;
+        label.appendChild(sub);
+        grid.appendChild(label);
+      }
+
+      // Hour axis: 12a / 6a / 12p / 6p / 12a.
+      const axis = document.createElement("div");
+      axis.className = "week-axis";
+      [["12a", 0], ["6a", 25], ["12p", 50], ["6p", 75], ["12a", 100]].forEach(([txt, pct]) => {
+        const s = document.createElement("span");
+        s.textContent = txt;
+        s.style.top = pct + "%";
+        axis.appendChild(s);
+      });
+      grid.appendChild(axis);
+
+      let hasAny = false;
+
+      for (const day of week.days) {
+        const track = document.createElement("div");
+        track.className = "week-track" + (day.date === todayIso ? " is-today" : "");
+
+        for (const seg of day.sleep || []) {
+          hasAny = true;
+          const block = document.createElement("div");
+          block.className = "week-sleep-block"
+            + (seg.is_open ? " is-open" : "")
+            + (seg.start_min === 0 ? " starts-midnight" : "")
+            + (seg.end_min === MINS_IN_DAY ? " ends-midnight" : "");
+          block.style.top    = (seg.start_min / MINS_IN_DAY * 100).toFixed(2) + "%";
+          block.style.height = ((seg.end_min - seg.start_min) / MINS_IN_DAY * 100).toFixed(2) + "%";
+
+          let msg;
+          if (seg.is_open) {
+            const soFar = Math.max(0, Math.round((Date.now() - new Date(seg.start_iso)) / 60000));
+            msg = `😴 Sleeping since ${fmtClock(seg.start_iso)} · ${fmtInterval(soFar)} so far`;
+          } else {
+            msg = `😴 ${wkday(seg.start_iso)} · ${fmtNapRange(seg.start_iso, seg.end_iso)}`
+                + ` · ${fmtInterval(Math.round(seg.duration_minutes))}`;
+          }
+          block.title = msg;
+          block.onclick = () => showToast(msg);
+          track.appendChild(block);
+        }
+
+        // Feed dots: nudge tight clusters sideways (30%/70%) so they don't stack.
+        const feeds = (day.feeds || []).slice().sort();
+        let prevPx = -Infinity, clusterIdx = 0;
+        for (const iso of feeds) {
+          hasAny = true;
+          const min = minuteOfDay(iso);
+          const px = min / MINS_IN_DAY * TRACK_PX;
+          clusterIdx = (px - prevPx < 8) ? clusterIdx + 1 : 0;
+          prevPx = px;
+
+          const dot = document.createElement("div");
+          dot.className = "week-feed-dot";
+          dot.style.top = (min / MINS_IN_DAY * 100).toFixed(2) + "%";
+          if (clusterIdx > 0) dot.style.left = clusterIdx % 2 === 1 ? "30%" : "70%";
+          const msg = `🍼 Feed · ${wkday(iso)} ${fmtClock(iso)}`;
+          dot.title = msg;
+          dot.onclick = () => showToast(msg);
+          track.appendChild(dot);
+        }
+
+        grid.appendChild(track);
+      }
+
+      document.getElementById("weekEmpty").hidden = hasAny;
+    }
+
     // --- Polling ---
 
     async function refresh() {
@@ -1284,6 +1491,7 @@
           updateSleepTimeline(data.sleep.sessions_today || []);
           updateNapList(data.sleep.sessions_today || []);
         }
+        if (data.week) updateWeeklyPattern(data.week);
       } catch (_) {
         notifyOffline();
       }
