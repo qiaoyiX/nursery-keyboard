@@ -32,6 +32,18 @@ Scenarios:
      default threshold must be ruled occupied and reach ASLEEP; the same footage under
      the incident Pi's sleep_presence_threshold=0.05 settles as "empty" (AWAY, no
      session, reference poisoned) — locking the default at 0.02
+
+Scenarios H–K lock the 2026-07-15/16 night incidents (night_0715.log):
+  H  silent gentle pickup (02:42: peak motion 0.13, no disturbance possible) → the
+     silent-departure close ends the session on a sustained trusted-empty match; the
+     same run under an UNTRUSTED reference must hold the latch
+  I  bedding-ghost phantom with zero micro-motion (session 394 ran 9h on this) → the
+     reference-free liveness backstop closes at sleep_liveness_minutes, backdated
+  J  parent partially in the ROI during arousal probation (09:00:38: every "sustained
+     motion" frame read presence 0.27–0.30 against a 0.04 anchor) → presence-raising
+     motion is an intruder, not evidence; probation must expire and close at the pickup
+  K  slow put-back (04:41: one isolated 0.849 frame, other ≥0.30 frames 14–17s apart) →
+     the solo-frame rule opens the disturbance and the put-down is recorded
 """
 
 import logging
@@ -44,9 +56,11 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from sleep_monitor import (  # noqa: E402
+    DISTURBANCE_SOLO_FRACTION,
+    EVIDENCE_PRESENCE_DELTA,
+    LATCHED_EMPTY_MATCH_SECONDS,
     LIGHTING_CEILING,
     SETTLE_BLOCKED_PRESENCE,
-    SETTLE_DEFER_LIMIT,
     STATE_ASLEEP,
     STATE_AWAY,
     SleepStateMachine,
@@ -83,6 +97,23 @@ PARENT_HALF = EMPTY.copy();  PARENT_HALF[0:36, :] = 255
 # (like the isolated 0.72 / 0.80 spikes at 06:50 in pickup_miss_1.log — too sparse to
 # open an episode) whose flank frames are micro-scale.
 REACH = BEDDING.copy();  REACH[0:24, :] = 255
+
+# Gentle night pickup (2026-07-16 02:42 shape): the baby's footprint shrinks a few rows
+# per frame — every step well below the 0.30 disturbance bar (measured peak 0.13).
+GENTLE = [EMPTY.copy() for _ in range(4)]
+for _i in range(4):
+    GENTLE[_i][5 + 4 * (_i + 1):25, :] = 200
+
+# Slow put-back (2026-07-16 04:41 shape): ONE isolated person-scale frame (measured 0.849
+# live; here ~0.6 — above DISTURBANCE_SOLO_FRACTION, below the lighting guard), no second
+# ≥0.30 frame anywhere near it.
+PARENT_SOLO = EMPTY.copy();  PARENT_SOLO[0:36, :] = 255
+
+# Parent PARTIALLY in frame over post-pickup bedding (2026-07-15 09:00:38 shape: evidence
+# frames read presence 0.27–0.30 against a settle anchor of 0.04). Two jiggle variants
+# give continuous sub-disturbance motion while presence sits ≫ anchor but < person-scale.
+PARENT_BIT_A = BEDDING.copy();  PARENT_BIT_A[0:15, :] = 255
+PARENT_BIT_B = BEDDING.copy();  PARENT_BIT_B[3:18, :] = 255
 
 
 def twitch(base):
@@ -122,6 +153,27 @@ def check_magnitudes(cfg):
     tw = active_fraction(BABY_FAINT, twitch(BABY_FAINT))
     assert cfg["micromotion_fraction"] < tw < cfg["motion_fraction"], \
         f"faint-baby twitch {tw:.4f} not in micro band"
+    # Scenario H band: every gentle-pickup frame step is moving but sub-disturbance.
+    seq = [BABY] + GENTLE + [EMPTY]
+    for a, b in zip(seq, seq[1:]):
+        g = active_fraction(a, b)
+        assert cfg["motion_fraction"] < g < cfg["disturbance_fraction"], \
+            f"gentle step {g:.3f} not in the sub-disturbance band"
+    # Scenario K band: one isolated solo-scale frame, below the lighting guard.
+    solo = active_fraction(EMPTY, PARENT_SOLO)
+    assert DISTURBANCE_SOLO_FRACTION <= solo, f"solo frame {solo:.2f} below solo bar"
+    assert active_fraction(EMPTY, PARENT_SOLO, pixel_thresh=25) <= LIGHTING_CEILING
+    # Scenario J bands: presence ≫ anchor but sub-person-scale; jiggle is sub-disturbance.
+    anchor = active_fraction(BEDDING, EMPTY)
+    pb = active_fraction(PARENT_BIT_A, EMPTY)
+    assert pb - anchor > EVIDENCE_PRESENCE_DELTA, \
+        f"parent-bit presence delta {pb - anchor:.2f} too small to test the rule"
+    assert pb < SETTLE_BLOCKED_PRESENCE, f"parent-bit {pb:.2f} is person-scale"
+    jig = active_fraction(PARENT_BIT_A, PARENT_BIT_B)
+    assert cfg["motion_fraction"] < jig < cfg["disturbance_fraction"], \
+        f"jiggle {jig:.3f} not in the moving band"
+    entry = active_fraction(BEDDING, PARENT_BIT_A)
+    assert entry < cfg["disturbance_fraction"], f"parent-bit entry {entry:.2f} would disturb"
 
 
 class Driver:
@@ -164,7 +216,8 @@ def settle_into_sleep(d):
     """Shared preamble: empty crib → put-down → probation confirmed → ASLEEP."""
     d.still(EMPTY, 30)
     d.disturbance(20)                    # put-down
-    d.still(BABY, 15)                    # settle → occupied → AWAKE on probation
+    d.still(BABY, 60)                    # settle → occupied → AWAKE on probation; wait out
+                                         # the EVIDENCE_SUPPRESS window before twitching
     d.twitch_cluster(BABY); d.still(BABY, 100)   # episode 1, then quiet ≥ gap
     d.twitch_cluster(BABY); d.still(BABY, 30)    # episode 2 → probation cleared
     d.still(BABY, 11 * 60)               # stillness → ASLEEP (backdated)
@@ -271,22 +324,24 @@ def scenario_e(cfg):
 def scenario_f(cfg):
     """Affirmative-empty fast path: probation over a crib that MATCHES the empty
     reference must close in ~PROBATION_EMPTY_MATCH_SECONDS, not the full deadline.
-    Path: parent half-in-frame blocks the settle past the deferral cap → forced verdict
-    reads 'occupied' (the parent) → nap resumes on probation → unseen single-frame
-    departure → crib matches reference → fast close, backdated to the arrival."""
+    Path: pickup → settle reads a bedding ghost → nap resumes on probation → the
+    blanket slumps flat in one sub-disturbance frame → crib matches the reference →
+    fast close, backdated to the pickup. (The old shape of this scenario — a parent
+    half-in-frame whose single-frame departure went unseen — is now caught upstream
+    by the DISTURBANCE_SOLO_FRACTION rule and closes as a plain departure.)"""
     d = Driver(cfg)
     settle_into_sleep(d)
     pickup_at = d.t
-    d.disturbance(2)                     # arrival opens an episode…
-    d.still(PARENT_HALF, SETTLE_DEFER_LIMIT + 40)   # …then blocks past the deferral cap
+    d.disturbance(15)                    # pickup
+    d.still(BEDDING, 15)                 # settle → bedding ghost → resume on probation
     assert d.sessions[0]["end"] is None
-    d.m.step(EMPTY, d.t); d.t += timedelta(seconds=1)   # single-frame departure (unseen)
-    d.still(EMPTY, 120)                  # crib matches reference → fast path
+    d.still(EMPTY, 120)                  # blanket settles flat (one 0.2 frame, sub-
+                                         # disturbance) → perfect reference match
     s = d.sessions[0]
     # only the fast path can close within 120s — probation expiry is minutes away
     assert s["end"] is not None, "empty-match fast path did not close the session"
     err = abs((s["end"] - pickup_at).total_seconds())
-    assert err <= 10, f"end not backdated to arrival (off by {err:.0f}s)"
+    assert err <= cfg["settle_seconds"] + 5, f"end not backdated to pickup (off by {err:.0f}s)"
     assert d.m.state == STATE_AWAY, f"state={d.m.state}, want away"
     assert active_fraction(d.m.reference, EMPTY) == 0.0, "reference not refreshed"
     print(f"  F empty-match fast path: closed within probation, backdated {err:.0f}s  ✓")
@@ -303,10 +358,14 @@ def scenario_g(cfg):
         d = Driver(c)
         d.still(EMPTY, 30)
         d.disturbance(20)                                 # put-down
-        d.still(BABY_FAINT, 15)                           # settle verdict on faint baby
+        d.still(BABY_FAINT, 60)                           # settle verdict on faint baby;
+                                                          # wait out evidence suppression
         d.twitch_cluster(BABY_FAINT); d.still(BABY_FAINT, 100)   # sparse early twitches
         d.twitch_cluster(BABY_FAINT); d.still(BABY_FAINT, 30)
-        d.still(BABY_FAINT, 25 * 60)                      # deep newborn stillness
+        for _ in range(2):                                # a quiet newborn still stirs every
+            d.still(BABY_FAINT, 11 * 60)                  # ~11 min: under the 20-min liveness
+            d.twitch_cluster(BABY_FAINT)                  # backstop, but too sparse for the
+        d.still(BABY_FAINT, 5 * 60)                       # Path-2 override (needs 2 in 10 min)
         return d
     d = run(cfg)
     assert d.m.state == STATE_ASLEEP, f"faint put-down lost: state={d.m.state}"
@@ -321,6 +380,111 @@ def scenario_g(cfg):
           "incident override 0.05 loses the baby as documented  ✓")
 
 
+def gentle_pickup(d, end_frame):
+    """Motion entirely below the disturbance threshold (2026-07-16 02:42: peak 0.13),
+    ending on end_frame. Returns the time the crib became still again."""
+    for f in [*GENTLE, end_frame]:
+        d.m.step(f, d.t)
+        d.t += timedelta(seconds=1)
+    return d.t
+
+
+def scenario_h(cfg):
+    """2026-07-16 02:42 silent pickup: a gentle lift never fires a disturbance, but the
+    crib then MATCHES the trusted-empty reference at zero micro-motion. The silent-
+    departure close must end the session; without reference trust it must NOT fire
+    (the reference could contain the baby)."""
+    d = Driver(cfg)
+    settle_into_sleep(d)
+    d.m.reference_trusted = True         # as if the pre-put-down settle was a confirmed
+                                         # empty (it was: the preamble starts on EMPTY)
+    empty_at = gentle_pickup(d, EMPTY)   # no frame reaches the disturbance bar
+    d.still(EMPTY, LATCHED_EMPTY_MATCH_SECONDS + 60)
+    s = d.sessions[0]
+    assert s["end"] is not None, \
+        "BUG REPRODUCED: silent pickup left the session open (2026-07-16 02:42 shape)"
+    err = abs((s["end"] - empty_at).total_seconds())
+    assert err <= 5, f"end not backdated to the empty-match start (off by {err:.0f}s)"
+    assert d.m.state == STATE_AWAY, f"state={d.m.state}, want away"
+
+    # Trust gate: the identical run with an untrusted reference must hold the latch.
+    d2 = Driver(cfg)
+    settle_into_sleep(d2)
+    gentle_pickup(d2, EMPTY)
+    d2.still(EMPTY, LATCHED_EMPTY_MATCH_SECONDS + 60)
+    assert d2.sessions[0]["end"] is None, \
+        "silent-departure close fired against an UNTRUSTED reference"
+    print(f"  H silent pickup: closed {err:.0f}s from empty-match start via trusted "
+          f"reference; untrusted reference correctly holds  ✓")
+
+
+def scenario_i(cfg):
+    """2026-07-15 phantom-afternoon shape: after a missed pickup the bedding ghost
+    (presence ≫ threshold) defeats every reference test, but the crib produces ZERO
+    micro-motion. The liveness backstop must close the session at ~sleep_liveness_minutes,
+    backdated to the last life sign."""
+    d = Driver(cfg)
+    settle_into_sleep(d)
+    last_life = gentle_pickup(d, BEDDING)   # unseen pickup; ghost stays behind
+    d.still(BEDDING, cfg["liveness_seconds"] + 120)
+    s = d.sessions[0]
+    assert s["end"] is not None, \
+        "BUG REPRODUCED: bedding-ghost phantom survived (session 394 ran 9h on this)"
+    err = abs((s["end"] - last_life).total_seconds())
+    assert err <= 5, f"end not backdated to the last life sign (off by {err:.0f}s)"
+    assert d.m.state == STATE_AWAY, f"state={d.m.state}, want away"
+    print(f"  I liveness backstop: ghost phantom closed at {cfg['liveness_seconds'] // 60}m, "
+          f"backdated {err:.0f}s from last life sign  ✓")
+
+
+def scenario_j(cfg):
+    """2026-07-15 09:00:38 false clear: during an in-sleep arousal probation, a parent
+    partially in the ROI produced 'sustained motion' whose every frame read presence far
+    above the settle anchor. Evidence that RAISES presence is an intruder, not the baby —
+    it must not clear probation; expiry closes the session backdated to the pickup."""
+    d = Driver(cfg)
+    settle_into_sleep(d)
+    pickup_at = d.t
+    d.disturbance(15)                    # pickup
+    d.still(BEDDING, 60)                 # settle → ghost → resume on probation (anchor =
+                                         # BEDDING presence); wait out taint suppression
+    for i in range(90):                  # parent hovers 90s: continuous sub-disturbance
+        d.m.step(PARENT_BIT_A if i % 2 == 0 else PARENT_BIT_B, d.t)
+        d.t += timedelta(seconds=1)      # motion, presence ≫ anchor — old code cleared
+    d.m.step(BEDDING, d.t)               # this as 'sustained motion' within ~20s
+    d.t += timedelta(seconds=1)
+    d.still(BEDDING, 25 * 60)            # empty crib: probation must expire
+    s = d.sessions[0]
+    assert s["end"] is not None, \
+        "BUG REPRODUCED: presence-raising motion cleared probation (09:00:38 shape)"
+    err = abs((s["end"] - pickup_at).total_seconds())
+    assert err <= cfg["settle_seconds"] + 5, f"end not backdated to pickup (off by {err:.0f}s)"
+    assert d.m.state == STATE_AWAY, f"state={d.m.state}, want away"
+    print(f"  J presence-jump evidence: parent hover not evidence, closed {err:.0f}s "
+          f"from pickup  ✓")
+
+
+def scenario_k(cfg):
+    """2026-07-16 04:41 slow put-back: ONE person-scale frame (0.849 live), every other
+    frame sub-disturbance — the old pair rule (2 ≥0.30 frames in 4s) never fired and the
+    put-back was invisible. The solo rule must open a disturbance so the settle machinery
+    rules 'occupied' and a session eventually starts."""
+    d = Driver(cfg)
+    d.still(EMPTY, 30)
+    d.m.step(PARENT_SOLO, d.t)           # the single big frame
+    d.t += timedelta(seconds=1)
+    assert d.m.in_disturbance, "solo person-scale frame did not open a disturbance"
+    d.m.step(BABY, d.t)                  # parent lowers baby, leaves
+    d.t += timedelta(seconds=1)
+    d.still(BABY, 60)                    # settle → occupied → AWAKE on probation
+    d.twitch_cluster(BABY); d.still(BABY, 100)
+    d.twitch_cluster(BABY); d.still(BABY, 30)    # probation cleared
+    d.still(BABY, 11 * 60)               # stillness → ASLEEP
+    assert d.m.state == STATE_ASLEEP, f"state={d.m.state}, want asleep"
+    assert len(d.sessions) == 1 and d.sessions[0]["end"] is None, "put-back nap not recorded"
+    print("  K slow put-back: solo frame opened the disturbance, session recorded  ✓")
+
+
 def main():
     cfg = build_cfg({})   # storage.DEFAULT_SETTINGS
     cfg["crib_roi"] = [0, 0, 1, 1]
@@ -333,6 +497,10 @@ def main():
     scenario_e(cfg)
     scenario_f(cfg)
     scenario_g(cfg)
+    scenario_h(cfg)
+    scenario_i(cfg)
+    scenario_j(cfg)
+    scenario_k(cfg)
     print("All scenarios pass.")
 
 

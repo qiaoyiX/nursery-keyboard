@@ -42,6 +42,10 @@ DEFAULT_SETTINGS = {
     "sleep_micromotion_fraction": 0.002, # motion fraction counting as living-thing micro-motion (must sit above camera noise floor)
     "sleep_probation_minutes":   10,    # life evidence must appear within this window after an ambiguous settle, else crib ruled empty.
                                         # Measured: real-baby confirms in 13s-4.2min across 3 clips; empty-crib windows never produced >=2 episodes.
+    "sleep_liveness_minutes":    20,    # reference-free empty-crib backstop: ASLEEP with zero micro-motion this long -> session closed
+                                        # backdated to the last life sign. Longest measured fully-still sleeping stretch is 7.5 min (2.7x margin);
+                                        # an empty crib produced 0 micro-frames in 49 min. Catches bedding-ghost phantoms no presence check can
+                                        # (2026-07-15: session 394 ran 9h over an empty crib whose ghost presence defeated every reference test).
 }
 
 log_lock      = threading.Lock()

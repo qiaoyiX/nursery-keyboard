@@ -437,6 +437,60 @@ at 0.02; reproduces the incident at 0.05). **Remediation on the Pi: delete the s
 keys from `settings.json` and restart both services** — deleting a key returns it to the code
 default.
 
+### 2026-07-15/16 night pickups — two new failure modes (night_0715.log, 36 h of frames)
+
+First incidents captured with the 07-09/07-14 fixes verifiably live (monitor restarted
+2026-07-14 21:04 with clean settings). Ground truth from the parents; every number below is
+from the journal's per-frame lines.
+
+**Failure A — gentle night pickups/put-backs never reach the disturbance machinery.** All
+previously measured pickups (0.57–1.0) were daytime; a slow, careful, don't-wake-her night
+lift is a different signal class:
+
+| Event | Measured | Why v5 missed it |
+|---|---|---|
+| 02:42 pickup (session 397) | motion peak **0.13**, spread over ~3 min | Never approached the 0.30 disturbance bar — no episode, no settle, latch held ASLEEP |
+| Crib after that pickup | presence **0.0029–0.005** vs the trusted 22:50 reference, ~2 h, zero micro-motion | A wide-margin empty match, visible the whole time — but the affirmative-empty path only ran during probation, and there was no probation |
+| 04:41 put-back | motion peak **0.849**, but the ≥0.30 frames sat 14–17 s apart | The pair rule (2 frames ≥0.30 within 4 s) never fired; the 0.849 frame was single |
+
+Fixes: **silent-departure close** — while latched occupied with a *trusted-empty* reference
+(see below), presence ≤ `sleep_presence_threshold` with zero micro-motion sustained
+`LATCHED_EMPTY_MATCH_SECONDS` (300 s) closes the session backdated to the match start (a
+sleeping baby measures ≥0.06 against a trusted-empty reference — 3× margin); **solo-frame
+disturbance** — one frame ≥ `DISTURBANCE_SOLO_FRACTION` (0.5) opens an episode outright
+(baby max 0.17, ≥0.8 goes to the scene guard); and `DISTURBANCE_WINDOW` widened 4→20 s
+(nothing but a person ever produces two ≥0.30 frames, at any spacing).
+
+Reference **trust** is what makes the silent-departure close safe: `trusted_empty` is stored
+in the reference metadata sidecar and set ONLY by a settle-empty verdict or the calibrate
+button (and preserved by refreshes that re-affirm an already-trusted reference). Bootstrap,
+probation-expiry heals, and liveness closes save untrusted references — their "empty" is
+inferential, and a trusted-but-wrong reference would let the empty-match paths compound the
+error instead of the probation machinery healing it.
+
+**Failure B — the parent's own lingering clears the arousal probation.** The 06:37 pickup was
+detected and resumed-on-probation correctly (ghost 0.048); then:
+
+| False clear | Measured | Fix |
+|---|---|---|
+| 06:47:55 "2 separated micro-motion episodes" | evidence frames at +16 s and +40 s after the parent left the ROI (0.02–0.10 motion, ghost presence) | post-taint evidence suppression widened 15→45 s (`EVIDENCE_SUPPRESS_SECONDS`); person-tainted frames purge/suppress exactly like disturbance-scale motion frames |
+| 09:00:38 "sustained motion" (1 s after the ambiguous extension) | every evidence frame read presence **0.27–0.30** against a settle anchor of **0.0407** — a person partially entering the ROI | evidence must not *rise* more than `EVIDENCE_PRESENCE_DELTA` (0.15) above the probation anchor presence: the settle verdict already includes the baby, so occupancy evidence cannot ADD presence — only an intruder does. Absolute cutoffs don't work in either direction: the real baby read 0.18–0.23 against a stale reference the same morning and confirmed two arousals legitimately, and in the 2026-07-04 put-down replay a bedding change against the bootstrap reference sat at person-scale presence (≥0.5) FOREVER — an absolute ≥0.5 evidence ban starved that probation of the baby's own twitches and killed a real nap (caught by the replay regression). Rule: with an anchor, rise-from-anchor decides; the absolute ≥0.5 ban applies only where no anchor exists (outside probation, or daemon-restart resumes) |
+
+Result of the two stacked failures: session 394 ran 01:56→15:56 (exactly the 14 h cap) and
+session 395 (15:56→19:30) was its phantom continuation. The phantom afternoon also showed
+presence 0.0147–0.021 — *just above* the probation fast-path bar — with **zero micro-motion
+for hours**. That motivated the reference-free backstop:
+
+**Liveness backstop:** an occupied crib is never truly still (longest fully-still stretch ever
+measured: 7.5 min; empty crib: 0 micro-frames in 49 min). While ASLEEP with no disturbance or
+probation pending, `sleep_liveness_minutes` (default 20, 2.7× the measured max) without a
+single micro-motion frame closes the session backdated to the last life sign. No reference
+involved, so bedding ghosts can't fool it — this alone would have ended 394 by ~09:40 instead
+of 15:56. Known limitation: a decoder that silently repeats identical frames would read as
+zero motion; RTSP stalls currently surface as read failures → reconnect (accepted; revisit if
+a frozen-stream close is ever observed). Scenarios H–K in `tests/test_arousal_probation.py`
+lock all four incident shapes.
+
 ## 6b. Tuning & validation plan
 
 **Data collection tooling (added with v5):** `record_camera.sh [minutes]` on the Pi captures the

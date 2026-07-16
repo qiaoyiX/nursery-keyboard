@@ -176,7 +176,8 @@ def run_simulation(videos, roi, interval, verbose, cfg):
                 boot.append(gray.astype(np.float32))          # mirror bootstrap_reference
                 if len(boot) >= BOOTSTRAP_FRAMES:
                     machine.reference = np.median(np.stack(boot), axis=0).astype(np.uint8)
-                    machine.on_reference_save(machine.reference)
+                    machine.reference_trusted = False         # bootstrap may contain the baby
+                    machine.on_reference_save(machine.reference, False)
                 machine.prev = gray
                 file_dur = t
                 continue
