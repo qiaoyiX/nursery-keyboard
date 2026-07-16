@@ -1303,9 +1303,12 @@
       track.replaceChildren();
       const MINS_IN_DAY = 1440;
       const nowMins = new Date().getHours() * 60 + new Date().getMinutes();
+      const dayStart = new Date();
+      dayStart.setHours(0, 0, 0, 0);
 
       for (const s of sessions) {
-        const startMins = minuteOfDay(s.start_iso);
+        // Overnight sessions start before today's midnight — clamp the bar to 12a
+        const startMins = new Date(s.start_iso) < dayStart ? 0 : minuteOfDay(s.start_iso);
         const rawEnd    = s.is_open ? nowMins : minuteOfDay(s.end_iso);
         const endMins   = Math.min(Math.max(rawEnd, startMins), MINS_IN_DAY);
         const durMins   = Math.max(endMins - startMins, 1);

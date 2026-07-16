@@ -259,17 +259,17 @@ def _pg_end_sleep(session_id, end_time):
 
 
 def _pg_get_sleep_sessions_today():
-    today = datetime.now().date()
+    today_start = datetime.combine(datetime.now().date(), datetime.min.time())
     cutoff = datetime.now() - timedelta(days=1)
     with db() as conn:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(
                 """SELECT id, start_time, end_time, duration_minutes
                    FROM sleep_sessions
-                   WHERE start_time::date = %s
+                   WHERE (end_time IS NOT NULL AND end_time >= %s)
                       OR (end_time IS NULL AND start_time > %s)
                    ORDER BY start_time""",
-                (today, cutoff)
+                (today_start, cutoff)
             )
             return [dict(r) for r in cur.fetchall()]
 
@@ -347,16 +347,20 @@ def _json_end_sleep(session_id, end_time):
 
 
 def _json_get_sleep_sessions_today():
-    today = datetime.now().date().isoformat()
+    """Sessions overlapping today: any closed session ending on/after today's
+    midnight (overnight sleep that started yesterday must not vanish from the
+    day view), plus open sessions started within the last 24h."""
+    today_start = datetime.combine(
+        datetime.now().date(), datetime.min.time()).isoformat()
     cutoff = datetime.now() - timedelta(days=1)
     with sleep_lock:
         sessions = _json_load_sleep()
     result = []
     for s in sessions:
-        start_str = s["start_time"]
-        if start_str.startswith(today):
-            result.append(s)
-        elif s["end_time"] is None and datetime.fromisoformat(start_str) > cutoff:
+        if s["end_time"] is not None:
+            if s["end_time"] >= today_start:
+                result.append(s)
+        elif datetime.fromisoformat(s["start_time"]) > cutoff:
             result.append(s)
     return sorted(result, key=lambda x: x["start_time"])
 
