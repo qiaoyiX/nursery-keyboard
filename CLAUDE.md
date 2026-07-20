@@ -39,11 +39,11 @@ Three files form the core:
 **`storage.py`** — Shared storage layer imported by both `app.py` and `sleep_monitor.py`.
 - Dual-mode: `USE_DB = bool(DATABASE_URL and PSYCOPG2_AVAILABLE)`. `_pg_*` functions use Neon Postgres; `_json_*` functions use local files.
 - Public API: `get_entries()`, `add_entry()`, `clear_today()`, `delete_entry()`, `load_settings()`, `save_settings()`.
-- Sleep API: `start_sleep_session()`, `end_sleep_session()`, `get_sleep_sessions_today()`, `get_open_sleep_session()`, `write_sleep_heartbeat()`, `read_sleep_status()`.
+- Sleep API: `start_sleep_session()`, `end_sleep_session()`, `get_sleep_sessions_today()`, `get_sleep_sessions_range(days)`, `get_open_sleep_session()`, `write_sleep_heartbeat()`, `read_sleep_status()`. `get_sleep_sessions_today`/`_range` both return sessions *overlapping* the window (not just ones starting in it), so an overnight sleep put down yesterday and picked up this morning still shows up.
 
 **`app.py`** — Flask backend + keypad listener in one process.
 - **Keypad thread**: `keypad_listener()` scans for all SayoDevice `/dev/input/event*` interfaces, spawns a `listen_one_interface()` thread per interface, grabs them exclusively, and calls `add_entry()` on key-down events. Runs as a daemon thread alongside Flask.
-- **Stat helpers** (`today_stats`, `daily_stats`, `hourly_stats`, `next_feed_iso`, `today_sleep_stats`) accept in-memory lists and are storage-agnostic.
+- **Stat helpers** (`today_stats`, `daily_stats`, `hourly_stats`, `next_feed_iso`, `today_sleep_stats`, `weekly_pattern_stats`) accept in-memory lists and are storage-agnostic. `weekly_pattern_stats(entries, sessions, days=7)` splits midnight-spanning sleep sessions into per-day segments server-side (a segment ending at midnight is minute 1440, which the client's `minuteOfDay()` can't express); `start_iso`/`end_iso`/`duration_minutes` always describe the whole session for the tap toast, shipped as `/data`'s `"week"` key.
 - **Settings**: always `settings.json` (local file, not backed up to Postgres).
 
 **`sleep_monitor.py`** — Standalone sleep detection daemon (second systemd service).
@@ -55,9 +55,10 @@ Three files form the core:
 - Writes sleep sessions via `storage.py`; writes heartbeat file so Flask can detect if daemon is offline.
 
 **`templates/index.html`** — Single-page dashboard. Pure HTML/CSS/JS, no build step.
-- Polls `GET /data` every 8 seconds; `refresh()` updates counts, history, next-feed card, and all three Chart.js charts in one pass.
-- Section order (PRD hierarchy pass, 2026-07-06): next-feed card → log buttons → history → "😴 Today's Sleep" card (live state line + 24h timeline + per-nap list, one merged card) → count cards → charts → maintenance row ("Clear today" + "📷 Crib is empty" calibrate, deliberately at the bottom away from the one-handed logging zone).
+- Polls `GET /data` every 8 seconds; `refresh()` updates counts, history, next-feed card, all three Chart.js charts, and the weekly pattern grid in one pass.
+- Section order (PRD hierarchy pass, 2026-07-06): next-feed card → log buttons → history → "😴 Today's Sleep" card (live state line + 24h timeline + per-nap list, one merged card, now including overnight sessions that span midnight) → count cards → charts (doughnut, hourly, daily, then Weekly Pattern) → maintenance row ("Clear today" + "📷 Crib is empty" calibrate, deliberately at the bottom away from the one-handed logging zone).
 - Sleep UI: `updateSleepCard` fills the state/summary lines, `updateSleepTimeline` + `updateNapList` the track and rows; all consume `data.sleep`; calibrate POSTs `/sleep/calibrate`.
+- Weekly Pattern card (`.week-grid`/`#weekGrid`, `updateWeeklyPattern()`): last 7 days as vertical 24h columns, sleep sessions as blocks and Feed events as dots — pure DOM/CSS, not Chart.js (no day-by-time-of-day interval type, and DOM blocks inherit the `:root` custom props so dark mode and the is-open fade come free). Consumes `data.week` from `weekly_pattern_stats`; feed-dot clusters offset 30%/70% when centers are <8px apart; today's column is highlighted.
 - History rows have an edit (✎) and delete (✕) button. Edit opens a modal (`#editOverlay`) to change an entry's type + time, sent via `PATCH /log/entry`.
 - Chart.js 4.5.1 loaded from CDN with SHA-384 SRI.
 - Event type colors and sleep color are defined as CSS custom properties in `:root` and must match `COLORS` in the JS `<script>` block.
@@ -146,7 +147,7 @@ sudo journalctl -u nursery-sleep-monitor -f
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/` | Dashboard HTML (server-rendered initial counts) |
-| GET | `/data` | JSON: counts, recent 50 entries, hourly/daily stats, next feed |
+| GET | `/data` | JSON: counts, recent 50 entries, hourly/daily stats, next feed, today's sleep (`sleep`), 7-day feed+sleep pattern (`week`) |
 | POST | `/log` | Add event `{"type": "Wet\|Dirty\|Play\|Feed"}` |
 | DELETE | `/log/today` | Remove all of today's entries |
 | DELETE | `/log/entry` | Remove one entry `{"id": <int>}` |
