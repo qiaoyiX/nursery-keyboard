@@ -5,13 +5,17 @@ real recordings (§6a): 2 h empty+put-down (7/2), overnight awake-baby pickup (7
 put-down-to-ASLEEP cycle (7/4, which drove the stir-tolerant stillness rule). Empty crib,
 put-down, active/quiet sleep, awake baby, pickup, bedding changes, and
 bootstrap-poisoned-reference self-healing all match ground truth in simulation. The one path no
-recording exercises — a pickup that starts from confirmed ASLEEP — failed live on 2026-07-07
-(unconditional arousal-resume swallowed missed pickups → multi-hour phantom sessions); fixed by
-resume-on-probation and locked by the synthetic regression `tests/test_arousal_probation.py`.
-Still wanted: real footage of an ASLEEP→pickup to confirm on camera.
+recording exercised at the time — a pickup that starts from confirmed ASLEEP — failed live on
+2026-07-07 (unconditional arousal-resume swallowed missed pickups → multi-hour phantom sessions);
+fixed by resume-on-probation and locked by the synthetic regression
+`tests/test_arousal_probation.py`. Real ASLEEP→pickup footage arrived twice since: the 2026-07-09
+incident (`docs/pickup_miss_1.log.gz`, recording `20260709_165351`) and 36h of parent-ground-truthed
+night footage on 2026-07-15/16 (`night_0715.log`) that caught two gentle night pickups/put-backs
+head-on — both are analyzed in full below and each drove further fixes.
 **Audience:** any agent or human picking up this work. This doc is self-contained; read it before
-touching `sleep_monitor.py`. See also `sleep-monitor-algorithm.md` (mechanical spec of the code),
-`architecture.md` ADR-004…007 (decision records), `backlog.md` H-2/TODO-1 (the overcount bug).
+touching `sleep_monitor.py`. See also `sleep-monitor-algorithm.md` (historical — mechanical spec of
+the superseded v4 code), `architecture.md` ADR-004…007/009-010 (decision records), `backlog.md`
+H-2/TODO-1 (the overcount bug — resolved-with-caveat by the fixes in this doc).
 
 ---
 
@@ -384,10 +388,12 @@ state stayed AWAY through the empty period (both parent visits resolved back to 
 minutes via settle evaluation, one after a self-healing probation); the 19:01 reach-in caused **no**
 transition; the put-down produced AWAKE with probation cleared by genuine baby micro-motion; zero
 phantom sessions. With `sleep_min_minutes` lowered to 5 (footage ends 9 min after put-down), the
-ASLEEP transition fired with a correctly backdated session start. **Still unexercised on real
-footage: ASLEEP → pickup → session close** — capture a pickup in the next recording. (2026-07-07:
-this exact gap failed live — see the ⚠️ note in §"actigraphy" above. Now covered synthetically by
-`tests/test_arousal_probation.py`; real footage still wanted.)
+ASLEEP transition fired with a correctly backdated session start. At the time this section was
+written, **ASLEEP → pickup → session close was still unexercised on real footage** — capture a
+pickup in the next recording. (2026-07-07: this exact gap failed live — see the ⚠️ note in
+§"actigraphy" above. Covered synthetically by `tests/test_arousal_probation.py` at the time; real
+footage of exactly this path arrived in the 2026-07-09 incident directly below, and again in the
+2026-07-15/16 night pickups further down.)
 
 **Missed-pickup incident (2026-07-09, `docs/pickup_miss_1.log.gz` + recording `20260709_165351`)** — the
 first real ASLEEP → pickup data, from a live 3-hour phantom session. Timeline (log times UTC):

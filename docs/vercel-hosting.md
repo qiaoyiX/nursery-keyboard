@@ -1,7 +1,16 @@
 # Hosting the dashboard on Vercel — feasibility & risk analysis
 
-**Status: analysis only, not implemented.** This documents what hosting on Vercel would
-actually require and everything that could go wrong, so the decision is made with eyes open.
+**Status: analysis only, not implemented — and now stale relative to a later architecture
+decision.** This documents what hosting on Vercel would actually require and everything that
+could go wrong, so the decision is made with eyes open. It was written 2026-06-19, before the
+2026-07-04 storage migration (`ff628d8`, see `neon-backup-migration.md`) made storage
+**local-first**: `nursery-tracker`/`nursery-sleep-monitor` now must run with `DATABASE_URL`
+unset, and Postgres is written to only by a 6-hourly batch backup job. Checklist item 1 below
+("Force the Postgres backend... JSON fallback must never be the active path") directly
+contradicts that decision — `CLAUDE.md` now explicitly warns against ever setting `DATABASE_URL`
+on the live services, since it wakes Neon's free-tier compute on every 8-second dashboard poll.
+**This plan would need rework before it's actionable again**, not just a revisit — treat it as
+historical analysis of the tradeoffs, not a ready-to-execute path.
 
 ## TL;DR
 

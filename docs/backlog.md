@@ -1,7 +1,9 @@
 # Improvements Backlog & To-Do List
 
 Prioritized improvements and concrete next tasks. See [`architecture.md`](architecture.md) and
-[`sleep-monitor-algorithm.md`](sleep-monitor-algorithm.md) for the design context referenced below.
+[`sleep-detection-research.md`](sleep-detection-research.md) for the current design context
+referenced below ([`sleep-monitor-algorithm.md`](sleep-monitor-algorithm.md) is the historical,
+superseded v4 spec).
 
 ---
 
@@ -16,28 +18,39 @@ issue is credential verification: whitespace in the stored value (now stripped i
 wrong/typo'd email, or a social-login-only account with no email/password credential.
 `GET /huckleberry/test` already surfaces the specific Firebase reason. See TODO-2.
 
-**H-2: Diagnose and fix sleep-session overcounting.**
+**H-2: Diagnose and fix sleep-session overcounting.** ✅ **Resolved 2026-07-02 → 2026-07-16**
+(v5 rewrite `8c68b08` + ~15 follow-on hardening commits through `b86b753`). The candidate causes
+below drove the original v4→v5 rewrite; each subsequent real incident (2026-07-07 phantom session,
+2026-07-09 missed pickup, 2026-07-14 missed put-down, 2026-07-15/16 gentle night pickups) was
+root-caused against real footage and locked with a regression scenario in
+`tests/test_arousal_probation.py` (A–K). Full writeup: `sleep-detection-research.md`. Kept below as
+historical context for *why* v5 looks the way it does:
 The 14h cap (ADR-007) is only a backstop; nap totals can be wrong before it fires. Three candidate
 root causes, each needing a different fix: (a) stale reference reads an empty crib as present;
 (b) presence flickers so the 2-frame hysteresis never latches and the session never closes;
 (c) a state-machine bug in the ASLEEP→absent path. Requires reading per-frame logs across a real
 baby-pickup event. See TODO-1.
 
-**H-3: Add reference-frame metadata.**
+**H-3: Add reference-frame metadata.** ✅ **Done** — `sleep_monitor.py` writes
+`reference_frame_meta.json` alongside `reference_frame.npy` with shape + a `trusted`/`untrusted`
+provenance flag (`sleep_monitor.py:133,260-287`). See TODO-3.
 `reference_frame.npy` has no provenance. A stale reference from a prior camera position silently
 produces wrong presence readings. A sidecar JSON with `saved_at` and `shape` enables staleness/
-mismatch warnings. See TODO-3.
+mismatch warnings.
 
-**H-4: Validate reference-frame shape at load time.**
+**H-4: Validate reference-frame shape at load time.** ✅ **Done** — `load_reference_frame()`
+discards a shape-mismatched reference and bootstraps fresh rather than feeding `active_fraction`
+nonsense (`sleep_monitor.py:285-287`).
 If the saved reference has different dimensions than the current capture, `active_fraction` breaks
 or returns nonsense. A shape check on load with fallback to bootstrap makes this failure explicit.
 
 ### Medium priority
 
-**M-1: Add automated tests for stat helpers and state-machine logic.**
-`today_stats`, `daily_stats`, `hourly_stats`, `next_feed_iso`, `today_sleep_stats` are pure
-functions with no tests. The state machine is testable with mocked `active_fraction` values. No
-automated tests exist in the repo today.
+**M-1: Add automated tests for stat helpers and state-machine logic.** **Half done.** The
+state-machine half is covered: `tests/test_arousal_probation.py` (scenarios A–K) exercises the
+`SleepStateMachine` refactor with mocked frames. The stat-helper half is still fully open — `today_stats`,
+`daily_stats`, `hourly_stats`, `next_feed_iso`, `today_sleep_stats`, and `weekly_pattern_stats` are
+pure functions with zero test coverage. See TODO-5 (open) / TODO-6 (done).
 
 **M-2: Implement keypress feedback (audible beep).**
 Parents using the keypad at 3 AM cannot confirm a key registered. A short beep per press eliminates
@@ -48,22 +61,32 @@ double/missed presses. Needs `feedback.py`, a speaker, ALSA setup, new settings,
 All thresholds currently require editing `settings.json` over SSH. Exposing
 `sleep_presence_threshold` and `sleep_motion_fraction` in the dashboard would allow tuning without SSH.
 
-**M-4: Mitigate JSON delete-by-index fragility.**
-`_json_delete_entry` uses list position as `id`; concurrent deletions could remove the wrong entry.
-The Postgres path is unaffected. A monotonic `id` field on JSON entries would decouple identity from position.
+**M-4: JSON delete-by-index fragility.** **Reframed as an accepted tradeoff, not an open TODO.**
+`_json_delete_entry` still uses list position as `id`; concurrent deletions could in theory remove
+the wrong entry. `CLAUDE.md` now documents why this is safe in practice: the client always refetches
+a fresh list before rendering delete buttons, so there's no stale-index window in the actual UI
+flow. Revisit only if a second client (e.g. a second phone) starts mutating concurrently.
 
 **M-5: Document the network boundary and assess route security.**
 All API routes are unauthenticated — acceptable on a home LAN, but the assumption is undocumented.
 If the Pi is ever port-forwarded, all write routes need protection.
 
-**M-6: Allow settings reload without a daemon restart.**
-Settings are read once at `main()` entry, so a threshold change requires restarting
-`nursery-sleep-monitor`, interrupting any open session. A `SIGHUP` handler reloading settings would
-allow live updates. See TODO-7.
+**M-6: Allow settings reload without a daemon restart.** **Partially mitigated.**
+`main()`'s reconnect loop now re-reads `load_settings()` on every RTSP reconnect, not only at
+process start, so a dropped-stream reconnect already picks up new thresholds without a manual
+restart. What's still open: a threshold change with *no* intervening reconnect still requires
+restarting `nursery-sleep-monitor` (interrupting any open session) — the original `SIGHUP`
+live-reload idea below is still valid for that case. See TODO-7.
 
-**M-7: Review Huckleberry event mapping completeness.**
+**M-7: Review Huckleberry event mapping completeness.** The gap predicted here has since happened:
+`Probiotic` (added `593aa38`, 2026-07-10) has **no branch at all** in `huckleberry_sync.py`'s
+`if`/`elif` chain (`huckleberry_sync.py:59-66` only handles Wet/Dirty/Feed/Play) — a Probiotic
+keypress silently never syncs to Huckleberry, no error, no log. This needs its own fix, not just a
+"revisit later": add an `elif event_type == "Probiotic":` branch mapped to whatever Huckleberry
+activity type fits best (or explicitly document it as intentionally unsynced if there's no good
+Huckleberry equivalent).
 `Play` maps to `log_activity(mode="tummyTime")` — a reasonable approximation that conflates "play"
-with one type. Revisit if the event vocabulary expands.
+with one type.
 
 ### Low priority
 
@@ -84,13 +107,20 @@ self-host in `static/`. See TODO-10.
 **L-5: Add a `/healthz` endpoint.**
 A simple `{"ok": true}` route enables lightweight monitoring without parsing the dashboard HTML.
 
+**L-6: Tune `sleep_wake_minutes` against real data.**
+`sleep-detection-research.md` flags the default (3 minutes of sustained motion to end a nap) as "a
+sleep-science default, not yet tuned to a real baby's data." Works fine so far, but worth
+revisiting once enough real wake events have been logged to check it against this baby specifically.
+
 ---
 
 ## To-do list
 
 ### Immediate (blocking correct behavior)
 
-**TODO-1: Diagnose sleep overcounting — read per-frame logs across one baby pickup.**
+**TODO-1: Diagnose sleep overcounting — read per-frame logs across one baby pickup.** ✅ **Resolved**
+— see H-2 above. Original steps kept as a record of the diagnostic method, which is still the right
+playbook for any *future* detection incident:
 1. `sudo journalctl -u nursery-sleep-monitor -f` during a real pickup.
 2. Find the frames around the moment the baby was removed.
 3. Identify the candidate:
@@ -111,7 +141,7 @@ A simple `{"ok": true}` route enables lightweight monitoring without parsing the
    (set an email+password in the Huckleberry app); `EMAIL_NOT_FOUND` → wrong email in settings.
 3. Confirm via `GET /huckleberry/test` → `{"ok": true, "child_count": N}`.
 
-**TODO-3: Add reference-frame metadata + load-time validation.**
+**TODO-3: Add reference-frame metadata + load-time validation.** ✅ **Resolved** — see H-3/H-4 above.
 Save `reference_frame_meta.json` next to `reference_frame.npy` with `{"saved_at": "<ISO>",
 "shape": [h, w]}`. On load, check the shape matches the first captured frame; if mismatched, warn
 and fall back to bootstrap. Optionally warn if `saved_at` is older than N days.
@@ -134,7 +164,9 @@ and fall back to bootstrap. Optionally warn if `saved_at` is older than N days.
 Feed entries), `today_sleep_stats` (open session hitting `max_open_minutes`), `hourly_stats`
 (midnight boundary).
 
-**TODO-6: Unit tests for the state machine.**
+**TODO-6: Unit tests for the state machine.** ✅ **Done** — `tests/test_arousal_probation.py`
+(scenarios A–K) drives the real `SleepStateMachine` with mocked frames, covering this and every
+incident-shaped regression since. Stat-helper tests (TODO-5) remain open.
 `test_sleep_monitor.py`: extract per-frame transition logic into a pure function (or drive with
 mock frames). Cover AWAY→AWAKE→ASLEEP→AWAKE, cap force-end, absent-from-ASLEEP, flicker hysteresis,
 and start/wake backdating.
@@ -145,7 +177,10 @@ place without ending the session. Document `sudo systemctl kill --signal=SIGHUP 
 
 ### Housekeeping
 
-**TODO-8: Spot-check `CLAUDE.md` for stale references.**
+**TODO-8: Spot-check `CLAUDE.md` for stale references.** ✅ **Done** — `CLAUDE.md` is current for v5.
+The stale references turned out to be in `architecture.md`, `backlog.md` (this file), and
+`sleep-detection-research.md` instead — all still pointing at `sleep-monitor-algorithm.md` as
+current and/or H-2/TODO-1 as open — fixed in this same doc pass (2026-07-21).
 The sleep section was already updated to the `active_fraction` reference-frame approach with current
 setting names/defaults. Re-scan for any lingering MOG2/optical-flow or `sleep_motion_threshold`
 mentions and correct as needed.

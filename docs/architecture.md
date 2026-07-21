@@ -3,36 +3,63 @@
 Decisions behind the nursery-keyboard baby tracker. Each record states the decision, why it
 was made, what was rejected, and the consequences we live with.
 
-See also: [`sleep-monitor-algorithm.md`](sleep-monitor-algorithm.md) for the detection algorithm,
-[`backlog.md`](backlog.md) for improvements and to-dos, and `../CLAUDE.md` for the operational guide.
+See also: [`sleep-detection-research.md`](sleep-detection-research.md) for the current detection
+algorithm (v5, "event-gated latched presence") — [`sleep-monitor-algorithm.md`](sleep-monitor-algorithm.md)
+is the historical v4 spec, superseded 2026-07-02 — [`backlog.md`](backlog.md) for improvements and
+to-dos, and `../CLAUDE.md` for the operational guide.
 
 ---
 
-## ADR-001: Dual-mode storage (JSON + Neon Postgres)
+## ADR-001: Local-first JSON storage, Neon Postgres as snapshot-only backup
 
-**Decision:** Storage is abstracted behind a public API (`get_entries`, `add_entry`,
-`clear_today`, `delete_entry`, `start_sleep_session`, `end_sleep_session`,
-`get_sleep_sessions_today`, `get_open_sleep_session`, `write_sleep_heartbeat`,
-`read_sleep_status`). At startup, `USE_DB = bool(DATABASE_URL and PSYCOPG2_AVAILABLE)` selects
-between two private implementation families: `_pg_*` and `_json_*`.
+**Decision (updated 2026-07-04, `ff628d8`):** Storage is abstracted behind a public API
+(`get_entries`, `add_entry`, `clear_today`, `delete_entry`, `update_entry`, `start_sleep_session`,
+`end_sleep_session`, `get_sleep_sessions_today`, `get_sleep_sessions_range(days)`,
+`get_open_sleep_session`, `write_sleep_heartbeat`, `read_sleep_status`, `load_settings`,
+`save_settings`, `update_setting`). `USE_DB = bool(DATABASE_URL and PSYCOPG2_AVAILABLE)` still
+selects between `_pg_*` and `_json_*` implementation families, but **the two are no longer a
+symmetric live choice**: `nursery-tracker` and `nursery-sleep-monitor` must always run with
+`DATABASE_URL` unset, so every live read/write goes through the `_json_*` path. The `_pg_*` path
+is exercised only by a separate batch job, `backup_sync.py`, run every 6 hours by the
+`nursery-backup.timer`/`.service` systemd units (installed by `install.sh`), which mirrors both
+JSON files into Postgres in one transaction. `export_db.py` does the reverse (Neon → JSON) for
+disaster recovery after an SD-card death. `migrate_log.py` (the original one-shot JSON → Postgres
+importer) is superseded by `backup_sync.py`. Full runbook: `neon-backup-migration.md`.
 
 **Context:** This is a single-Pi household appliance. It must work out of the box with zero
 infrastructure. Cloud backup is desirable for durability but not required on day one, and the
-operator may not have Postgres credentials at install time.
+operator may not have Postgres credentials at install time. The original design (2026-06) let
+either mode serve live traffic; in production this meant the dashboard's 8-second poll interval
+kept Neon's free-tier compute awake nearly 24/7, burning ~180 compute-hours/month against a
+5-minute-autosuspend free tier — the fix was to stop reading Neon live at all and treat it purely
+as an off-site backup target.
 
 **Alternatives considered:**
 - SQLite-only: still requires a schema and migration, offers no cloud path, harder to inspect remotely.
-- Postgres-only: fails hard with no `DATABASE_URL`; requires network access at all times.
+- Postgres-only (live): fails hard with no `DATABASE_URL`; requires network access at all times;
+  this is also what caused the compute-cost problem above.
 - Pluggable backend (ABC): over-engineered for two backends.
 
 **Consequences:**
-- Any new event type or field must be added to both implementation families simultaneously.
+- Any new event type or field must be added to both implementation families, but only the
+  `_json_*` side is on the live-traffic critical path — `_pg_*` correctness only matters at backup/
+  restore time.
+- **`DATABASE_URL` must never be set on `nursery-tracker` or `nursery-sleep-monitor`** — it lives
+  only in `/etc/nursery-tracker/backup.env` (chmod 600), read solely by `backup_sync.py`.
+- `backup_sync.py` refuses to run (and logs, doesn't overwrite) if local files are missing/
+  unparseable or local counts collapsed below half of the remote's — a broken Pi must never
+  clobber a good backup.
 - JSON IDs are positional list indices (`id = enumerate(entries)`), so `_json_delete_entry`
   shifts indices on deletion. The client always refetches before rendering delete buttons,
   making this safe in practice but fragile under concurrent deletions.
-- Settings (`settings.json`) remain JSON-only in both storage modes. This is intentional:
-  settings are per-machine (e.g. `camera_rtsp_url` is IP-specific) and do not belong in the
-  shared Postgres database.
+- `get_sleep_sessions_today()` / `get_sleep_sessions_range(days)` return sessions *overlapping*
+  the window, not just ones whose start falls inside it — otherwise an overnight sleep put down
+  the evening before and picked up the next morning would vanish from the day view (`cbdf1e5`,
+  2026-07-16).
+- Settings (`settings.json`) remain JSON-only in both storage modes, and are never backed up to
+  Postgres. This is intentional: settings are per-machine (e.g. `camera_rtsp_url` is IP-specific)
+  and do not belong in a shared database. `update_setting(key, value)` writes only the single
+  changed key rather than the full merged dict — see ADR-006's consequences for why that matters.
 - Sleep sessions write atomically via `os.replace(tmp, SLEEP_FILE)` in the JSON path to prevent
   corruption from a mid-write crash.
 
@@ -115,10 +142,24 @@ removal → fraction of changed pixels.
    still baby into its model within ~20s → false AWAY; (b) Farneback mean flow had a noise floor
    above the practical threshold on the low-bitrate H.264/IR stream, so motion read as always-true
    and the machine never reached ASLEEP.
-4. **Reference-frame differencing (current):** compare each frame to a stored empty-crib baseline.
-   Immune to still-object absorption because the reference is only updated during triple-gated
-   trusted-empty periods (see ADR-005). Optical flow was retired and replaced by frame-to-frame
-   differencing using the same `active_fraction` primitive.
+4. **Reference-frame differencing (v4, superseded by v5 below):** compare each frame to a stored
+   empty-crib baseline. Immune to still-object absorption because the reference is only updated
+   during triple-gated trusted-empty periods (see ADR-005). Optical flow was retired and replaced
+   by frame-to-frame differencing using the same `active_fraction` primitive. Frozen spec:
+   `sleep-monitor-algorithm.md` (historical).
+5. **Event-gated latched presence (v5, current, 2026-07-02 onward):** per-frame reference
+   comparison no longer flips presence directly. Presence is a *latched* state that changes only
+   at explicit events: a parent-scale disturbance (motion above `sleep_disturbance_fraction`)
+   opens an episode; once it settles, the frame is compared to the reference — a match sets AWAY
+   (and refreshes the reference), a mismatch sets AWAKE on a micro-motion *probation* window. A
+   `reference_frame_meta.json` sidecar tracks whether the current reference is `trusted` (set by a
+   settle-empty verdict or the calibrate button) or merely inferred (probation expiry, liveness
+   timeout) — only trusted references may back the fast "silent-departure close" path. Two more
+   exits were added after the 2026-07-15/16 incidents: the **silent-departure close** (latched
+   occupied + trusted-empty reference + zero micro-motion for 5 min ⇒ a pickup the camera missed)
+   and the **liveness backstop** (ASLEEP with zero micro-motion for `sleep_liveness_minutes`,
+   reference-free, catching cases no reference comparison could). Full rationale, every incident
+   that drove each rule, and the regression suite: `sleep-detection-research.md`.
 
 **ML was considered and rejected:** custom training needs labeled footage from this specific
 camera (top-down IR, swaddled baby) and GPU inference unavailable on a Pi 4. A pretrained
@@ -142,8 +183,9 @@ resolution to this irreducible ambiguity.
 
 **Decision:** The empty-crib reference drifts very slowly toward the current frame
 (`REFERENCE_UPDATE_LR = 0.02` via `cv2.addWeighted`) only when all three conditions hold:
-(1) state is `STATE_AWAY`; (2) `motion_frac < NOISE_FLOOR_FRACTION (0.005)`;
-(3) `active_fraction(curr, reference) <= presence_threshold`.
+(1) state is `STATE_AWAY`; (2) `motion_frac < cfg["micromotion_fraction"]` (settings-driven,
+default `0.002`, `storage.py`'s `sleep_micromotion_fraction`); (3) `active_fraction(curr, reference)
+<= presence_threshold`.
 
 **Context:** Gradual lighting changes (sunrise, IR day/night) would cause a fixed reference to
 accumulate false-presence readings over hours. But updating the reference while the baby is present
@@ -156,15 +198,22 @@ is precisely the failure of the earlier adaptive-blend iteration.
   reference, slow drift would anchor to the wrong value; this gate blocks that.
 - IR day/night flip produces >80% pixel change, caught upstream by the lighting guard before this
   function is reached.
+- This slow drift is the *trusted* refresh path (see ADR-004's v5 entry): a settle evaluation that
+  confirms the crib empty, or the "Crib is empty" button, are the only other writers of a trusted
+  reference. Probation expiry and the liveness backstop can also refresh the reference (self-healing
+  a stale or baby-poisoned one) but are marked untrusted in `reference_frame_meta.json`, which gates
+  them out of the fast silent-departure-close path.
 
 ---
 
 ## ADR-006: Settings-driven runtime tuning with per-frame INFO logging
 
 **Decision:** All detection thresholds (`sleep_presence_threshold`, `sleep_motion_fraction`,
-`sleep_min_minutes`, `sleep_wake_seconds`, `sleep_max_session_hours`) are read from `settings.json`
-at daemon startup. Every frame logs `state`, `presence_frac`, `motion_frac`, and both thresholds at
-INFO level.
+`sleep_disturbance_fraction`, `sleep_settle_seconds`, `sleep_micromotion_fraction`,
+`sleep_probation_minutes`, `sleep_min_minutes`, `sleep_wake_seconds`, `sleep_wake_minutes`,
+`sleep_max_session_hours`, `sleep_liveness_minutes`) are read from `settings.json`, keyed off
+`DEFAULT_SETTINGS` when absent. Every frame logs `state`, `presence`, `motion`, `micro`, and `dist`
+plus the active thresholds at INFO level.
 
 **Context:** The Pi is headless. Without per-frame visibility, tuning thresholds requires code
 changes, redeploys, and guesswork. The values that matter are the actual fractions produced by this
@@ -174,8 +223,18 @@ specific camera on this specific scene.
 - An operator can `sudo journalctl -u nursery-sleep-monitor -f` with the crib empty then occupied,
   observe the actual `presence` values, and set `sleep_presence_threshold` between the two ranges —
   no code change required.
-- The daemon must be restarted to pick up settings changes (read once at `main()` entry, passed by
-  value into `run_state_machine()`).
+- `main()`'s reconnect loop re-reads `load_settings()` on every RTSP reconnect, not just once at
+  process start — a dropped-stream reconnect (or a full `systemctl restart`) both pick up new
+  settings; only a value change with no intervening reconnect requires a manual restart (see
+  backlog M-6 for the still-open true live-reload item).
+- `update_setting(key, value)` (`storage.py`) writes only the single changed key, never the full
+  merged settings dict — this was fixed after the 2026-07-14 missed-put-down incident, where
+  `POST /settings` used to bake every `DEFAULT_SETTINGS` value of that day into `settings.json`,
+  permanently shadowing later tuning of the code defaults it never touched. A `sleep_*` key present
+  in `settings.json` shadows the code default forever; delete the key to return to it.
+- On startup, the daemon logs a WARNING for every `sleep_*` key in `settings.json` that diverges
+  from `DEFAULT_SETTINGS`, so a stale override left over from an old tuning pass is visible without
+  having to diff the file by hand.
 - Per-frame INFO logging at 1 fps is ~86,400 lines/day; configure journal size limits on small SD cards.
 
 ---
@@ -197,7 +256,10 @@ within one calendar day).
 
 **Consequences:**
 - A force-ended session's duration is a sentinel indicating detection was lost, not real sleep.
-- The cap is a backstop; it does not fix the root cause of overcounting (see backlog H-2 / TODO-1).
+- The cap is a backstop, not a fix for the root cause of overcounting — the root cause itself was
+  addressed by the v5 rewrite and its 2026-07-09/07-14/07-15-16 hardening passes (see backlog
+  H-2 / TODO-1, now resolved-with-caveat). The cap still matters as a defense against detection
+  loss the algorithm can't reason about (e.g. a camera stuck mid-stream).
 
 ---
 
@@ -222,3 +284,58 @@ within one calendar day).
 **Consequences:**
 - A fresh clone on macOS runs with `python app.py` and no optional dependencies.
 - Every integration is independently disable-able, and a missing one never blocks core logging.
+
+---
+
+## ADR-009: Weekly Pattern card computed server-side, rendered as DOM/CSS
+
+**Decision:** The dashboard's "Weekly Pattern" card (last 7 days as vertical 24h columns, sleep
+sessions as blocks, Feed events as dots) is built from `weekly_pattern_stats(entries, sessions,
+days=7)` in `app.py`, shipped as `/data`'s `"week"` key, and rendered in `templates/index.html` as
+plain positioned `<div>`s — not a Chart.js chart.
+
+**Context:** Chart.js has no "day-by-time-of-day interval" chart type suited to this layout. A
+midnight-spanning sleep session also needs splitting into two per-day segments for the client to
+position by minute-of-day (a segment ending at midnight is minute 1440, which the client's
+`minuteOfDay()` helper can't express) — simpler to do once, server-side, than duplicate the logic
+in JS.
+
+**Consequences:**
+- `weekly_pattern_stats()` splits sessions into per-day segments for positioning, but always ships
+  the *whole* session's `start_iso`/`end_iso`/`duration_minutes` too, so the client's tap-toast can
+  describe the real session even when it's only showing one half of it.
+- Backed by `storage.get_sleep_sessions_range(days)` (mirrors `get_sleep_sessions_today`'s overlap
+  rule — see ADR-001), not a new query family.
+- Because it's DOM, not canvas, it inherits the `:root` CSS custom properties used for event-type
+  colors — dark mode and the is-open fade come for free, with no separate Chart.js theming path.
+
+---
+
+## ADR-010: Mutable history entries and an overloaded keypad key
+
+**Decision:** Two independent extensions widened the event model after the original architecture
+was written:
+- History entries are editable, not just deletable: `PATCH /log/entry` + `storage.update_entry()`
+  let a parent correct a mistyped type or backdate a timestamp via an edit modal, rather than
+  deleting and re-logging.
+- The 4-key pad has no free key for a 5th event type, so `Probiotic` is layered onto the existing
+  Play key (`KEY_DOWN`) instead of getting its own: a first press arms a 3-second timer; a second
+  press within the window cancels it and logs Probiotic immediately; otherwise the timer fires and
+  logs Play, timestamped up to 3s late. Both paths funnel through one shared `log_keypad_event()`
+  (debounce → `add_entry` → Huckleberry push) so the timer callback and direct keys behave
+  identically.
+
+**Context:** Both are usability fixes driven by real logging mistakes — a fat-fingered key press
+with no correction path, and running out of physical keys for a new event type parents wanted to
+track.
+
+**Consequences:**
+- `update_entry()` had to be added to both `_pg_*` and `_json_*` storage families (ADR-001's
+  "any new field touches both" consequence applies to behavior changes too, not just new fields).
+- Single-press Play is now timestamped up to 3s late by design — negligible for this use case, but
+  worth knowing if timestamp precision ever matters elsewhere.
+- Debounce for the overloaded key runs at *fire* time, after the double-press window has resolved
+  which event it actually is — a naive debounce-on-keydown would have debounced Play against
+  Probiotic incorrectly.
+- New event types added to the keypad vocabulary must also be added to `huckleberry_sync.py`'s
+  `event_type` branch — this was missed for Probiotic (see backlog M-7).
