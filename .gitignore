@@ -8,3 +8,5 @@ reference_frame.npy
 reference_frame_meta.json
 recordings/
 2026*_*/
+roi_frame.jpg
+roi_picker.html
