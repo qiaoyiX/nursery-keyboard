@@ -1,4 +1,5 @@
 import threading
+import json
 import logging
 import os
 import errno
@@ -504,6 +505,59 @@ def huckleberry_test():
     except Exception as exc:
         logging.exception("Huckleberry connection test failed")
         return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/nanny")
+def nanny_page():
+    return render_template("nanny.html")
+
+
+@app.route("/nanny/data")
+def nanny_data():
+    """Daily nanny report JSON. ?date=YYYY-MM-DD, defaults to the newest report."""
+    from nanny_common import REPORTS_DIR
+    dates = []
+    if os.path.isdir(REPORTS_DIR):
+        for name in os.listdir(REPORTS_DIR):
+            if name.endswith(".json"):
+                try:
+                    datetime.strptime(name[:-5], "%Y-%m-%d")
+                    dates.append(name[:-5])
+                except ValueError:
+                    continue
+    dates.sort(reverse=True)
+
+    requested = request.args.get("date")
+    if requested is not None:
+        try:
+            datetime.strptime(requested, "%Y-%m-%d")
+        except ValueError:
+            return jsonify({"error": "invalid date"}), 400
+    target = requested or (dates[0] if dates else None)
+
+    report = None
+    if target in dates:
+        try:
+            with open(os.path.join(REPORTS_DIR, target + ".json")) as f:
+                report = json.load(f)
+        except (OSError, ValueError):
+            return jsonify({"error": "report unreadable"}), 500
+    return jsonify({"dates": dates, "report": report})
+
+
+@app.route("/nanny/clips/<day>/<path:filename>")
+def nanny_clip(day, filename):
+    """Serve a phone-use evidence clip. Both parts are validated; Flask's
+    send_from_directory refuses path traversal on top."""
+    from flask import abort, send_from_directory
+    from nanny_common import CLIPS_DIR
+    try:
+        datetime.strptime(day, "%Y-%m-%d")
+    except ValueError:
+        abort(404)
+    if os.sep in filename or not filename.endswith(".mp4"):
+        abort(404)
+    return send_from_directory(os.path.join(CLIPS_DIR, day), filename)
 
 
 @app.route("/sleep/calibrate", methods=["POST"])

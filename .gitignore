@@ -10,3 +10,6 @@ recordings/
 2026*_*/
 roi_frame.jpg
 roi_picker.html
+settings.json
+nanny/
+nanny_status.json

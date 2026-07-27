@@ -114,6 +114,102 @@ EOF
 sudo systemctl daemon-reload
 sudo systemctl enable --now nursery-backup.timer
 
+echo "==> Installing nanny report services (run only if configured)..."
+sudo apt-get install -y ffmpeg
+NANNY_ENV_FILE=/etc/nursery-tracker/nanny.env
+if [ ! -f "$NANNY_ENV_FILE" ]; then
+    sudo tee "$NANNY_ENV_FILE" > /dev/null <<EOF
+# Nanny report configuration (leave unset to disable the feature).
+# GEMINI_API_KEY=...
+# GEMINI_MODEL=gemini-2.5-flash-lite
+# One line per camera, name=rtsp-url (name becomes a directory: letters/digits/_/- only).
+# Use each camera's Camera Account credentials and the low-res sub-stream (stream2).
+# NANNY_CAM_1=livingroom=rtsp://user:pass@192.168.1.x:554/stream2
+# NANNY_CAM_2=kitchen=rtsp://user:pass@192.168.1.y:554/stream2
+# NANNY_CAM_3=playroom=rtsp://user:pass@192.168.1.z:554/stream2
+# NANNY_WINDOW=10:00-18:00
+# NANNY_DAYS=Mon,Tue,Wed,Thu,Fri
+# NANNY_CLIP_RETENTION_DAYS=14
+EOF
+    sudo chmod 600 "$NANNY_ENV_FILE"
+fi
+
+sudo tee /etc/systemd/system/nursery-nanny-record.service > /dev/null <<EOF
+[Unit]
+Description=Nursery Nanny cam recorder (care window enforced internally)
+After=network-online.target
+# Skips (not fails) when the feature is not configured
+ConditionPathExists=$NANNY_ENV_FILE
+
+[Service]
+User=$USER_NAME
+WorkingDirectory=$WORK_DIR
+EnvironmentFile=$NANNY_ENV_FILE
+ExecStart=$PYTHON_BIN nanny_record.py
+Restart=always
+RestartSec=30
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo tee /etc/systemd/system/nursery-nanny-analyze.service > /dev/null <<EOF
+[Unit]
+Description=Nursery Nanny footage analyzer (Gemini)
+ConditionPathExists=$NANNY_ENV_FILE
+
+[Service]
+Type=oneshot
+User=$USER_NAME
+WorkingDirectory=$WORK_DIR
+EnvironmentFile=$NANNY_ENV_FILE
+ExecStart=$PYTHON_BIN nanny_analyze.py
+EOF
+
+sudo tee /etc/systemd/system/nursery-nanny-analyze.timer > /dev/null <<EOF
+[Unit]
+Description=Nursery Nanny hourly footage analysis
+
+[Timer]
+OnCalendar=*-*-* 11..18:05:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+
+sudo tee /etc/systemd/system/nursery-nanny-report.service > /dev/null <<EOF
+[Unit]
+Description=Nursery Nanny daily report merge
+ConditionPathExists=$NANNY_ENV_FILE
+
+[Service]
+Type=oneshot
+User=$USER_NAME
+WorkingDirectory=$WORK_DIR
+EnvironmentFile=$NANNY_ENV_FILE
+ExecStart=$PYTHON_BIN nanny_report.py
+EOF
+
+sudo tee /etc/systemd/system/nursery-nanny-report.timer > /dev/null <<EOF
+[Unit]
+Description=Nursery Nanny daily report at 18:45
+
+[Timer]
+OnCalendar=*-*-* 18:45:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now nursery-nanny-record.service
+sudo systemctl enable --now nursery-nanny-analyze.timer
+sudo systemctl enable --now nursery-nanny-report.timer
+
 echo ""
 echo "==> Done!"
 echo ""
@@ -128,3 +224,6 @@ echo "  3. Run: bash find_device.sh  (confirms the keypad is detected)"
 echo "  4. In Tapo app: Settings → Advanced Settings → Camera Account → create credentials"
 echo "  5. Edit settings.json: set camera_rtsp_url to rtsp://user:pass@IP:554/stream2"
 echo "  6. Run: sudo systemctl start nursery-sleep-monitor"
+echo "  7. Nanny report (optional): create Camera Accounts on the nanny cams, then"
+echo "     sudo nano /etc/nursery-tracker/nanny.env  (uncomment + fill in keys/cameras)"
+echo "     sudo systemctl restart nursery-nanny-record"
