@@ -18,6 +18,15 @@ Gemini key lives there too, so none of it belongs in settings.json):
     NANNY_DAYS                   default Mon,Tue,Wed,Thu,Fri
     NANNY_CLIP_RETENTION_DAYS    default 14
 
+    Quota shaping (read by nanny_analyze; a camera-hour is ~240k input tokens
+    and the API limits input tokens per MINUTE, so these matter more than the
+    request count does):
+    NANNY_PIECE_MINUTES          footage per Gemini call, default 30 (0 = hour)
+    NANNY_TPM_BUDGET             input tokens/min to stay under, default 200000
+    NANNY_MAX_SEGMENTS_PER_RUN   segments per analyzer run, default 4
+    GEMINI_THINKING_LEVEL        optional; caps thinking so the JSON still fits
+    GEMINI_MAX_OUTPUT_TOKENS     default 32768
+
 Disk layout (all gitignored, all under the repo dir):
 
     nanny/raw/<cam>/<YYYYmmdd_HHMMSS>.mp4    ffmpeg segments; deleted after analysis

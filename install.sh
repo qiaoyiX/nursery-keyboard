@@ -135,6 +135,20 @@ if [ ! -f "$NANNY_ENV_FILE" ]; then
 # NANNY_WINDOW=10:00-18:00
 # NANNY_DAYS=Mon,Tue,Wed,Thu,Fri
 # NANNY_CLIP_RETENTION_DAYS=14
+#
+# Quota shaping. A camera-hour is ~240k input tokens, and Gemini limits input
+# TOKENS per minute as well as requests, so three cameras uploaded back to back
+# trip the limit on three requests. Defaults keep a 3-camera day inside a
+# 200k-tokens/min budget; raise NANNY_TPM_BUDGET to your tier's real input TPM
+# to make the pipeline faster, lower it if you still see 429s.
+# NANNY_PIECE_MINUTES=30          # footage per Gemini call (0 = whole hour)
+# NANNY_TPM_BUDGET=200000         # input tokens/min this pipeline allows itself
+# NANNY_MAX_SEGMENTS_PER_RUN=4    # cap per timer run so a backlog spreads out
+# GEMINI_THINKING_LEVEL=low       # 3.x models: minimal|low|medium|high. Thinking
+#                                 # shares the output budget with the JSON, and
+#                                 # this task is description, not reasoning.
+#                                 # (2.5 models: use GEMINI_THINKING_BUDGET instead)
+# GEMINI_MAX_OUTPUT_TOKENS=32768
 EOF
     sudo chmod 600 "$NANNY_ENV_FILE"
 fi
@@ -175,10 +189,15 @@ EOF
 
 sudo tee /etc/systemd/system/nursery-nanny-analyze.timer > /dev/null <<EOF
 [Unit]
-Description=Nursery Nanny hourly footage analysis
+Description=Nursery Nanny footage analysis (half-hourly)
 
 [Timer]
-OnCalendar=*-*-* 11..18:05:00
+# Twice an hour, and each run takes only NANNY_MAX_SEGMENTS_PER_RUN segments:
+# a backlog then drains across runs instead of firing every camera-hour into
+# the same minute of the token quota. RandomizedDelaySec keeps a rebooted Pi
+# from replaying the whole catch-up at one instant.
+OnCalendar=*-*-* 10..19:05,35:00
+RandomizedDelaySec=180
 Persistent=true
 
 [Install]

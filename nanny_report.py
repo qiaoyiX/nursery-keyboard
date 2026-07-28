@@ -31,6 +31,7 @@ import logging
 import os
 import shutil
 import sys
+import time
 from datetime import date, datetime, timedelta
 
 from nanny_common import (
@@ -273,11 +274,16 @@ def classify_phone_use(phone_events, chunks, rooms, naps):
 # ── Narrative ─────────────────────────────────────────────────────────────────
 
 def day_narrative(day, hour_summaries, phone_stats):
-    """One cheap text-only Gemini call. Returns None on any failure."""
+    """One cheap text-only Gemini call. Returns None on any failure.
+
+    It runs seconds after the straggler sweep's last video call, so it is the
+    one request most likely to meet a still-exhausted per-minute quota — hence
+    the retries. A missing narrative is cosmetic, the report ships either way.
+    """
     if not os.environ.get("GEMINI_API_KEY") or not hour_summaries:
         return None
     try:
-        from nanny_analyze import make_client
+        from nanny_analyze import is_retryable, make_client, retry_delay_seconds
         client = make_client()
         model = os.environ.get("GEMINI_MODEL", DEFAULT_MODEL)
         lines = "\n".join(f"- {s}" for s in hour_summaries)
@@ -297,8 +303,17 @@ def day_narrative(day, hour_summaries, phone_stats):
             "the rooms into a single narrative if they disagree. No bullet points, no "
             "advice, no speculation beyond the notes."
         )
-        resp = client.models.generate_content(model=model, contents=prompt)
-        return (resp.text or "").strip() or None
+        for attempt in range(1, 4):
+            try:
+                resp = client.models.generate_content(model=model, contents=prompt)
+                return (resp.text or "").strip() or None
+            except Exception as e:
+                if attempt == 3 or not is_retryable(e):
+                    raise
+                wait = min(retry_delay_seconds(e) or 20 * attempt, 120)
+                logging.warning("Narrative attempt %d failed (%s) — retrying in %.0fs",
+                                attempt, e, wait)
+                time.sleep(wait)
     except Exception as e:
         logging.warning("Narrative generation failed (%s) — report will have none", e)
         return None
@@ -446,8 +461,10 @@ def main():
     except ValueError as e:
         sys.exit(f"ABORT: bad configuration: {e}")
 
-    # Straggler sweep: the 18:05 analyzer run may not have finished (or run).
-    analyze_pending()
+    # Straggler sweep: the last analyzer run may not have finished (or run).
+    # Uncapped on purpose — the analyzer's per-run cap exists to spread a
+    # backlog over the day, but by report time everything must be in.
+    analyze_pending(limit=None)
 
     days = unreported_dates(date.today())
     if not days:
