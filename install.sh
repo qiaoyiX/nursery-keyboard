@@ -124,9 +124,14 @@ if [ ! -f "$NANNY_ENV_FILE" ]; then
 # GEMINI_MODEL=gemini-2.5-flash-lite
 # One line per camera, name=rtsp-url (name becomes a directory: letters/digits/_/- only).
 # Use each camera's Camera Account credentials and the low-res sub-stream (stream2).
-# NANNY_CAM_1=livingroom=rtsp://user:pass@192.168.1.x:554/stream2
-# NANNY_CAM_2=kitchen=rtsp://user:pass@192.168.1.y:554/stream2
-# NANNY_CAM_3=playroom=rtsp://user:pass@192.168.1.z:554/stream2
+# NANNY_CAM_1=nurserycam=rtsp://user:pass@192.168.1.x:554/stream2
+# NANNY_CAM_2=playcam=rtsp://user:pass@192.168.1.y:554/stream2
+# NANNY_CAM_3=bedcam=rtsp://user:pass@192.168.1.z:554/stream2
+# Which room each camera watches. Cameras sharing a room are treated as two
+# angles on one scene: that is how "the baby is awake in this room" from one
+# camera makes the other camera's phone use count as unauthorized, and how a
+# caregiver alone in another room is NOT read as the baby being left alone.
+# NANNY_CAM_ROOMS=nurserycam:nursery,playcam:nursery,bedcam:bedroom
 # NANNY_WINDOW=10:00-18:00
 # NANNY_DAYS=Mon,Tue,Wed,Thu,Fri
 # NANNY_CLIP_RETENTION_DAYS=14

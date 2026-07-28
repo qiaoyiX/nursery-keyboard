@@ -10,6 +10,10 @@ Gemini key lives there too, so none of it belongs in settings.json):
     GEMINI_MODEL                 default gemini-2.5-flash-lite
     NANNY_CAM_1..N               name=rtsp-url  (one var per camera: RTSP
                                  passwords can contain any list delimiter)
+    NANNY_CAM_ROOMS              cam:room,cam:room  — which physical room each
+                                 camera watches; two cameras sharing a room is
+                                 the point (they see the same scene from two
+                                 angles). Unlisted cameras get their own room.
     NANNY_WINDOW                 default 10:00-18:00
     NANNY_DAYS                   default Mon,Tue,Wed,Thu,Fri
     NANNY_CLIP_RETENTION_DAYS    default 14
@@ -69,6 +73,33 @@ def load_cameras(env=os.environ):
                              "(it becomes a directory and filename part)")
         cams[name] = url.strip()
     return cams
+
+
+def load_camera_rooms(cameras, env=os.environ):
+    """NANNY_CAM_ROOMS 'cam:room,cam:room' → {camera: room} for every camera.
+
+    Rooms are what make the cameras a *scene* rather than three unrelated
+    videos: cameras sharing a room watch the same caregiver/baby from two
+    angles, and the phone-use policy is judged per room, not per camera. A
+    camera nobody assigned a room becomes its own single-camera room, which is
+    exactly the pre-rooms behaviour.
+    """
+    mapping = {}
+    raw = env.get("NANNY_CAM_ROOMS", "").strip()
+    for part in filter(None, (p.strip() for p in raw.split(","))):
+        cam, sep, room = part.partition(":")
+        cam, room = cam.strip(), room.strip()
+        if not sep or not cam or not room:
+            raise ValueError(f"NANNY_CAM_ROOMS entry {part!r} must look like camera:room")
+        if not re.fullmatch(r"[A-Za-z0-9_ -]+", room):
+            raise ValueError(f"NANNY_CAM_ROOMS: room {room!r} must be [A-Za-z0-9_ -]+")
+        if cameras and cam not in cameras:
+            raise ValueError(f"NANNY_CAM_ROOMS names unknown camera {cam!r} "
+                             f"(known: {', '.join(sorted(cameras)) or 'none'})")
+        mapping[cam] = room
+    for cam in cameras:
+        mapping.setdefault(cam, cam)
+    return mapping
 
 
 def load_window(env=os.environ):

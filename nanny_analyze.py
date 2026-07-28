@@ -3,6 +3,13 @@ Hourly nanny-footage analyzer: for every closed raw segment that has no chunk
 JSON yet, downsample → upload to Gemini → structured-JSON analysis → extract
 evidence clips → delete the raw footage.
 
+Each segment is analyzed alone, but the prompt describes the whole camera
+topology (scene_description): which room each camera watches, which cameras
+share a room, and that they all record the same hours. Without that the model
+reads one frame as the entire world and calls a baby who is simply in the other
+room "unattended"; with it, "not in frame" stays "not in frame" and the daily
+report does the cross-room fusion (see nanny_report.classify_phone_use).
+
 Runs as a oneshot systemd timer (nursery-nanny-analyze.timer, :05 past each
 hour 11:00-18:00, Persistent=true) and is also invoked by nanny_report.py as a
 straggler sweep; an flock (nanny_common.AnalyzeLock) keeps the two from racing.
@@ -35,7 +42,8 @@ from datetime import datetime, timedelta
 
 from nanny_common import (
     CLIPS_DIR, LOWRES_DIR, AnalyzeLock, atomic_write_json, chunk_path,
-    ensure_dirs, offset_to_wallclock, pending_segments, update_status,
+    ensure_dirs, load_camera_rooms, load_cameras, offset_to_wallclock,
+    pending_segments, update_status,
 )
 
 logging.basicConfig(level=logging.INFO,
@@ -50,9 +58,11 @@ CLIP_TAIL_S       = 15      # and runs this long past its end
 CLIP_MAX_S        = 300     # cap a single evidence clip at 5 minutes
 
 PHONE_CONTEXTS = ["while_holding_baby", "baby_nearby_awake", "baby_unattended",
-                  "baby_napping", "unclear"]
+                  "baby_napping", "baby_not_in_frame", "unclear"]
 ACTIVITY_CATEGORIES = ["feeding", "diaper", "play", "holding_baby", "sleep_prep",
                        "housework", "eating", "resting", "out_of_frame", "other"]
+# Judged from THIS camera only; the report fuses the rooms afterwards.
+BABY_STATES = ["awake", "asleep", "not_visible", "unclear"]
 
 CHUNK_SCHEMA = {
     "type": "OBJECT",
@@ -67,8 +77,10 @@ CHUNK_SCHEMA = {
                     "category":     {"type": "STRING", "enum": ACTIVITY_CATEGORIES},
                     "description":  {"type": "STRING"},
                     "baby_visible": {"type": "BOOLEAN"},
+                    "baby_state":   {"type": "STRING", "enum": BABY_STATES},
                 },
-                "required": ["start", "end", "category", "description"],
+                "required": ["start", "end", "category", "description",
+                             "baby_visible", "baby_state"],
             },
         },
         "phone_use": {
@@ -104,25 +116,62 @@ CHUNK_SCHEMA = {
 }
 
 PROMPT = """You are reviewing security-camera footage (sampled at 1 frame per second) \
-from the '{camera}' camera in a private home where a nanny cares for an infant. The \
-segment starts at {start_local} local time and is about {minutes} minutes long.
+from a private home where a nanny cares for an infant.
+
+THE CAMERA SYSTEM
+{scene}
+All of these cameras record the SAME hours simultaneously; you are being shown one \
+camera at a time. There is exactly one baby and normally one caregiver in the home, so \
+when they are not in this camera's frame they are usually somewhere else in the house — \
+possibly in a room another camera covers. Never infer from this video alone that the \
+baby is alone or unsupervised: report only what THIS camera shows, and let \
+"not in frame" mean exactly that. Cameras that share a room are two angles on the same \
+scene, not two different places.
+
+THIS VIDEO: camera '{camera}', which watches the {room}. The segment starts at \
+{start_local} local time and is about {minutes} minutes long.
 
 Produce:
 1. activities — a factual timeline of what the caregiver does. Merge contiguous spans \
 of the same activity; minimum granularity about one minute. Use the category enum; put \
-specifics in description. Set baby_visible per span.
+specifics in description. For every span set baby_visible (is the baby in THIS frame at \
+all) and baby_state: "asleep" only when the baby is visibly settled and still (lying \
+down, eyes closed, no active movement) for the span, "awake" when visibly moving, \
+being held, fed, played with or attended to, "not_visible" when the baby is not in \
+frame, "unclear" when in frame but you cannot tell.
 2. phone_use — EVERY interval where the caregiver is holding, looking at, or \
-interacting with a mobile phone. Classify the baby's situation during it (context \
-enum). Be conservative: if you are unsure it is a phone, still report it with \
-confidence "low" rather than omitting it. Do not count baby monitors or TV remotes as \
-phones if distinguishable.
-3. notable_events — safety-relevant moments (baby unattended on raised surface, falls, \
-distress ignored), visitors, or milestones.
-4. summary — 2-3 plain sentences describing this hour.
+interacting with a mobile phone. Classify the baby's situation during it with the \
+context enum: while_holding_baby, baby_nearby_awake (baby awake in the same room), \
+baby_unattended (baby awake and needing attention while the caregiver is on the phone), \
+baby_napping (baby visibly asleep in this room), baby_not_in_frame (the baby is simply \
+not in this camera's view), unclear. Be conservative: if you are unsure it is a phone, \
+still report it with confidence "low" rather than omitting it. Do not count baby \
+monitors or TV remotes as phones if distinguishable.
+3. notable_events — safety-relevant moments (baby unattended on a raised surface, \
+falls, distress ignored), visitors, or milestones.
+4. summary — 2-3 plain sentences describing this hour. Mention which room this is.
 
 All times are offsets from the start of the video as MM:SS. If nobody is in frame for \
 the whole segment, return empty lists and say so in the summary. Output only JSON \
 matching the response schema."""
+
+
+def scene_description(rooms, this_camera):
+    """The camera-topology block of the prompt: every camera and its room, so the
+    model reads one video as one vantage point on a multi-room house instead of
+    as the whole world (a caregiver alone in frame is not a baby left alone)."""
+    if not rooms:
+        return f"- '{this_camera}' (this video) — the only camera configured."
+    by_room = {}
+    for cam, room in sorted(rooms.items()):
+        by_room.setdefault(room, []).append(cam)
+    lines = []
+    for room, cams in sorted(by_room.items()):
+        shared = " (two angles on the same room)" if len(cams) > 1 else ""
+        for cam in cams:
+            mark = "  <- THIS VIDEO" if cam == this_camera else ""
+            lines.append(f"- '{cam}' watches the {room}{shared}{mark}")
+    return "\n".join(lines)
 
 
 # ── ffmpeg steps ──────────────────────────────────────────────────────────────
@@ -168,7 +217,7 @@ def make_client():
     return genai.Client(api_key=os.environ["GEMINI_API_KEY"])
 
 
-def analyze_video(client, model, lowres_path, camera, seg_start, minutes):
+def analyze_video(client, model, lowres_path, camera, seg_start, minutes, rooms):
     """Upload + generate. Returns (parsed_dict_or_None, usage_dict). Raises on
     transport-level failure (caller retries); returns None on unparseable JSON."""
     from google.genai import types
@@ -185,6 +234,8 @@ def analyze_video(client, model, lowres_path, camera, seg_start, minutes):
             raise RuntimeError(f"Gemini file processing FAILED for {lowres_path}")
 
         prompt = PROMPT.format(camera=camera, minutes=minutes,
+                               room=rooms.get(camera, camera),
+                               scene=scene_description(rooms, camera),
                                start_local=seg_start.strftime("%H:%M on %A"))
         resp = client.models.generate_content(
             model=model,
@@ -222,7 +273,7 @@ def is_retryable(exc):
 
 # ── Chunk assembly ────────────────────────────────────────────────────────────
 
-def build_chunk(parsed, camera, seg_start, minutes, model, usage):
+def build_chunk(parsed, camera, seg_start, minutes, model, usage, room=None):
     """Validate/convert the model output into the stored chunk record.
     Tolerant: malformed events are dropped and counted, never fatal."""
     seg_end = seg_start + timedelta(minutes=minutes)
@@ -240,10 +291,15 @@ def build_chunk(parsed, camera, seg_start, minutes, model, usage):
         if s is None or e is None or e < s:
             dropped += 1
             continue
+        state = a.get("baby_state")
+        if state not in BABY_STATES:
+            # Older/looser output: fall back to the boolean we do have.
+            state = "unclear" if a.get("baby_visible") else "not_visible"
         activities.append({"start_iso": s.isoformat(), "end_iso": e.isoformat(),
                            "category": a.get("category", "other"),
                            "description": a.get("description", ""),
-                           "baby_visible": bool(a.get("baby_visible", False))})
+                           "baby_visible": bool(a.get("baby_visible", False)),
+                           "baby_state": state})
     for p in parsed.get("phone_use") or []:
         s, e = wall(p.get("start")), wall(p.get("end"))
         if s is None or e is None or e < s:
@@ -264,6 +320,7 @@ def build_chunk(parsed, camera, seg_start, minutes, model, usage):
 
     return {
         "camera": camera,
+        "room": room or camera,
         "segment_start_iso": seg_start.isoformat(),
         "segment_minutes": minutes,
         "model": model,
@@ -276,7 +333,7 @@ def build_chunk(parsed, camera, seg_start, minutes, model, usage):
     }
 
 
-def process_segment(client, model, camera, raw_path, seg_start):
+def process_segment(client, model, camera, raw_path, seg_start, rooms):
     minutes = segment_minutes(raw_path)
     lowres = downsample(raw_path, camera)
     try:
@@ -284,7 +341,7 @@ def process_segment(client, model, camera, raw_path, seg_start):
         for attempt in range(1, GEMINI_RETRIES + 1):
             try:
                 parsed, usage = analyze_video(client, model, lowres, camera,
-                                              seg_start, minutes)
+                                              seg_start, minutes, rooms)
                 break
             except Exception as e:
                 if attempt < GEMINI_RETRIES and is_retryable(e):
@@ -295,13 +352,15 @@ def process_segment(client, model, camera, raw_path, seg_start):
                 else:
                     raise
 
+        room = rooms.get(camera, camera)
         if parsed is None:
-            chunk = {"camera": camera, "segment_start_iso": seg_start.isoformat(),
+            chunk = {"camera": camera, "room": room,
+                     "segment_start_iso": seg_start.isoformat(),
                      "segment_minutes": minutes, "model": model, "usage": usage,
                      "parse_error": True, "activities": [], "phone_use": [],
                      "notable_events": [], "summary": ""}
         else:
-            chunk = build_chunk(parsed, camera, seg_start, minutes, model, usage)
+            chunk = build_chunk(parsed, camera, seg_start, minutes, model, usage, room)
             # Evidence clips come from the RAW segment, before it is deleted.
             day = seg_start.date().isoformat()
             for i, p in enumerate([p for p in chunk["phone_use"]
@@ -357,11 +416,19 @@ def analyze_pending():
             return 0, 0
 
         model = os.environ.get("GEMINI_MODEL", DEFAULT_MODEL)
+        try:
+            rooms = load_camera_rooms(load_cameras())
+        except ValueError as e:
+            # Bad room config must not stall analysis; the segments are still
+            # analyzable one-camera-at-a-time, just without the scene context.
+            logging.error("Camera/room configuration invalid (%s) — analyzing "
+                          "without room context", e)
+            rooms = {}
         client = make_client()
         done = failed = 0
         for camera, raw_path, seg_start in pending:
             try:
-                process_segment(client, model, camera, raw_path, seg_start)
+                process_segment(client, model, camera, raw_path, seg_start, rooms)
                 done += 1
             except Exception:
                 logging.exception("[%s %s] segment analysis failed — raw kept for "

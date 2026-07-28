@@ -18,7 +18,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import nanny_common
 from nanny_common import (
-    load_cameras, load_days, load_window, offset_to_wallclock, segment_start,
+    load_camera_rooms, load_cameras, load_days, load_window, offset_to_wallclock,
+    segment_start,
 )
 
 FAILURES = []
@@ -63,6 +64,21 @@ def test_env_parsing():
 
     check("days parsed", load_days({"NANNY_DAYS": "mon,Wed"}) == {0, 2})
     check("days default is weekdays", load_days({}) == {0, 1, 2, 3, 4})
+
+    cams3 = {"crib": "u", "play": "u", "bed": "u"}
+    rooms = load_camera_rooms(cams3, {"NANNY_CAM_ROOMS": "crib:nursery,play:nursery,bed:bedroom"})
+    check("two cameras share a room",
+          rooms == {"crib": "nursery", "play": "nursery", "bed": "bedroom"})
+    check("unlisted camera becomes its own room",
+          load_camera_rooms(cams3, {"NANNY_CAM_ROOMS": "crib:nursery"})["bed"] == "bed")
+    check("no room config → each camera its own room",
+          load_camera_rooms(cams3, {}) == {"crib": "crib", "play": "play", "bed": "bed"})
+    for bad in ("crib:nursery,typo:nursery", "crib", "crib:"):
+        try:
+            load_camera_rooms(cams3, {"NANNY_CAM_ROOMS": bad})
+            check(f"bad room spec rejected ({bad})", False)
+        except ValueError:
+            check(f"bad room spec rejected ({bad})", True)
 
 
 # ── Segment names and offsets ─────────────────────────────────────────────────
@@ -150,6 +166,9 @@ def test_chunk_tolerance():
     check("unknown category preserved as-is",
           chunk["activities"][1]["category"] == "not-a-category")
     check("bad events dropped, counted", chunk["dropped_events"] == 4)
+    check("missing baby_state falls back to not_visible",
+          chunk["activities"][0]["baby_state"] == "not_visible")
+    check("room recorded on the chunk", chunk["room"] == "living")
     check("unknown phone context → unclear",
           chunk["phone_use"][0]["context"] == "unclear")
     check("wallclock conversion",
@@ -176,6 +195,88 @@ def test_interval_math():
     naps = [(t(10, 15), t(10, 45)), (t(13), t(14))]
     check("nap overlap minutes", intersect_minutes(u, naps) == 30)
     check("no overlap", intersect_minutes([(t(15), t(16))], naps) == 0)
+
+    from nanny_report import intersect_intervals, subtract_intervals
+    check("intersect", intersect_intervals(u, naps) == [(t(10, 15), t(10, 45))])
+    check("subtract punches a hole",
+          subtract_intervals([(t(10), t(11))], [(t(10, 15), t(10, 45))])
+          == [(t(10), t(10, 15)), (t(10, 45), t(11))])
+    check("subtract whole", subtract_intervals([(t(10), t(11))], [(t(9), t(12))]) == [])
+    check("subtract nothing", subtract_intervals(u, []) == u)
+
+
+# ── Phone-use policy (rooms + sleep) ──────────────────────────────────────────
+
+def test_phone_policy():
+    print("phone-use policy classification")
+    from nanny_report import classify_phone_use
+    t = lambda h, m=0: datetime(2026, 7, 27, h, m)
+    iso = lambda d: d.isoformat()
+    rooms = {"cribcam": "nursery", "playcam": "nursery", "bedcam": "bedroom"}
+
+    def act(s, e, state):
+        return {"start_iso": iso(s), "end_iso": iso(e), "category": "play",
+                "description": "", "baby_visible": state != "not_visible",
+                "baby_state": state}
+
+    def phone(cam, s, e, ctx, conf="high"):
+        return {"camera": cam, "start_iso": iso(s), "end_iso": iso(e),
+                "context": ctx, "confidence": conf, "description": ""}
+
+    chunks = [
+        {"camera": "cribcam", "activities": [act(t(10), t(11), "awake")], "phone_use": []},
+        {"camera": "playcam", "activities": [], "phone_use": []},
+        {"camera": "bedcam", "activities": [act(t(15), t(15, 30), "asleep")],
+         "phone_use": []},
+    ]
+    events = [
+        # A: baby not in this camera's frame, but the OTHER nursery camera has an
+        #    awake baby in the same room → same room, awake baby → flagged.
+        phone("playcam", t(10), t(10, 10), "baby_not_in_frame"),
+        # B: same shape but in the bedroom while the baby is awake in the nursery
+        #    → different room, not together → never flagged.
+        phone("bedcam", t(10, 30), t(10, 50), "baby_not_in_frame"),
+        # C: inside a crib-monitor nap window → allowed even with no camera verdict.
+        phone("cribcam", t(11), t(11, 30), "unclear"),
+        # D: with the baby, but low confidence → unconfirmed, not flagged.
+        phone("cribcam", t(13), t(13, 20), "while_holding_baby", conf="low"),
+        # E: with the baby, but this room's camera says the baby is asleep (no crib
+        #    monitor in the bedroom) → asleep evidence outranks with-baby.
+        phone("bedcam", t(15), t(15, 10), "while_holding_baby"),
+        # F+G: both nursery cameras see the same session → 20 min, not 40.
+        phone("cribcam", t(16), t(16, 20), "while_holding_baby"),
+        phone("playcam", t(16), t(16, 20), "baby_nearby_awake"),
+    ]
+    naps = [(t(11), t(12))]
+    stats, unauth = classify_phone_use(events, chunks, rooms, naps)
+
+    check("total minutes de-duplicated", stats["total_minutes"] == 110)
+    check("flagged minutes", stats["unauthorized_minutes"] == 30)
+    check("double coverage flagged once", unauth == [(t(10), t(10, 10)),
+                                                     (t(16), t(16, 20))])
+    check("asleep minutes (crib nap + camera-seen sleep)",
+          stats["while_baby_asleep_minutes"] == 40)
+    check("crib-monitor naps still reported", stats["during_naps_minutes"] == 30)
+    check("low confidence held back as unconfirmed",
+          stats["unauthorized_unconfirmed_minutes"] == 20)
+    check("unclear is the remainder", stats["unclear_minutes"] == 40)
+    check("flagged event count", stats["unauthorized_event_count"] == 3)
+
+    verdicts = [e["authorization"] for e in events]
+    check("per-event verdicts", verdicts == [
+        "unauthorized", "unclear", "allowed_baby_asleep", "unconfirmed",
+        "allowed_baby_asleep", "unauthorized", "unauthorized"], str(verdicts))
+    check("room attached to events", events[0]["room"] == "nursery")
+    check("flagged event carries its minutes", events[0]["unauthorized_minutes"] == 10)
+
+    # No room config at all: each camera is its own room, so cross-camera fusion
+    # stops and only the model's own with-baby verdicts can flag.
+    for e in events:
+        e.pop("room", None)
+    solo = {c: c for c in rooms}
+    stats2, _ = classify_phone_use(events, chunks, solo, naps)
+    check("without shared rooms, A is no longer flagged",
+          stats2["unauthorized_minutes"] == 20)
 
 
 def test_nap_windows_clipping():
@@ -244,8 +345,8 @@ def test_coverage():
 
 def main():
     for fn in (test_env_parsing, test_segments_and_offsets, test_pending_segments,
-               test_chunk_tolerance, test_interval_math, test_nap_windows_clipping,
-               test_unreported_dates, test_coverage):
+               test_chunk_tolerance, test_interval_math, test_phone_policy,
+               test_nap_windows_clipping, test_unreported_dates, test_coverage):
         fn()
     print()
     if FAILURES:

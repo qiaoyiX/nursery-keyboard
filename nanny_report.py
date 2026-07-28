@@ -12,8 +12,12 @@ Per report:
   - wall-clock-sorted cross-camera timeline (camera-tagged; no cross-camera
     dedup in v1 — the same event seen by two cameras appears twice)
   - phone totals by interval UNION across cameras (double coverage must not
-    double-count), split against the baby's nap windows from storage
-    (the crib monitor already records them)
+    double-count), classified against the house rule: phone is allowed while
+    the baby sleeps, not allowed while the caregiver is with an awake baby.
+    "Asleep" fuses the crib monitor's nap windows with what the cameras saw;
+    "with the baby" fuses the cameras that share a room, so a caregiver alone
+    in one room while the baby is with nobody is never flagged on the strength
+    of a single camera's view. See classify_phone_use().
   - per-camera coverage vs the care window, with an explicit gap list
   - a short day narrative from one cheap Gemini text call over the hourly
     summaries (the report still writes with narrative=null if that fails)
@@ -31,7 +35,8 @@ from datetime import date, datetime, timedelta
 
 from nanny_common import (
     CHUNKS_DIR, CLIPS_DIR, LOWRES_DIR, REPORTS_DIR,
-    atomic_write_json, ensure_dirs, load_cameras, load_window, update_status,
+    atomic_write_json, ensure_dirs, load_camera_rooms, load_cameras, load_window,
+    update_status,
 )
 from nanny_analyze import DEFAULT_MODEL, analyze_pending
 
@@ -67,6 +72,40 @@ def total_minutes(intervals):
     return sum((e - s).total_seconds() / 60 for s, e in intervals)
 
 
+def intersect_intervals(a, b):
+    """Overlap of two unioned interval lists (a ∩ b)."""
+    out, i, j = [], 0, 0
+    while i < len(a) and j < len(b):
+        lo, hi = max(a[i][0], b[j][0]), min(a[i][1], b[j][1])
+        if hi > lo:
+            out.append((lo, hi))
+        if a[i][1] < b[j][1]:
+            i += 1
+        else:
+            j += 1
+    return out
+
+
+def subtract_intervals(a, b):
+    """a minus b (both unioned)."""
+    out = []
+    for s, e in a:
+        cur = s
+        for bs, be in b:
+            if be <= cur:
+                continue
+            if bs >= e:
+                break
+            if bs > cur:
+                out.append((cur, bs))
+            cur = max(cur, be)
+            if cur >= e:
+                break
+        if cur < e:
+            out.append((cur, e))
+    return out
+
+
 # ── Nap windows from the crib monitor ─────────────────────────────────────────
 
 def nap_windows_for(day):
@@ -90,6 +129,147 @@ def nap_windows_for(day):
     return union_intervals(windows)
 
 
+# ── Phone-use policy ──────────────────────────────────────────────────────────
+#
+# House rule: the phone is fine while the baby is asleep, and NOT fine while the
+# caregiver is with an awake baby (nursery or bedroom — every camera watches a
+# room the baby is cared for in). Everything else is "unclear", never a flag.
+#
+# Two deliberate biases, because these minutes are about a real person's conduct:
+#   * asleep evidence outranks with-baby evidence, so a disagreement between two
+#     cameras in the same room clears rather than accuses;
+#   * only medium/high-confidence phone detections can produce flagged minutes
+#     (they are also the ones that get an evidence clip). Low-confidence ones are
+#     reported separately as unconfirmed.
+
+WITH_BABY_CONTEXTS = {"while_holding_baby", "baby_nearby_awake", "baby_unattended"}
+ASLEEP_CONTEXTS    = {"baby_napping"}
+FLAGGABLE_CONFIDENCE = {"medium", "high"}
+
+
+def chunk_room(chunk, rooms):
+    """Live config wins (re-labelling a camera fixes past days too); the room
+    stored at analysis time is the fallback for cameras no longer configured."""
+    return rooms.get(chunk.get("camera")) or chunk.get("room") or chunk.get("camera")
+
+
+def baby_state_by_room(chunks, rooms):
+    """(awake, asleep) → {room: unioned intervals}, fused across the cameras that
+    share a room. Cross-room fusion is what makes 'the baby is elsewhere with the
+    other camera on them' distinguishable from 'the baby is alone'."""
+    awake, asleep = {}, {}
+    for c in chunks:
+        room = chunk_room(c, rooms)
+        for a in c.get("activities", []):
+            state = a.get("baby_state")
+            if state not in ("awake", "asleep"):
+                continue
+            try:
+                span = (datetime.fromisoformat(a["start_iso"]),
+                        datetime.fromisoformat(a["end_iso"]))
+            except (KeyError, ValueError):
+                continue
+            (awake if state == "awake" else asleep).setdefault(room, []).append(span)
+        # A phone event's own context is per-room evidence about the baby too.
+        for p in c.get("phone_use", []):
+            if p.get("context") not in ASLEEP_CONTEXTS:
+                continue
+            try:
+                span = (datetime.fromisoformat(p["start_iso"]),
+                        datetime.fromisoformat(p["end_iso"]))
+            except (KeyError, ValueError):
+                continue
+            asleep.setdefault(room, []).append(span)
+    return ({r: union_intervals(v) for r, v in awake.items()},
+            {r: union_intervals(v) for r, v in asleep.items()})
+
+
+def classify_phone_use(phone_events, chunks, rooms, naps):
+    """Split phone time into asleep-OK / unauthorized / unclear and annotate each
+    event in place with `room`, `authorization` and `unauthorized_minutes`.
+
+    Returns (stats_dict, unauthorized_intervals)."""
+    awake_by_room, asleep_by_room = baby_state_by_room(chunks, rooms)
+
+    # "Asleep" is a whole-house fact: wherever the baby sleeps, the phone is fine.
+    asleep_all = union_intervals(
+        list(naps) + [iv for ivs in asleep_by_room.values() for iv in ivs])
+
+    spans, with_baby = [], []
+    for ev in phone_events:
+        try:
+            span = (datetime.fromisoformat(ev["start_iso"]),
+                    datetime.fromisoformat(ev["end_iso"]))
+        except (KeyError, ValueError):
+            continue
+        room = rooms.get(ev.get("camera")) or ev.get("room") or ev.get("camera")
+        ev["room"] = room
+        spans.append(span)
+        if ev.get("confidence") not in FLAGGABLE_CONFIDENCE:
+            continue
+        if ev.get("context") in WITH_BABY_CONTEXTS:
+            with_baby.append(span)            # the model saw them together
+        else:
+            # Baby not in this frame (or unclear): only the room's own awake-baby
+            # evidence, from either camera in that room, puts them together.
+            with_baby.extend(intersect_intervals([span],
+                                                 awake_by_room.get(room, [])))
+
+    total = union_intervals(spans)
+    unauthorized = intersect_intervals(
+        subtract_intervals(union_intervals(with_baby), asleep_all), total)
+    asleep_overlap = intersect_intervals(total, asleep_all)
+
+    # Same shape as `unauthorized` but for the low-confidence detections, so a
+    # borderline "is that a phone?" never lands in the flagged number.
+    unconfirmed = []
+    for ev in phone_events:
+        if ev.get("confidence") in FLAGGABLE_CONFIDENCE or "room" not in ev:
+            continue
+        span = (datetime.fromisoformat(ev["start_iso"]),
+                datetime.fromisoformat(ev["end_iso"]))
+        if ev.get("context") in WITH_BABY_CONTEXTS:
+            unconfirmed.append(span)
+        else:
+            unconfirmed.extend(intersect_intervals([span],
+                                                   awake_by_room.get(ev["room"], [])))
+    unconfirmed = subtract_intervals(
+        subtract_intervals(union_intervals(unconfirmed), asleep_all), unauthorized)
+
+    for ev in phone_events:
+        if "room" not in ev:
+            continue
+        span = [(datetime.fromisoformat(ev["start_iso"]),
+                 datetime.fromisoformat(ev["end_iso"]))]
+        flagged = total_minutes(intersect_intervals(span, unauthorized))
+        ev["unauthorized_minutes"] = round(flagged, 1)
+        if flagged > 0:
+            ev["authorization"] = "unauthorized"
+        elif total_minutes(intersect_intervals(span, asleep_all)) > 0:
+            ev["authorization"] = "allowed_baby_asleep"
+        elif total_minutes(intersect_intervals(span, unconfirmed)) > 0:
+            ev["authorization"] = "unconfirmed"
+        else:
+            ev["authorization"] = "unclear"
+
+    total_min = total_minutes(total)
+    asleep_min = total_minutes(asleep_overlap)
+    unauth_min = total_minutes(unauthorized)
+    stats = {
+        "total_minutes": round(total_min, 1),
+        "during_naps_minutes": round(total_minutes(intersect_intervals(total, naps)), 1),
+        "while_baby_asleep_minutes": round(asleep_min, 1),
+        "while_baby_awake_minutes": round(total_min - asleep_min, 1),
+        "unauthorized_minutes": round(unauth_min, 1),
+        "unauthorized_unconfirmed_minutes": round(total_minutes(unconfirmed), 1),
+        "unclear_minutes": round(max(total_min - asleep_min - unauth_min, 0), 1),
+        "event_count": len(phone_events),
+        "unauthorized_event_count": sum(
+            1 for e in phone_events if e.get("authorization") == "unauthorized"),
+    }
+    return stats, unauthorized
+
+
 # ── Narrative ─────────────────────────────────────────────────────────────────
 
 def day_narrative(day, hour_summaries, phone_stats):
@@ -103,13 +283,19 @@ def day_narrative(day, hour_summaries, phone_stats):
         lines = "\n".join(f"- {s}" for s in hour_summaries)
         prompt = (
             f"These are hourly observation notes from home cameras on {day.isoformat()} "
-            f"while a nanny cared for an infant:\n{lines}\n\n"
-            f"Phone use totals: {phone_stats['total_minutes']:.0f} min overall, "
-            f"{phone_stats['while_baby_awake_minutes']:.0f} min while the baby was awake, "
-            f"{phone_stats['during_naps_minutes']:.0f} min during naps.\n\n"
+            f"while a nanny cared for an infant. Each note is tagged with the room and "
+            f"camera it came from; several cameras cover the same hours at once, so the "
+            f"same moment can appear more than once from different rooms:\n{lines}\n\n"
+            f"Phone use totals (already de-duplicated across cameras): "
+            f"{phone_stats['total_minutes']:.0f} min overall, "
+            f"{phone_stats['while_baby_asleep_minutes']:.0f} min while the baby was "
+            f"asleep (allowed under the house rule), and "
+            f"{phone_stats['unauthorized_minutes']:.0f} min while the caregiver was "
+            f"with an awake baby (not allowed under the house rule).\n\n"
             "Write a neutral, factual 4-6 sentence summary of the day for the parents: "
-            "overall rhythm, care activities, and phone usage in context. No bullet "
-            "points, no advice, no speculation beyond the notes."
+            "overall rhythm, care activities, and phone usage in context. Do not merge "
+            "the rooms into a single narrative if they disagree. No bullet points, no "
+            "advice, no speculation beyond the notes."
         )
         resp = client.models.generate_content(model=model, contents=prompt)
         return (resp.text or "").strip() or None
@@ -168,48 +354,45 @@ def coverage_for(chunks, cameras, window):
     return cov
 
 
-def build_report(day, chunks, cameras, window):
+def build_report(day, chunks, cameras, window, rooms=None):
+    rooms = rooms or {}
     timeline, phone_events, notable, summaries = [], [], [], []
     parse_errors = 0
     for c in chunks:
-        cam = c["camera"]
+        cam, room = c["camera"], chunk_room(c, rooms)
         if c.get("parse_error"):
             parse_errors += 1
         if c.get("summary"):
-            summaries.append(f"[{cam} {c['segment_start_iso'][11:16]}] {c['summary']}")
+            summaries.append(f"[{room} · {cam} {c['segment_start_iso'][11:16]}] "
+                             f"{c['summary']}")
         for a in c.get("activities", []):
-            timeline.append({**a, "camera": cam})
+            timeline.append({**a, "camera": cam, "room": room})
         for p in c.get("phone_use", []):
-            phone_events.append({**p, "camera": cam})
+            phone_events.append({**p, "camera": cam, "room": room})
         for n in c.get("notable_events", []):
-            notable.append({**n, "camera": cam})
+            notable.append({**n, "camera": cam, "room": room})
 
     timeline.sort(key=lambda x: x["start_iso"])
     phone_events.sort(key=lambda x: x["start_iso"])
     notable.sort(key=lambda x: x["time_iso"])
 
-    phone_intervals = union_intervals(
-        [(datetime.fromisoformat(p["start_iso"]), datetime.fromisoformat(p["end_iso"]))
-         for p in phone_events])
     naps = nap_windows_for(day)
-    during_naps = intersect_minutes(phone_intervals, naps)
-    total = total_minutes(phone_intervals)
-    phone_stats = {
-        "total_minutes": round(total, 1),
-        "during_naps_minutes": round(during_naps, 1),
-        "while_baby_awake_minutes": round(total - during_naps, 1),
-        "event_count": len(phone_events),
-    }
+    phone_stats, unauthorized = classify_phone_use(phone_events, chunks, rooms, naps)
 
     return {
         "date": day.isoformat(),
         "generated_at": datetime.now().isoformat(),
         "cameras": sorted(set(cameras) | {c["camera"] for c in chunks}),
+        "rooms": {cam: rooms.get(cam, cam)
+                  for cam in sorted(set(cameras) | {c["camera"] for c in chunks})},
         "coverage": coverage_for(chunks, cameras, window),
         "parse_errors": parse_errors,
         "narrative": day_narrative(day, summaries, phone_stats),
         "timeline": timeline,
-        "phone_use": {"events": phone_events, **phone_stats},
+        "phone_use": {"events": phone_events, **phone_stats,
+                      "unauthorized_intervals": [
+                          {"start_iso": s.isoformat(), "end_iso": e.isoformat()}
+                          for s, e in unauthorized]},
         "notable_events": notable,
         "naps": [{"start_iso": s.isoformat(), "end_iso": e.isoformat()}
                  for s, e in naps],
@@ -258,6 +441,7 @@ def main():
     ensure_dirs()
     try:
         cameras = load_cameras()
+        rooms = load_camera_rooms(cameras)
         window = load_window()
     except ValueError as e:
         sys.exit(f"ABORT: bad configuration: {e}")
@@ -276,17 +460,19 @@ def main():
         if not chunks:
             logging.info("%s: chunk dir exists but holds no readable chunks — skipping.", day)
             continue
-        report = build_report(day, chunks, cameras, window)
+        report = build_report(day, chunks, cameras, window, rooms)
         atomic_write_json(os.path.join(REPORTS_DIR, f"{day.isoformat()}.json"), report)
         logging.info("%s: report written — %d timeline spans, %.0f phone min "
-                     "(%.0f awake / %.0f naps), %d camera(s)",
+                     "(%.0f while asleep / %.0f flagged / %.0f unclear), %d camera(s)",
                      day, len(report["timeline"]),
                      report["phone_use"]["total_minutes"],
-                     report["phone_use"]["while_baby_awake_minutes"],
-                     report["phone_use"]["during_naps_minutes"],
+                     report["phone_use"]["while_baby_asleep_minutes"],
+                     report["phone_use"]["unauthorized_minutes"],
+                     report["phone_use"]["unclear_minutes"],
                      len(report["cameras"]))
         update_status("report", date=day.isoformat(),
-                      phone_minutes=report["phone_use"]["total_minutes"])
+                      phone_minutes=report["phone_use"]["total_minutes"],
+                      unauthorized_minutes=report["phone_use"]["unauthorized_minutes"])
 
     cleanup()
 

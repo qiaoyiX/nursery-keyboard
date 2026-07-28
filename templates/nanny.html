@@ -77,6 +77,8 @@
     .tile.warn { background: var(--danger-a); }
     .tile.warn .num { color: var(--danger); }
     .phone-event { border-left: 3px solid var(--phone); padding: 8px 12px; margin-bottom: 12px; background: var(--phone-a); border-radius: 0 10px 10px 0; }
+    .phone-event.flagged { border-left-color: var(--danger); background: var(--danger-a); }
+    .rule { font-size: .78rem; color: var(--text-muted); line-height: 1.45; margin-bottom: 10px; }
     .phone-event .when { font-weight: 600; font-size: .9rem; }
     .phone-event .desc { font-size: .85rem; color: var(--text-muted); margin: 3px 0; }
     .badge {
@@ -128,7 +130,16 @@ const CONTEXT_LABELS = {
   baby_nearby_awake:  ["baby awake nearby", "danger"],
   baby_unattended:    ["baby unattended", "danger"],
   baby_napping:       ["during nap", "nap"],
+  baby_not_in_frame:  ["baby not in frame", ""],
   unclear:            ["unclear", ""],
+};
+
+// Verdict against the house rule, decided server-side in classify_phone_use().
+const AUTH_LABELS = {
+  unauthorized:        ["⚠️ not allowed", "danger"],
+  allowed_baby_asleep: ["ok — baby asleep", "nap"],
+  unconfirmed:         ["unconfirmed", ""],
+  unclear:             ["unclear", ""],
 };
 
 function render(report) {
@@ -145,12 +156,14 @@ function render(report) {
   }
 
   const pu = report.phone_use;
+  const asleepMin = pu.while_baby_asleep_minutes ?? pu.during_naps_minutes ?? 0;
+  const unauthMin = pu.unauthorized_minutes ?? 0;
   const tiles = el("div", "tiles");
   const tileDefs = [
     [Math.round(pu.total_minutes) + "m", "phone total", false],
-    [Math.round(pu.while_baby_awake_minutes) + "m", "while baby awake", pu.while_baby_awake_minutes > 30],
-    [Math.round(pu.during_naps_minutes) + "m", "during naps", false],
-    [pu.event_count, "phone events", false],
+    [Math.round(unauthMin) + "m", "not allowed", unauthMin > 0],
+    [Math.round(asleepMin) + "m", "while baby asleep", false],
+    [Math.round(pu.unclear_minutes ?? 0) + "m", "unclear", false],
   ];
   for (const [num, lbl, warn] of tileDefs) {
     const t = el("div", "tile" + (warn ? " warn" : ""));
@@ -161,13 +174,23 @@ function render(report) {
 
   if (pu.events.length) {
     const c = el("div", "card");
-    c.append(el("h2", null, "Phone use"));
+    c.append(el("h2", null, "Phone use · " + pu.event_count + " events"));
+    const rule = el("div", "rule",
+      "House rule: phone is fine while the baby sleeps, not while the caregiver is " +
+      "with an awake baby.");
+    if (pu.unauthorized_unconfirmed_minutes > 0) {
+      rule.append(el("div", null, "+" + Math.round(pu.unauthorized_unconfirmed_minutes) +
+        "m more would be flagged if the low-confidence detections below are really a phone."));
+    }
+    c.append(rule);
     for (const ev of pu.events) {
-      const box = el("div", "phone-event");
+      const box = el("div", "phone-event" + (ev.authorization === "unauthorized" ? " flagged" : ""));
       const when = el("div", "when", fmtTime(ev.start_iso) + " – " + fmtTime(ev.end_iso));
+      const [albl, akind] = AUTH_LABELS[ev.authorization] || [];
+      if (albl) when.append(el("span", "badge " + akind, albl));
       const [lbl, kind] = CONTEXT_LABELS[ev.context] || [ev.context, ""];
       when.append(el("span", "badge " + kind, lbl));
-      when.append(el("span", "badge", ev.camera));
+      when.append(el("span", "badge", ev.room || ev.camera));
       if (ev.confidence === "low") when.append(el("span", "badge", "low confidence"));
       box.append(when);
       if (ev.description) box.append(el("div", "desc", ev.description));
@@ -205,7 +228,8 @@ function render(report) {
     row.append(
       el("span", "tl-time", fmtTime(span.start_iso) + "–" + fmtTime(span.end_iso)),
       el("span", null, span.description || span.category),
-      el("span", "tl-cam", span.camera));
+      el("span", "tl-cam", span.room && span.room !== span.camera
+        ? span.room + " · " + span.camera : span.camera));
     group.append(row);
   }
   while (napIdx < naps.length) {
@@ -236,7 +260,9 @@ function render(report) {
     const gapNote = cov.gaps.length && !cov.gaps[0].whole_day
       ? cov.gaps.map(g => fmtTime(g.start_iso) + "–" + fmtTime(g.end_iso)).join(", ")
       : (cov.gaps.length ? "no footage all day" : "none");
-    lines.push(cam + ": " + cov.analyzed_minutes + "/" + cov.window_minutes +
+    const room = (report.rooms || {})[cam];
+    lines.push(cam + (room && room !== cam ? " (" + room + ")" : "") + ": " +
+               cov.analyzed_minutes + "/" + cov.window_minutes +
                " min analyzed" + (cov.gaps.length ? " · gaps: " + gapNote : ""));
   }
   if (report.parse_errors) lines.push(report.parse_errors + " segment(s) had unreadable analysis output");
