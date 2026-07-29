@@ -185,6 +185,9 @@ User=$USER_NAME
 WorkingDirectory=$WORK_DIR
 EnvironmentFile=$NANNY_ENV_FILE
 ExecStart=$PYTHON_BIN nanny_analyze.py
+# The Pacer deliberately sleeps between Gemini calls to stay inside the
+# per-minute token quota, so a healthy run can take many minutes.
+TimeoutStartSec=infinity
 EOF
 
 sudo tee /etc/systemd/system/nursery-nanny-analyze.timer > /dev/null <<EOF
@@ -215,6 +218,9 @@ User=$USER_NAME
 WorkingDirectory=$WORK_DIR
 EnvironmentFile=$NANNY_ENV_FILE
 ExecStart=$PYTHON_BIN nanny_report.py
+# Runs an uncapped straggler sweep before merging: paced Gemini calls for every
+# outstanding segment. Killing it mid-sweep would also kill the day's merge.
+TimeoutStartSec=infinity
 EOF
 
 sudo tee /etc/systemd/system/nursery-nanny-report.timer > /dev/null <<EOF

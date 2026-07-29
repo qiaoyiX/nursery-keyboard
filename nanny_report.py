@@ -30,14 +30,13 @@ import json
 import logging
 import os
 import shutil
-import sys
 import time
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time as dtime, timedelta
 
 from nanny_common import (
     CHUNKS_DIR, CLIPS_DIR, LOWRES_DIR, REPORTS_DIR,
-    atomic_write_json, ensure_dirs, load_camera_rooms, load_cameras, load_window,
-    update_status,
+    atomic_write_json, ensure_dirs, load_camera_rooms, load_cameras, load_days,
+    load_window, update_status,
 )
 from nanny_analyze import DEFAULT_MODEL, analyze_pending
 
@@ -323,6 +322,8 @@ def day_narrative(day, hour_summaries, phone_stats):
 
 def load_chunks(day_dir):
     chunks = []
+    if not os.path.isdir(day_dir):
+        return chunks          # a care day on which nothing was ever analyzed
     for name in sorted(os.listdir(day_dir)):
         if not name.endswith(".json"):
             continue
@@ -369,7 +370,7 @@ def coverage_for(chunks, cameras, window):
     return cov
 
 
-def build_report(day, chunks, cameras, window, rooms=None):
+def build_report(day, chunks, cameras, window, rooms=None, config_errors=None):
     rooms = rooms or {}
     timeline, phone_events, notable, summaries = [], [], [], []
     failures = []
@@ -411,6 +412,10 @@ def build_report(day, chunks, cameras, window, rooms=None):
         "coverage": coverage_for(chunks, cameras, window),
         "parse_errors": parse_errors,
         "failures": sorted(failures, key=lambda f: f["segment_start_iso"]),
+        # Both are about the pipeline, not the day: an empty report and a
+        # misconfigured one must be legible as such on the page.
+        "no_analysis": not chunks,
+        "config_errors": list(config_errors or []),
         "narrative": day_narrative(day, summaries, phone_stats),
         "timeline": timeline,
         "phone_use": {"events": phone_events, **phone_stats,
@@ -461,32 +466,75 @@ def cleanup():
                 os.remove(os.path.join(root, f))
 
 
+def load_config():
+    """Every setting, each with its own fallback. Returns (cameras, rooms,
+    window, days, errors).
+
+    Nothing here aborts. A typo in one env line used to exit(1) before the
+    straggler sweep even ran, so the whole day silently never reached the
+    dashboard — a config error must degrade the report, never delete it. The
+    errors travel into the report so the page can show what is misconfigured
+    instead of leaving the reader to guess at a missing date.
+    """
+    errors = []
+
+    def attempt(name, fn, fallback):
+        try:
+            return fn()
+        except ValueError as e:
+            logging.error("%s is invalid (%s) — falling back to %r", name, e, fallback)
+            errors.append(f"{name}: {e}")
+            return fallback
+
+    cameras = attempt("NANNY_CAM_*", load_cameras, {})
+    # Chunks carry their own camera and room, so a broken map costs the "silent
+    # camera" list and cross-room fusion — not the report.
+    rooms   = attempt("NANNY_CAM_ROOMS", lambda: load_camera_rooms(cameras), {})
+    window  = attempt("NANNY_WINDOW", load_window, (dtime(10, 0), dtime(18, 0)))
+    days    = attempt("NANNY_DAYS", load_days, {0, 1, 2, 3, 4})
+    return cameras, rooms, window, days, errors
+
+
+def care_day_awaiting_report(today, days, window):
+    """Is today a care day whose window has closed and that has no report yet?
+
+    Without this a day with zero chunks — analysis down all day, cameras
+    unplugged — never appears in unreported_dates() and vanishes from the date
+    picker entirely. A day that produced nothing must still say so.
+    """
+    if today.weekday() not in days:
+        return False
+    if datetime.now().time() < window[1]:
+        return False
+    return not os.path.exists(os.path.join(REPORTS_DIR, f"{today.isoformat()}.json"))
+
+
 def main():
     ensure_dirs()
-    try:
-        cameras = load_cameras()
-        rooms = load_camera_rooms(cameras)
-        window = load_window()
-    except ValueError as e:
-        sys.exit(f"ABORT: bad configuration: {e}")
+    cameras, rooms, window, days, config_errors = load_config()
 
     # Straggler sweep: the last analyzer run may not have finished (or run).
     # Uncapped on purpose — the analyzer's per-run cap exists to spread a
     # backlog over the day, but by report time everything must be in.
     analyze_pending(limit=None)
 
-    days = unreported_dates(date.today())
-    if not days:
+    today = date.today()
+    targets = list(unreported_dates(today))
+    if care_day_awaiting_report(today, days, window) and today not in targets:
+        # No chunks at all today. Report it as an empty day rather than letting
+        # the date disappear from the dashboard.
+        targets.append(today)
+    if not targets:
         logging.info("No unreported days — nothing to merge.")
         cleanup()
         return
 
-    for day in days:
+    for day in sorted(targets):
         chunks = load_chunks(os.path.join(CHUNKS_DIR, day.isoformat()))
         if not chunks:
-            logging.info("%s: chunk dir exists but holds no readable chunks — skipping.", day)
-            continue
-        report = build_report(day, chunks, cameras, window, rooms)
+            logging.warning("%s: nothing was analyzed for this day — writing an empty "
+                            "report so the day is visible with its coverage gaps.", day)
+        report = build_report(day, chunks, cameras, window, rooms, config_errors)
         atomic_write_json(os.path.join(REPORTS_DIR, f"{day.isoformat()}.json"), report)
         logging.info("%s: report written — %d timeline spans, %.0f phone min "
                      "(%.0f while asleep / %.0f flagged / %.0f unclear), %d camera(s)",
@@ -498,7 +546,9 @@ def main():
                      len(report["cameras"]))
         update_status("report", date=day.isoformat(),
                       phone_minutes=report["phone_use"]["total_minutes"],
-                      unauthorized_minutes=report["phone_use"]["unauthorized_minutes"])
+                      unauthorized_minutes=report["phone_use"]["unauthorized_minutes"],
+                      no_analysis=report["no_analysis"],
+                      config_errors=config_errors)
 
     cleanup()
 

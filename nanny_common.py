@@ -54,6 +54,11 @@ STATUS_FILE = os.path.join(BASE_DIR, "nanny_status.json")
 LOCK_FILE   = os.path.join(NANNY_DIR, ".analyze.lock")
 
 SEGMENT_NAME_RE = re.compile(r"^(\d{8}_\d{6})\.mp4$")
+# Only NANNY_CAM_<number> is a camera. A prefix match would also swallow
+# NANNY_CAM_ROOMS, whose value is not a name=url pair — which made every
+# service reject the whole config the moment a rooms line was added
+# (2026-07-28: recorder idled, analyzer lost its rooms, report exited 1).
+CAMERA_VAR_RE = re.compile(r"^NANNY_CAM_(\d+)$")
 DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
 # A raw segment counts as closed (safe to analyze) once a newer segment exists
@@ -73,9 +78,11 @@ def ensure_dirs():
 
 
 def load_cameras(env=os.environ):
-    """NANNY_CAM_* vars ('name=rtsp://...') → {name: url}, sorted by var name."""
+    """NANNY_CAM_<n> vars ('name=rtsp://...') → {name: url}, in numeric order."""
     cams = {}
-    for var in sorted(k for k in env if k.startswith("NANNY_CAM_")):
+    numbered = sorted(((int(m.group(1)), m.group(0)) for m in
+                       (CAMERA_VAR_RE.match(k) for k in env) if m))
+    for _, var in numbered:
         value = env[var].strip()
         if not value:
             continue

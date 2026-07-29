@@ -79,6 +79,8 @@
     .phone-event { border-left: 3px solid var(--phone); padding: 8px 12px; margin-bottom: 12px; background: var(--phone-a); border-radius: 0 10px 10px 0; }
     .phone-event.flagged { border-left-color: var(--danger); background: var(--danger-a); }
     .rule { font-size: .78rem; color: var(--text-muted); line-height: 1.45; margin-bottom: 10px; }
+    .card.alert { background: var(--danger-a); }
+    .card.alert h2 { color: var(--danger); }
     .phone-event .when { font-weight: 600; font-size: .9rem; }
     .phone-event .desc { font-size: .85rem; color: var(--text-muted); margin: 3px 0; }
     .badge {
@@ -142,11 +144,29 @@ const AUTH_LABELS = {
   unclear:             ["unclear", ""],
 };
 
-function render(report) {
+function render(report, status) {
   contentEl.textContent = "";
   if (!report) {
     contentEl.append(el("div", "empty", "No report for this date yet. Reports are generated after 6:45 pm on care days."));
     return;
+  }
+
+  for (const err of report.config_errors || []) {
+    const c = el("div", "card alert");
+    c.append(el("h2", null, "Configuration problem"),
+             el("p", "narrative", err),
+             el("p", "rule", "Fix this in /etc/nursery-tracker/nanny.env. The report below " +
+                "was still produced, but with this setting ignored."));
+    contentEl.append(c);
+  }
+
+  if (report.no_analysis) {
+    const c = el("div", "card alert");
+    c.append(el("h2", null, "No footage analyzed"),
+             el("p", "narrative",
+                "Nothing was analyzed for this day — no camera footage made it through the " +
+                "pipeline. Check the analyzer status at the bottom of this page."));
+    contentEl.append(c);
   }
 
   if (report.narrative) {
@@ -272,6 +292,15 @@ function render(report) {
   // parse_errors also counts the failures above; only report what they don't explain.
   const unexplained = (report.parse_errors || 0) - (report.failures || []).length;
   if (unexplained > 0) lines.push(unexplained + " segment(s) had unreadable analysis output");
+
+  const an = (status || {}).analyze;
+  if (an) {
+    lines.push("analyzer last ran " + new Date(an.at).toLocaleString() + " — " +
+               (an.done || 0) + " segment(s) analyzed, " + (an.failed || 0) + " failed" +
+               (an.paced_seconds ? ", " + Math.round(an.paced_seconds / 60) + " min paced for quota" : ""));
+  } else {
+    lines.push("analyzer has not recorded a run yet");
+  }
   lines.push("generated " + new Date(report.generated_at).toLocaleString());
   f.textContent = lines.join("\n");
   f.style.whiteSpace = "pre-line";
@@ -296,7 +325,7 @@ async function load(dateStr) {
     contentEl.append(el("div", "empty", "No reports yet. The first report appears after the first recorded care day."));
     return;
   }
-  render(data.report);
+  render(data.report, data.status);
 }
 
 dateSel.addEventListener("change", () => load(dateSel.value));

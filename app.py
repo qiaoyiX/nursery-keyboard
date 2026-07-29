@@ -515,7 +515,7 @@ def nanny_page():
 @app.route("/nanny/data")
 def nanny_data():
     """Daily nanny report JSON. ?date=YYYY-MM-DD, defaults to the newest report."""
-    from nanny_common import REPORTS_DIR
+    from nanny_common import REPORTS_DIR, STATUS_FILE
     dates = []
     if os.path.isdir(REPORTS_DIR):
         for name in os.listdir(REPORTS_DIR):
@@ -542,7 +542,16 @@ def nanny_data():
                 report = json.load(f)
         except (OSError, ValueError):
             return jsonify({"error": "report unreadable"}), 500
-    return jsonify({"dates": dates, "report": report})
+
+    # Last-run bookkeeping from the analyzer and the report merge. Without it a
+    # missing day is a mystery on the page and only explicable from journalctl.
+    status = {}
+    try:
+        with open(STATUS_FILE) as f:
+            status = json.load(f)
+    except (OSError, ValueError):
+        pass
+    return jsonify({"dates": dates, "report": report, "status": status})
 
 
 @app.route("/nanny/clips/<day>/<path:filename>")

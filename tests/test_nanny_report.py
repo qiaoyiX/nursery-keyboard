@@ -66,6 +66,17 @@ def test_env_parsing():
     check("days parsed", load_days({"NANNY_DAYS": "mon,Wed"}) == {0, 2})
     check("days default is weekdays", load_days({}) == {0, 1, 2, 3, 4})
 
+    # Only NANNY_CAM_<number> is a camera. Treating every NANNY_CAM_* var as one
+    # made a NANNY_CAM_ROOMS line poison the whole config for all three services.
+    cams = load_cameras({"NANNY_CAM_1": "crib=rtsp://1/s",
+                         "NANNY_CAM_2": "bed=rtsp://2/s",
+                         "NANNY_CAM_ROOMS": "crib:nursery,bed:bedroom",
+                         "NANNY_CAM_EXTRA_NOTE": "ignore me"})
+    check("NANNY_CAM_ROOMS is not a camera", set(cams) == {"crib", "bed"}, str(cams))
+    check("cameras ordered numerically, not lexically",
+          list(load_cameras({"NANNY_CAM_10": "j=rtsp://10/s",
+                             "NANNY_CAM_2": "b=rtsp://2/s"})) == ["b", "j"])
+
     cams3 = {"crib": "u", "play": "u", "bed": "u"}
     rooms = load_camera_rooms(cams3, {"NANNY_CAM_ROOMS": "crib:nursery,play:nursery,bed:bedroom"})
     check("two cameras share a room",
@@ -501,6 +512,119 @@ def test_report_failures():
           rep["coverage"]["kitchen"]["analyzed_minutes"] == 60)
 
 
+def test_config_errors_never_delete_the_report():
+    print("bad config degrades, never aborts")
+    import nanny_report, storage
+
+    tmp = tempfile.mkdtemp()
+    orig = (nanny_report.CHUNKS_DIR, nanny_report.REPORTS_DIR,
+            nanny_common.CHUNKS_DIR, nanny_common.REPORTS_DIR,
+            nanny_report.analyze_pending, storage.get_sleep_sessions_range)
+    nanny_report.CHUNKS_DIR = nanny_common.CHUNKS_DIR = os.path.join(tmp, "chunks")
+    nanny_report.REPORTS_DIR = nanny_common.REPORTS_DIR = os.path.join(tmp, "reports")
+    nanny_report.analyze_pending = lambda limit=-1: (0, 0)
+    storage.get_sleep_sessions_range = lambda days=7: []
+    saved_env = {k: os.environ.get(k) for k in
+                 ("NANNY_CAM_1", "NANNY_CAM_ROOMS", "NANNY_WINDOW", "NANNY_DAYS",
+                  "GEMINI_API_KEY")}
+    try:
+        os.makedirs(nanny_report.CHUNKS_DIR)
+        os.makedirs(nanny_report.REPORTS_DIR)
+        day = date(2026, 7, 27)
+        os.makedirs(os.path.join(nanny_report.CHUNKS_DIR, day.isoformat()))
+        with open(os.path.join(nanny_report.CHUNKS_DIR, day.isoformat(),
+                               "kitchen_100000.json"), "w") as f:
+            json.dump({"camera": "kitchen", "segment_start_iso": "2026-07-27T10:00:00",
+                       "segment_minutes": 60, "activities": [], "phone_use": [],
+                       "notable_events": [], "summary": "ok"}, f)
+
+        os.environ.pop("GEMINI_API_KEY", None)
+        os.environ["NANNY_CAM_1"] = "kitchen=rtsp://x/y"
+        os.environ["NANNY_CAM_ROOMS"] = "nurserycam:nursery"   # camera does not exist
+        os.environ["NANNY_WINDOW"] = "10:00-18:00"
+        os.environ["NANNY_DAYS"] = "Mon,Tue,Wed,Thu,Fri"
+
+        cams, rooms, window, days, errors = nanny_report.load_config()
+        check("NANNY_CAM_ROOMS is not mistaken for a camera", set(cams) == {"kitchen"},
+              str(cams))
+        check("bad rooms recorded, not raised",
+              len(errors) == 1 and errors[0].startswith("NANNY_CAM_ROOMS"), str(errors))
+        check("rooms degrade to empty", rooms == {})
+
+        raised = None
+        try:
+            nanny_report.main()
+        except SystemExit as e:
+            raised = e
+        check("main() does not abort", raised is None, f"SystemExit({raised})")
+        written = os.path.join(nanny_report.REPORTS_DIR, f"{day.isoformat()}.json")
+        check("the day's report is still written", os.path.exists(written))
+        if os.path.exists(written):
+            with open(written) as f:
+                rep = json.load(f)
+            check("report carries the config error",
+                  rep["config_errors"] and "NANNY_CAM_ROOMS" in rep["config_errors"][0])
+            check("chunk's own camera still used", rep["cameras"] == ["kitchen"])
+    finally:
+        (nanny_report.CHUNKS_DIR, nanny_report.REPORTS_DIR,
+         nanny_common.CHUNKS_DIR, nanny_common.REPORTS_DIR,
+         nanny_report.analyze_pending, storage.get_sleep_sessions_range) = orig
+        for k, v in saved_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        shutil.rmtree(tmp)
+
+
+def test_empty_care_day_still_reported():
+    print("a care day with nothing analyzed still appears")
+    import nanny_report
+    today = date.today()
+    weekday_only = {today.weekday()}
+    other_day = {(today.weekday() + 1) % 7}
+    past = (dtime(0, 1), dtime(0, 2))       # window closed hours ago
+    future = (dtime(0, 1), dtime(23, 59))   # still inside the window
+
+    tmp = tempfile.mkdtemp()
+    orig = (nanny_report.REPORTS_DIR, nanny_common.REPORTS_DIR)
+    nanny_report.REPORTS_DIR = nanny_common.REPORTS_DIR = os.path.join(tmp, "reports")
+    try:
+        os.makedirs(nanny_report.REPORTS_DIR)
+        check("care day, window closed → report it",
+              nanny_report.care_day_awaiting_report(today, weekday_only, past))
+        check("not a care day → leave it alone",
+              not nanny_report.care_day_awaiting_report(today, other_day, past))
+        check("still inside the window → wait for tonight",
+              not nanny_report.care_day_awaiting_report(today, weekday_only, future))
+        with open(os.path.join(nanny_report.REPORTS_DIR, f"{today.isoformat()}.json"),
+                  "w") as f:
+            json.dump({}, f)
+        check("already reported → not again",
+              not nanny_report.care_day_awaiting_report(today, weekday_only, past))
+    finally:
+        nanny_report.REPORTS_DIR, nanny_common.REPORTS_DIR = orig
+        shutil.rmtree(tmp)
+
+    # An empty chunk list must still produce a renderable report.
+    import storage
+    orig_sessions = storage.get_sleep_sessions_range
+    key = os.environ.pop("GEMINI_API_KEY", None)
+    storage.get_sleep_sessions_range = lambda days=7: []
+    try:
+        rep = nanny_report.build_report(date(2026, 7, 28), [], ["kitchen", "bedcam"],
+                                        (dtime(10, 0), dtime(18, 0)))
+    finally:
+        storage.get_sleep_sessions_range = orig_sessions
+        if key is not None:
+            os.environ["GEMINI_API_KEY"] = key
+    check("empty day is flagged", rep["no_analysis"] is True)
+    check("every camera shows a whole-day gap",
+          all(c["gaps"] == [{"whole_day": True}] for c in rep["coverage"].values()))
+    check("zeroed phone stats", rep["phone_use"]["total_minutes"] == 0
+          and rep["phone_use"]["unauthorized_minutes"] == 0)
+
+
 def test_coverage():
     print("coverage / gaps")
     from nanny_report import coverage_for
@@ -524,7 +648,8 @@ def main():
                test_give_up_policy, test_disk_pressure,
                test_chunk_tolerance, test_interval_math, test_phone_policy,
                test_nap_windows_clipping, test_unreported_dates,
-               test_report_failures, test_coverage):
+               test_report_failures, test_config_errors_never_delete_the_report,
+               test_empty_care_day_still_reported, test_coverage):
         fn()
     print()
     if FAILURES:
