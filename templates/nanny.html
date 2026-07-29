@@ -265,7 +265,13 @@ function render(report) {
                cov.analyzed_minutes + "/" + cov.window_minutes +
                " min analyzed" + (cov.gaps.length ? " · gaps: " + gapNote : ""));
   }
-  if (report.parse_errors) lines.push(report.parse_errors + " segment(s) had unreadable analysis output");
+  for (const fl of report.failures || []) {
+    lines.push("⚠️ " + (fl.room || fl.camera) + " " + fmtTime(fl.segment_start_iso) +
+               " not analyzed — " + fl.error + (fl.detail ? " (" + fl.detail + ")" : ""));
+  }
+  // parse_errors also counts the failures above; only report what they don't explain.
+  const unexplained = (report.parse_errors || 0) - (report.failures || []).length;
+  if (unexplained > 0) lines.push(unexplained + " segment(s) had unreadable analysis output");
   lines.push("generated " + new Date(report.generated_at).toLocaleString());
   f.textContent = lines.join("\n");
   f.style.whiteSpace = "pre-line";

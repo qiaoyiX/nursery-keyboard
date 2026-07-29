@@ -12,6 +12,7 @@ import os
 import shutil
 import sys
 import tempfile
+from collections import namedtuple
 from datetime import date, datetime, time as dtime, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -138,6 +139,146 @@ def test_pending_segments():
     finally:
         nanny_common.RAW_DIR, nanny_common.CHUNKS_DIR = orig_raw, orig_chunks
         shutil.rmtree(tmp)
+
+
+# ── Unanalyzable raw / give-up policy ─────────────────────────────────────────
+
+class RawFixture:
+    """Temp raw+chunks dirs wired into both modules (nanny_analyze imports the
+    paths by value, so patching nanny_common alone is not enough)."""
+
+    def __enter__(self):
+        import nanny_analyze
+        self.mod = nanny_analyze
+        self.tmp = tempfile.mkdtemp()
+        self.orig = (nanny_common.RAW_DIR, nanny_common.CHUNKS_DIR, nanny_analyze.RAW_DIR)
+        nanny_common.RAW_DIR = nanny_analyze.RAW_DIR = os.path.join(self.tmp, "raw")
+        nanny_common.CHUNKS_DIR = os.path.join(self.tmp, "chunks")
+        return self
+
+    def __exit__(self, *exc):
+        (nanny_common.RAW_DIR, nanny_common.CHUNKS_DIR,
+         self.mod.RAW_DIR) = self.orig
+        shutil.rmtree(self.tmp)
+
+    def raw(self, camera, name, age_seconds=3600, size=0):
+        cam_dir = os.path.join(nanny_common.RAW_DIR, camera)
+        os.makedirs(cam_dir, exist_ok=True)
+        path = os.path.join(cam_dir, name)
+        with open(path, "wb") as f:
+            f.write(b"\0" * size)
+        stamp = datetime.now().timestamp() - age_seconds
+        os.utime(path, (stamp, stamp))
+        return path
+
+    def chunk(self, camera, seg_start):
+        path = nanny_common.chunk_path(camera, seg_start)
+        if not os.path.exists(path):
+            return None
+        with open(path) as f:
+            return json.load(f)
+
+
+def test_preflight():
+    print("unanalyzable raw is written off, not retried")
+    import nanny_analyze
+    seg_start = datetime(2026, 7, 27, 18, 0)   # the window-end sliver
+
+    for probe, expect in ((None, "unreadable_raw"), (1.5, "too_short")):
+        with RawFixture() as fx:
+            raw = fx.raw("kitchen", "20260727_180000.mp4")
+            orig_probe = nanny_analyze.probe_seconds
+            nanny_analyze.probe_seconds = lambda p: probe
+            try:
+                # client=None and pacer=None: preflight must return before either
+                # is touched, so a Gemini call would raise here.
+                nanny_analyze.process_segment(None, "m", "kitchen", raw, seg_start,
+                                              {"kitchen": "kitchen"}, None)
+            finally:
+                nanny_analyze.probe_seconds = orig_probe
+            chunk = fx.chunk("kitchen", seg_start)
+            check(f"{expect}: raw deleted", not os.path.exists(raw))
+            check(f"{expect}: chunk records the reason",
+                  chunk and chunk["error"] == expect, str(chunk))
+            check(f"{expect}: counts as a parse error", chunk["parse_error"] is True)
+            check(f"{expect}: zero analyzed minutes", chunk["segment_minutes"] == 0)
+
+
+def test_missing_toolchain_deletes_nothing():
+    print("missing ffmpeg never costs footage")
+    import nanny_analyze
+    orig_which, orig_env = nanny_analyze.shutil.which, os.environ.get("GEMINI_API_KEY")
+    nanny_analyze.shutil.which = lambda tool: None
+    os.environ["GEMINI_API_KEY"] = "test-key"
+    with RawFixture() as fx:
+        raw = fx.raw("kitchen", "20260727_120000.mp4")
+        try:
+            done, failed = nanny_analyze.analyze_pending()
+        finally:
+            nanny_analyze.shutil.which = orig_which
+            if orig_env is None:
+                os.environ.pop("GEMINI_API_KEY", None)
+            else:
+                os.environ["GEMINI_API_KEY"] = orig_env
+        check("run bails out", (done, failed) == (0, 0))
+        check("raw untouched — a missing apt package is not bad footage",
+              os.path.exists(raw))
+
+
+def test_give_up_policy():
+    print("give up on attempts, not on age")
+    import nanny_analyze
+    seg_start = datetime(2026, 7, 27, 12, 0)
+    budget = nanny_analyze.max_segment_attempts()
+
+    with RawFixture() as fx:
+        raw = fx.raw("kitchen", "20260727_120000.mp4")
+        for i in range(budget - 1):
+            nanny_analyze.record_failure(raw, f"boom {i}")
+        nanny_analyze.give_up_on_failed_raw()
+        check("survives below the attempt budget", os.path.exists(raw))
+
+        rec = nanny_analyze.record_failure(raw, "CalledProcessError(1)")
+        check("ledger counts attempts", rec["attempts"] == budget)
+        nanny_analyze.give_up_on_failed_raw({"kitchen": "kitchen"})
+        chunk = fx.chunk("kitchen", seg_start)
+        check("deleted once the budget is spent", not os.path.exists(raw))
+        check("ledger deleted with it",
+              not os.path.exists(raw + ".fail.json"))
+        check("give-up records the last error",
+              chunk and chunk["error"] == "gave_up"
+              and "CalledProcessError" in chunk["error_detail"], str(chunk))
+
+    # The Persistent-catch-up case: days-old footage nobody has tried yet.
+    with RawFixture() as fx:
+        old = datetime.now() - timedelta(hours=nanny_analyze.RAW_MAX_AGE_HOURS + 24)
+        name = old.strftime("%Y%m%d_%H%M%S") + ".mp4"
+        raw = fx.raw("kitchen", name)
+        nanny_analyze.give_up_on_failed_raw()
+        check("untried backlog survives its age", os.path.exists(raw))
+        nanny_analyze.record_failure(raw, "genuinely failed once")
+        nanny_analyze.give_up_on_failed_raw()
+        check("old AND tried is dropped", not os.path.exists(raw))
+
+
+def test_disk_pressure():
+    print("disk-pressure backstop")
+    import nanny_analyze
+    with RawFixture() as fx:
+        older = fx.raw("kitchen", "20260727_100000.mp4", age_seconds=7200, size=2000)
+        newer = fx.raw("kitchen", "20260727_110000.mp4", age_seconds=3600, size=2000)
+        fake_usage = namedtuple("usage", "total used free")(
+            0, 0, nanny_common.MIN_FREE_BYTES - 1000)
+        orig = nanny_analyze.shutil.disk_usage
+        nanny_analyze.shutil.disk_usage = lambda p: fake_usage
+        try:
+            nanny_analyze.purge_raw_under_disk_pressure()
+        finally:
+            nanny_analyze.shutil.disk_usage = orig
+        check("oldest untried raw dropped to keep recording", not os.path.exists(older))
+        check("stops as soon as it is back above the floor", os.path.exists(newer))
+        check("and says why", (fx.chunk("kitchen", datetime(2026, 7, 27, 10, 0)) or {})
+              .get("error") == "disk_pressure")
 
 
 # ── Chunk validation (malformed Gemini output) ────────────────────────────────
@@ -326,6 +467,40 @@ def test_unreported_dates():
 
 # ── Coverage gaps ─────────────────────────────────────────────────────────────
 
+def test_report_failures():
+    print("report names the hours it lost")
+    import nanny_report, storage
+    chunks = [
+        {"camera": "kitchen", "room": "kitchen",
+         "segment_start_iso": "2026-07-27T18:00:00", "segment_minutes": 0,
+         "parse_error": True, "error": "unreadable_raw",
+         "error_detail": "ffprobe could not read a duration",
+         "activities": [], "phone_use": [], "notable_events": [], "summary": ""},
+        {"camera": "kitchen", "room": "kitchen",
+         "segment_start_iso": "2026-07-27T10:00:00", "segment_minutes": 60,
+         "activities": [], "phone_use": [], "notable_events": [], "summary": "ok"},
+    ]
+    orig_sessions = storage.get_sleep_sessions_range
+    key = os.environ.pop("GEMINI_API_KEY", None)
+    storage.get_sleep_sessions_range = lambda days=7: []
+    try:
+        rep = nanny_report.build_report(date(2026, 7, 27), chunks, ["kitchen"],
+                                        (dtime(10, 0), dtime(18, 0)))
+    finally:
+        storage.get_sleep_sessions_range = orig_sessions
+        if key is not None:
+            os.environ["GEMINI_API_KEY"] = key
+    check("failure surfaced with its reason",
+          rep["failures"] == [{"camera": "kitchen", "room": "kitchen",
+                               "segment_start_iso": "2026-07-27T18:00:00",
+                               "error": "unreadable_raw",
+                               "detail": "ffprobe could not read a duration"}],
+          str(rep["failures"]))
+    check("still counted as a parse error", rep["parse_errors"] == 1)
+    check("zero-length segment does not inflate coverage",
+          rep["coverage"]["kitchen"]["analyzed_minutes"] == 60)
+
+
 def test_coverage():
     print("coverage / gaps")
     from nanny_report import coverage_for
@@ -345,8 +520,11 @@ def test_coverage():
 
 def main():
     for fn in (test_env_parsing, test_segments_and_offsets, test_pending_segments,
+               test_preflight, test_missing_toolchain_deletes_nothing,
+               test_give_up_policy, test_disk_pressure,
                test_chunk_tolerance, test_interval_math, test_phone_policy,
-               test_nap_windows_clipping, test_unreported_dates, test_coverage):
+               test_nap_windows_clipping, test_unreported_dates,
+               test_report_failures, test_coverage):
         fn()
     print()
     if FAILURES:

@@ -42,8 +42,15 @@ the quota:
 Failure policy: per-segment Gemini failures leave the raw file in place for
 the next retry and the run still exits 0 (a partially-failed hour must not
 mark the unit failed and mask real config errors — it is logged loudly
-instead). Raw older than RAW_MAX_AGE_HOURS is deleted regardless (SD-card
-safety) and shows up as a coverage gap in the daily report. A response that
+instead). Footage is written off on *evidence*, not on the clock: input ffprobe
+cannot read is rejected before the first upload (preflight), every real failure
+is counted in a ledger beside the raw file, and give_up_on_failed_raw deletes
+only what has spent its attempt budget (or is past RAW_MAX_AGE_HOURS having
+been tried at least once) — always leaving a chunk that records the reason, so
+the report can tell "camera was off" from "we had it and lost it". Age alone
+never deletes: after days of downtime every pending segment is old, and none of
+it has failed at anything. A 429 is charged to the quota, not to the segment.
+Only a full disk overrides this (purge_raw_under_disk_pressure). A response that
 isn't valid JSON, or that is still truncated after every retry, writes the
 piece off with "parse_error": true so the segment is never retried forever —
 deterministic failures must not be paid for once an hour, transient ones
@@ -65,9 +72,9 @@ import time
 from datetime import datetime, timedelta
 
 from nanny_common import (
-    CLIPS_DIR, LOWRES_DIR, AnalyzeLock, atomic_write_json, chunk_path,
-    ensure_dirs, load_camera_rooms, load_cameras, offset_to_wallclock,
-    pending_segments, update_status,
+    CLIPS_DIR, LOWRES_DIR, MIN_FREE_BYTES, RAW_DIR, AnalyzeLock,
+    atomic_write_json, chunk_path, ensure_dirs, load_camera_rooms, load_cameras,
+    offset_to_wallclock, pending_segments, update_status,
 )
 
 logging.basicConfig(level=logging.INFO,
@@ -75,10 +82,15 @@ logging.basicConfig(level=logging.INFO,
 
 DEFAULT_MODEL     = "gemini-2.5-flash-lite"
 UPLOAD_TIMEOUT_S  = 600
-RAW_MAX_AGE_HOURS = 24
+RAW_MAX_AGE_HOURS = 48      # backstop only, and only for footage already tried
 CLIP_LEAD_S       = 15      # clip starts this long before the phone-use event
 CLIP_TAIL_S       = 15      # and runs this long past its end
 CLIP_MAX_S        = 300     # cap a single evidence clip at 5 minutes
+
+# Raw shorter than this is not footage, it is an artefact of how the recording
+# was cut (see nanny_record.WINDOW_END_GUARD_S). Uploading it costs a request
+# and returns nothing; retrying it costs one every half hour until it ages out.
+MIN_SEGMENT_SECONDS = 60
 
 # Files API polling: the upload/processing poll is by far the chattiest thing
 # in the pipeline (one segment = 1 generate call but a poll every few seconds).
@@ -125,6 +137,12 @@ def tpm_budget():
 
 def max_segments_per_run():
     return _env_int("NANNY_MAX_SEGMENTS_PER_RUN", 4)
+
+
+def max_segment_attempts():
+    """Genuine analysis attempts before a segment is written off. Attempts, not
+    hours: an hour of footage that has never been tried has not failed."""
+    return _env_int("NANNY_MAX_SEGMENT_ATTEMPTS", 6, minimum=1)
 
 PHONE_CONTEXTS = ["while_holding_baby", "baby_nearby_awake", "baby_unattended",
                   "baby_napping", "baby_not_in_frame", "unclear"]
@@ -713,9 +731,123 @@ def drop_partial(camera, seg_start):
         pass
 
 
+# ── Failure ledger ────────────────────────────────────────────────────────────
+#
+# Lives next to the raw file (SEGMENT_NAME_RE requires .mp4, so pending_segments
+# never mistakes it for footage) and dies with it. It exists so that giving up
+# is a decision about evidence — this segment was tried N times and here is what
+# went wrong — rather than about the clock. Age alone cannot tell "we tried and
+# it is hopeless" apart from "the Pi was off and nobody has looked at it yet".
+
+def _failure_path(raw_path):
+    return raw_path + ".fail.json"
+
+
+def read_failure(raw_path):
+    try:
+        with open(_failure_path(raw_path)) as f:
+            rec = json.load(f)
+        return rec if isinstance(rec, dict) else {}
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def record_failure(raw_path, error):
+    rec = read_failure(raw_path)
+    now = datetime.now().isoformat(timespec="seconds")
+    rec["attempts"] = int(rec.get("attempts") or 0) + 1
+    rec.setdefault("first_iso", now)
+    rec["last_iso"] = now
+    rec["last_error"] = str(error)[:300]
+    try:
+        atomic_write_json(_failure_path(raw_path), rec)
+    except OSError as e:
+        logging.warning("Could not record the failure for %s: %s", raw_path, e)
+    return rec
+
+
+def clear_failure(raw_path):
+    try:
+        os.remove(_failure_path(raw_path))
+    except OSError:
+        pass
+
+
+def write_unanalyzable_chunk(camera, room, seg_start, reason, detail=""):
+    """Record a segment we will never analyze, so the day's report can say why.
+
+    Same shape as a parse_error chunk (nanny_report already counts those), with
+    segment_minutes 0 so coverage_for's zero-length interval is dropped by
+    union_intervals and the analyzed-minutes total stays honest.
+    """
+    atomic_write_json(chunk_path(camera, seg_start), {
+        "camera": camera,
+        "room": room or camera,
+        "segment_start_iso": seg_start.isoformat(),
+        "segment_minutes": 0,
+        "model": None,
+        "usage": {},
+        "parse_error": True,
+        "error": reason,
+        "error_detail": str(detail)[:300],
+        "activities": [],
+        "phone_use": [],
+        "notable_events": [],
+        "summary": "",
+    })
+
+
+def discard_raw(camera, raw_path, seg_start):
+    """Drop a raw segment and every piece of bookkeeping that belongs to it."""
+    try:
+        os.remove(raw_path)
+    except OSError as e:
+        logging.warning("Could not delete %s: %s", raw_path, e)
+    clear_failure(raw_path)
+    drop_partial(camera, seg_start)
+
+
+def toolchain_ready():
+    """ffmpeg/ffprobe present? Without them probe_seconds returns None for every
+    file, which the pre-flight would read as 'unreadable footage' and delete a
+    whole day of good recordings over a missing apt package. Nothing in this
+    module can work without them, so the run bails instead."""
+    missing = [t for t in ("ffmpeg", "ffprobe") if shutil.which(t) is None]
+    if missing:
+        logging.error("%s not installed — cannot analyze anything; leaving all raw "
+                      "footage untouched (sudo apt install ffmpeg)",
+                      " and ".join(missing))
+        return False
+    return True
+
+
+def preflight(camera, room, raw_path, seg_start):
+    """Reject raw that no number of retries could ever turn into analysis.
+
+    Returns True when the segment was written off here. ffprobe failing means a
+    truncated/headerless file (power cut mid-write, a camera dropping, the
+    window-end sliver); either way ffmpeg would fail the same way every run.
+    """
+    duration = probe_seconds(raw_path)
+    if duration is None:
+        reason, detail = "unreadable_raw", "ffprobe could not read a duration"
+    elif duration < MIN_SEGMENT_SECONDS:
+        reason, detail = "too_short", f"{duration:.1f}s of footage"
+    else:
+        return False
+    logging.warning("[%s %s] %s (%s) — writing it off now instead of retrying it "
+                    "for %dh", camera, seg_start.strftime("%H:%M"), reason, detail,
+                    RAW_MAX_AGE_HOURS)
+    write_unanalyzable_chunk(camera, room, seg_start, reason, detail)
+    discard_raw(camera, raw_path, seg_start)
+    return True
+
+
 def process_segment(client, model, camera, raw_path, seg_start, rooms, pacer):
-    minutes = segment_minutes(raw_path)
     room = rooms.get(camera, camera)
+    if preflight(camera, room, raw_path, seg_start):
+        return
+    minutes = segment_minutes(raw_path)
     pieces, work_dir = downsample(raw_path, camera, piece_minutes() * 60)
     try:
         done = load_partial(camera, seg_start, len(pieces))
@@ -761,6 +893,7 @@ def process_segment(client, model, camera, raw_path, seg_start, rooms, pacer):
 
         atomic_write_json(chunk_path(camera, seg_start), chunk)
         drop_partial(camera, seg_start)
+        clear_failure(raw_path)
         os.remove(raw_path)
         logging.info("[%s %s] analyzed in %d piece(s): %d activities, %d phone events, "
                      "%s input tokens", camera, seg_start.strftime("%H:%M"), len(pieces),
@@ -770,16 +903,62 @@ def process_segment(client, model, camera, raw_path, seg_start, rooms, pacer):
         shutil.rmtree(work_dir, ignore_errors=True)
 
 
-def purge_stale_raw():
-    """Delete raw segments that kept failing for >RAW_MAX_AGE_HOURS (disk safety).
-    They surface as coverage gaps in the daily report."""
+def give_up_on_failed_raw(rooms=None):
+    """Write off raw footage that has genuinely failed, and record why.
+
+    Two ways to qualify, both of which require evidence of an actual attempt:
+    the attempt budget is spent, or the footage is older than the backstop AND
+    has been tried at least once. Age alone never deletes: after a few days of
+    Pi downtime every pending segment is 'old', and deleting a backlog nobody
+    has tried yet would be silent data loss dressed up as housekeeping.
+    """
+    rooms = rooms or {}
+    budget = max_segment_attempts()
     for camera, path, seg_start in pending_segments(now=datetime.now()):
-        if (datetime.now() - seg_start).total_seconds() > RAW_MAX_AGE_HOURS * 3600:
-            logging.error("[%s] giving up on %s after %dh of failed analysis — deleting "
-                          "(will appear as a coverage gap)", camera,
-                          os.path.basename(path), RAW_MAX_AGE_HOURS)
-            os.remove(path)
-            drop_partial(camera, seg_start)
+        rec = read_failure(path)
+        attempts = int(rec.get("attempts") or 0)
+        age_h = (datetime.now() - seg_start).total_seconds() / 3600
+        if attempts >= budget:
+            why = f"{attempts} failed attempts"
+        elif age_h > RAW_MAX_AGE_HOURS and attempts >= 1:
+            why = f"{attempts} failed attempt(s) over {age_h:.0f}h"
+        else:
+            continue
+        last = rec.get("last_error") or "no error recorded"
+        logging.error("[%s] giving up on %s after %s — deleting. Last error: %s",
+                      camera, os.path.basename(path), why, last)
+        write_unanalyzable_chunk(camera, rooms.get(camera, camera), seg_start,
+                                 "gave_up", last)
+        discard_raw(camera, path, seg_start)
+
+
+def purge_raw_under_disk_pressure(rooms=None):
+    """Last-resort SD-card protection: below the shared free-space floor, drop
+    the oldest raw first — even untried footage, because a full card stops the
+    recorder too and costs every camera the rest of the day."""
+    rooms = rooms or {}
+    try:
+        free = shutil.disk_usage(RAW_DIR).free
+    except OSError:
+        return
+    if free >= MIN_FREE_BYTES:
+        return
+    pending = sorted(pending_segments(now=datetime.now()), key=lambda p: p[2])
+    for camera, path, seg_start in pending:
+        if free >= MIN_FREE_BYTES:
+            break
+        try:
+            size = os.path.getsize(path)
+        except OSError:
+            continue
+        logging.error("[%s] only %.1f GB free (< %.1f GB floor) — deleting unanalyzed "
+                      "%s to keep recording", camera, free / 1024**3,
+                      MIN_FREE_BYTES / 1024**3, os.path.basename(path))
+        write_unanalyzable_chunk(camera, rooms.get(camera, camera), seg_start,
+                                 "disk_pressure",
+                                 f"deleted with {free / 1024**3:.1f} GB free")
+        discard_raw(camera, path, seg_start)
+        free += size
 
 
 def analyze_pending(limit=-1):
@@ -794,6 +973,8 @@ def analyze_pending(limit=-1):
     if not os.environ.get("GEMINI_API_KEY"):
         logging.info("GEMINI_API_KEY not set — analysis disabled, nothing to do.")
         return 0, 0
+    if not toolchain_ready():
+        return 0, 0
 
     lock = AnalyzeLock()
     if not lock.acquire():
@@ -801,7 +982,16 @@ def analyze_pending(limit=-1):
         return 0, 0
     try:
         ensure_dirs()
-        purge_stale_raw()
+        try:
+            rooms = load_camera_rooms(load_cameras())
+        except ValueError as e:
+            # Bad room config must not stall analysis; the segments are still
+            # analyzable one-camera-at-a-time, just without the scene context.
+            logging.error("Camera/room configuration invalid (%s) — analyzing "
+                          "without room context", e)
+            rooms = {}
+        give_up_on_failed_raw(rooms)
+        purge_raw_under_disk_pressure(rooms)
         pending = pending_segments()
         if not pending:
             logging.info("No pending segments.")
@@ -816,14 +1006,6 @@ def analyze_pending(limit=-1):
             pending = sorted(pending, key=lambda p: p[2])[:limit]
 
         model = os.environ.get("GEMINI_MODEL", DEFAULT_MODEL)
-        try:
-            rooms = load_camera_rooms(load_cameras())
-        except ValueError as e:
-            # Bad room config must not stall analysis; the segments are still
-            # analyzable one-camera-at-a-time, just without the scene context.
-            logging.error("Camera/room configuration invalid (%s) — analyzing "
-                          "without room context", e)
-            rooms = {}
         client = make_client()
         pacer = Pacer()
         done = failed = 0
@@ -832,15 +1014,23 @@ def analyze_pending(limit=-1):
                 process_segment(client, model, camera, raw_path, seg_start, rooms, pacer)
                 done += 1
             except Exception as e:
-                logging.exception("[%s %s] segment analysis failed — raw kept for "
-                                  "the next retry", camera, seg_start)
                 failed += 1
                 if status_code(e) == 429:
-                    # The quota is the constraint, not this segment: stop the run
-                    # rather than march the same 429 through every camera.
+                    # The quota is the constraint, not this segment. Don't charge
+                    # it an attempt — a bad quota day must never spend a whole
+                    # segment's budget and delete footage that was never the
+                    # problem — and stop the run rather than march the same 429
+                    # through every camera.
+                    logging.exception("[%s %s] rate limited — raw kept, and this "
+                                      "does not count against its attempts",
+                                      camera, seg_start)
                     logging.error("Rate limited — ending this run early; the next "
                                   "run picks up where it stopped.")
                     break
+                rec = record_failure(raw_path, repr(e))
+                logging.exception("[%s %s] segment analysis failed (attempt %d of %d) "
+                                  "— raw kept for the next retry", camera, seg_start,
+                                  rec.get("attempts", 1), max_segment_attempts())
         logging.info("Run finished: %d done, %d failed, %.0fs spent pacing "
                      "(budget %d input tokens/min, %d min per request)",
                      done, failed, pacer.slept, pacer.budget, piece_minutes())

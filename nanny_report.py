@@ -372,11 +372,19 @@ def coverage_for(chunks, cameras, window):
 def build_report(day, chunks, cameras, window, rooms=None):
     rooms = rooms or {}
     timeline, phone_events, notable, summaries = [], [], [], []
+    failures = []
     parse_errors = 0
     for c in chunks:
         cam, room = c["camera"], chunk_room(c, rooms)
         if c.get("parse_error"):
             parse_errors += 1
+        if c.get("error"):
+            # An hour we know we lost, and why — as opposed to a plain coverage
+            # gap, which is indistinguishable from the camera being off.
+            failures.append({"camera": cam, "room": room,
+                             "segment_start_iso": c["segment_start_iso"],
+                             "error": c["error"],
+                             "detail": c.get("error_detail", "")})
         if c.get("summary"):
             summaries.append(f"[{room} · {cam} {c['segment_start_iso'][11:16]}] "
                              f"{c['summary']}")
@@ -402,6 +410,7 @@ def build_report(day, chunks, cameras, window, rooms=None):
                   for cam in sorted(set(cameras) | {c["camera"] for c in chunks})},
         "coverage": coverage_for(chunks, cameras, window),
         "parse_errors": parse_errors,
+        "failures": sorted(failures, key=lambda f: f["segment_start_iso"]),
         "narrative": day_narrative(day, summaries, phone_stats),
         "timeline": timeline,
         "phone_use": {"events": phone_events, **phone_stats,

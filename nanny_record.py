@@ -32,7 +32,7 @@ import time
 from datetime import datetime, timedelta
 
 from nanny_common import (
-    RAW_DIR, ensure_dirs, load_cameras, load_days, load_window,
+    MIN_FREE_BYTES, RAW_DIR, ensure_dirs, load_cameras, load_days, load_window,
 )
 
 logging.basicConfig(level=logging.INFO,
@@ -40,8 +40,15 @@ logging.basicConfig(level=logging.INFO,
 
 RESPAWN_DELAY   = 60          # seconds before restarting a dead ffmpeg
 POLL_SECONDS    = 30          # supervision loop tick
-MIN_FREE_BYTES  = 2 * 1024**3
 UNCONFIGURED_RECHECK = 3600
+
+# Stop this long before the window ends. -segment_atclocktime cuts a new file
+# at every clock hour, so an ffmpeg whose -t expires exactly ON the hour opens
+# one last output file for the frame or two before it dies: a 0-2 frame mp4,
+# usually without a moov atom, that no amount of retrying can ever analyze
+# (2026-07-27: kitchen/20260727_180000.mp4 was retried for 24h then deleted).
+# Ending two seconds early means the muxer never opens that file.
+WINDOW_END_GUARD_S = 2
 
 
 def window_bounds(now, window, days):
@@ -65,10 +72,11 @@ def window_bounds(now, window, days):
 def spawn_ffmpeg(camera, url, seconds_left):
     out_dir = os.path.join(RAW_DIR, camera)
     os.makedirs(out_dir, exist_ok=True)
+    record_seconds = max(int(seconds_left) - WINDOW_END_GUARD_S, 1)
     cmd = [
         "ffmpeg", "-hide_banner", "-loglevel", "warning", "-nostdin",
         "-rtsp_transport", "tcp", "-i", url,
-        "-t", str(int(seconds_left)),
+        "-t", str(record_seconds),
         "-c", "copy", "-an",
         "-f", "segment", "-segment_time", "3600",
         "-segment_atclocktime", "1", "-reset_timestamps", "1",
@@ -77,7 +85,7 @@ def spawn_ffmpeg(camera, url, seconds_left):
     ]
     proc = subprocess.Popen(cmd)
     logging.info("[%s] recording started (pid %d, %ds left in window)",
-                 camera, proc.pid, int(seconds_left))
+                 camera, proc.pid, record_seconds)
     return proc
 
 

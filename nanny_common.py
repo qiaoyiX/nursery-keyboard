@@ -60,6 +60,12 @@ DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 # for the same camera, or nothing has been appended for this long.
 SEGMENT_CLOSED_SECONDS = 120
 
+# One floor shared by both services: the recorder refuses to start a camera
+# below it, and the analyzer starts dropping its oldest unanalyzed footage
+# below it. Two different floors would let one service quietly undo the other's
+# safety margin.
+MIN_FREE_BYTES = 2 * 1024**3
+
 
 def ensure_dirs():
     for d in (RAW_DIR, LOWRES_DIR, CHUNKS_DIR, CLIPS_DIR, REPORTS_DIR):
