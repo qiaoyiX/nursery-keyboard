@@ -135,12 +135,20 @@ if [ ! -f "$NANNY_ENV_FILE" ]; then
 # NANNY_WINDOW=10:00-18:00
 # NANNY_DAYS=Mon,Tue,Wed,Thu,Fri
 # NANNY_CLIP_RETENTION_DAYS=14
+# Retention is a privacy setting, not a disk one: a report is ~2 KB and chunks
+# ~0.5 MB/day, while raw video (the only real consumer) is already deleted
+# after analysis. Chunks die with the clips that could substantiate them.
+# NANNY_CHUNK_RETENTION_DAYS=14     # defaults to NANNY_CLIP_RETENTION_DAYS
+# NANNY_REPORT_RETENTION_DAYS=365   # Neon (backup_sync.py) keeps the archive
 #
-# Quota shaping. A camera-hour is ~240k input tokens, and Gemini limits input
-# TOKENS per minute as well as requests, so three cameras uploaded back to back
-# trip the limit on three requests. Defaults keep a 3-camera day inside a
-# 200k-tokens/min budget; raise NANNY_TPM_BUDGET to your tier's real input TPM
-# to make the pipeline faster, lower it if you still see 429s.
+# Quota shaping. Gemini bills 66 tokens per SAMPLED FRAME at low media
+# resolution, so the sample rate is the dominant cost: at the API default of
+# 1 fps a camera-hour is ~240k input tokens, at 0.25 fps it is ~59k. Gemini
+# also limits input TOKENS per minute as well as requests, so three cameras
+# uploaded back to back trip the limit on three requests.
+# NANNY_SAMPLE_FPS=0.25           # frames per second actually analyzed. Lower
+#                                 # is cheaper; below ~0.1 short phone pickups
+#                                 # start falling between frames.
 # NANNY_PIECE_MINUTES=30          # footage per Gemini call (0 = whole hour)
 # NANNY_TPM_BUDGET=200000         # input tokens/min this pipeline allows itself
 # NANNY_MAX_SEGMENTS_PER_RUN=4    # cap per timer run so a backlog spreads out
@@ -151,6 +159,28 @@ if [ ! -f "$NANNY_ENV_FILE" ]; then
 # GEMINI_MAX_OUTPUT_TOKENS=32768
 EOF
     sudo chmod 600 "$NANNY_ENV_FILE"
+fi
+
+# Standing household context for the prompt. Deliberately NOT in the repo: it
+# holds the real names of a child and an employee, which do not belong in git
+# history. Every line that is not a comment is sent with each analysis call, so
+# keep it short.
+NANNY_CONTEXT_FILE=/etc/nursery-tracker/nanny_context.md
+if [ ! -f "$NANNY_CONTEXT_FILE" ]; then
+    sudo tee "$NANNY_CONTEXT_FILE" > /dev/null <<'EOF'
+# Who is who in this house. Lines starting with # are stripped before sending.
+# Without this the model reads every half-hour cold and cannot tell the paid
+# caregiver from a parent — it just describes "a person".
+#
+# Fill in and delete the examples. Keep it under ~30 lines.
+#
+# Baby: <name>, <age>. <anything that helps identify them on camera>
+# Caregiver: <name>, works <days/hours>. <usual appearance>
+# Also in the house: <parent names>, <when they are usually home>.
+#   These adults are NOT the caregiver; their phone use is not measured.
+# Routine: <naps, meals, walks — whatever makes the day legible>
+EOF
+    sudo chmod 600 "$NANNY_CONTEXT_FILE"
 fi
 
 sudo tee /etc/systemd/system/nursery-nanny-record.service > /dev/null <<EOF

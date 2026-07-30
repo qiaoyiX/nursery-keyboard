@@ -79,8 +79,32 @@
     .phone-event { border-left: 3px solid var(--phone); padding: 8px 12px; margin-bottom: 12px; background: var(--phone-a); border-radius: 0 10px 10px 0; }
     .phone-event.flagged { border-left-color: var(--danger); background: var(--danger-a); }
     .rule { font-size: .78rem; color: var(--text-muted); line-height: 1.45; margin-bottom: 10px; }
+    .kv-row { display: flex; justify-content: space-between; gap: 12px; font-size: .88rem; padding: 4px 0; }
+    .kv-val { color: var(--text-muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
     .card.alert { background: var(--danger-a); }
     .card.alert h2 { color: var(--danger); }
+    .verdict { border-left: 5px solid var(--brown-mid); }
+    .verdict .line { font-size: 1.15rem; font-weight: 600; }
+    .verdict .why { font-size: .82rem; color: var(--text-muted); margin-top: 6px; line-height: 1.5; }
+    .verdict.concern   { border-left-color: var(--danger); background: var(--danger-a); }
+    .verdict.concern .line { color: var(--danger); }
+    .verdict.attention { border-left-color: var(--phone); background: var(--phone-a); }
+    .verdict.degraded  { border-left-color: var(--text-muted); }
+    .verdict.clear     { border-left-color: var(--sleep); }
+    .model-tag {
+      display: inline-block; font-size: .62rem; letter-spacing: .06em; text-transform: uppercase;
+      color: var(--text-muted); border: 1px solid var(--cream-2); border-radius: 999px;
+      padding: 1px 7px; margin-left: 8px; vertical-align: middle;
+    }
+    .trend { display: flex; gap: 3px; align-items: flex-end; height: 74px; margin: 6px 0 4px; }
+    .trend .day { flex: 1; display: flex; flex-direction: column; justify-content: flex-end; height: 100%; }
+    .trend .bar { border-radius: 3px 3px 0 0; background: var(--sleep); min-height: 3px; }
+    .trend .day.attention .bar { background: var(--phone); }
+    .trend .day.concern .bar   { background: var(--danger); }
+    /* A day nobody watched must not read as a clean day. */
+    .trend .day.thin .bar { opacity: .35; background: repeating-linear-gradient(
+      45deg, var(--text-muted), var(--text-muted) 2px, transparent 2px, transparent 4px); }
+    .trend .tick { font-size: .58rem; color: var(--text-muted); text-align: center; margin-top: 3px; }
     .phone-event .when { font-weight: 600; font-size: .9rem; }
     .phone-event .desc { font-size: .85rem; color: var(--text-muted); margin: 3px 0; }
     .badge {
@@ -126,6 +150,33 @@ function el(tag, cls, text) {
   if (text !== undefined) e.textContent = text;
   return e;
 }
+function fmtMin(m) {
+  m = Math.round(m || 0);
+  if (m < 60) return m + "m";
+  const h = Math.floor(m / 60), r = m % 60;
+  return r ? h + "h " + r + "m" : h + "h";
+}
+// [text, label, warn?] → the 2x2 tile grid used by every metric block.
+function tileRow(defs) {
+  const grid = el("div", "tiles");
+  for (const [num, lbl, warn] of defs) {
+    const t = el("div", "tile" + (warn ? " warn" : ""));
+    t.append(el("div", "num", String(num)), el("div", "lbl", lbl));
+    grid.append(t);
+  }
+  return grid;
+}
+function kvRow(label, value) {
+  const r = el("div", "kv-row");
+  r.append(el("div", null, label), el("div", "kv-val", value));
+  return r;
+}
+
+const CATEGORY_LABELS = {
+  feeding: "Feeding", diaper: "Diaper", play: "Play", holding_baby: "Holding baby",
+  sleep_prep: "Sleep prep", housework: "Housework", eating: "Eating",
+  resting: "Resting", out_of_frame: "Caregiver out of frame", other: "Other",
+};
 
 const CONTEXT_LABELS = {
   while_holding_baby: ["holding baby", "danger"],
@@ -142,9 +193,41 @@ const AUTH_LABELS = {
   allowed_baby_asleep: ["ok — baby asleep", "nap"],
   unconfirmed:         ["unconfirmed", ""],
   unclear:             ["unclear", ""],
+  // Someone who isn't the nanny: shown because it explains what's on camera,
+  // but counted toward nothing — this report measures the caregiver's hours.
+  not_caregiver:       ["not the caregiver", ""],
 };
 
-function render(report, status) {
+// Pure DOM, like index.html's week grid — no chart library has a "day vs one
+// scalar, shaded by confidence" type, and DOM blocks inherit the :root custom
+// properties so dark mode comes free.
+const TREND_MIN_COVERAGE = 75;
+
+function renderTrend(trend) {
+  if (!trend || trend.length < 2) return;
+  const c = el("div", "card");
+  c.append(el("h2", null, "Last " + trend.length + " days"));
+  const peak = Math.max(10, ...trend.map(d => d.unauthorized_minutes || 0));
+  const strip = el("div", "trend");
+  for (const d of trend) {
+    const thin = (d.coverage_pct ?? 0) < TREND_MIN_COVERAGE;
+    const col = el("div", "day " + (d.verdict_level || "clear") + (thin ? " thin" : ""));
+    const bar = el("div", "bar");
+    bar.style.height = Math.round(4 + 70 * (d.unauthorized_minutes || 0) / peak) + "px";
+    bar.title = d.date + " — " + Math.round(d.unauthorized_minutes || 0) +
+      " min flagged, " + (d.coverage_pct ?? 0) + "% covered" +
+      (d.notable_count ? ", " + d.notable_count + " notable" : "");
+    col.append(bar);
+    strip.append(col);
+  }
+  c.append(strip, el("div", "rule",
+    "Height is flagged minutes. Hatched days had under " + TREND_MIN_COVERAGE +
+    "% camera coverage — too little was reviewed to call them clear, so read them " +
+    "as unknown rather than as good days."));
+  contentEl.append(c);
+}
+
+function render(report, status, trend) {
   contentEl.textContent = "";
   if (!report) {
     contentEl.append(el("div", "empty", "No report for this date yet. Reports are generated after 6:45 pm on care days."));
@@ -169,28 +252,71 @@ function render(report, status) {
     contentEl.append(c);
   }
 
+  // The verdict comes first and is computed server-side in Python from the
+  // classified numbers — never by the model. Everything below explains it.
+  const v = report.verdict;
+  if (v) {
+    const c = el("div", "card verdict " + v.level);
+    c.append(el("div", "line", v.headline));
+    if (v.reasons && v.reasons.length) {
+      c.append(el("div", "why", v.reasons.join(" · ")));
+    }
+    c.append(el("div", "why",
+      "This system is deliberately tuned to give the benefit of the doubt: only " +
+      "medium/high-confidence detections can be flagged, and anything two cameras " +
+      "disagree about is cleared, not counted. Read the absence of a flag with that " +
+      "in mind."));
+    contentEl.append(c);
+  }
+
+  // Highest-stakes finding, so it sits above routine activity rather than
+  // below the timeline where it used to render.
+  if (report.notable_events && report.notable_events.length) {
+    const c = el("div", "card alert");
+    c.append(el("h2", null, "Notable events"));
+    for (const n of report.notable_events) {
+      const box = el("div", "phone-event" + (n.type === "safety_concern" ? " flagged" : ""));
+      const when = el("div", "when", fmtTime(n.time_iso));
+      when.append(el("span", "badge " + (n.type === "safety_concern" ? "danger" : ""),
+                     (n.type || "other").replace(/_/g, " ")));
+      when.append(el("span", "badge", n.room || n.camera));
+      box.append(when, el("div", "desc", n.description));
+      if (n.clip) {
+        const vid = document.createElement("video");
+        vid.controls = true; vid.preload = "none";
+        vid.src = "/nanny/clips/" + n.clip;
+        box.append(vid);
+      } else {
+        box.append(el("div", "desc", "No clip for this event."));
+      }
+      c.append(box);
+    }
+    contentEl.append(c);
+  }
+
+  for (const w of report.warnings || []) {
+    contentEl.append(el("div", "rule", "⚠️ " + w));
+  }
+
   if (report.narrative) {
     const c = el("div", "card");
-    c.append(el("h2", null, "Day summary"), el("p", "narrative", report.narrative));
+    const h = el("h2", null, "Day summary");
+    // Labelled, so a soothing paragraph is never mistaken for the verdict it
+    // sits under: this is a second LLM pass over the first LLM's summaries.
+    h.append(el("span", "model-tag", "AI-written"));
+    c.append(h, el("p", "narrative", report.narrative));
     contentEl.append(c);
   }
 
   const pu = report.phone_use;
   const asleepMin = pu.while_baby_asleep_minutes ?? pu.during_naps_minutes ?? 0;
   const unauthMin = pu.unauthorized_minutes ?? 0;
-  const tiles = el("div", "tiles");
-  const tileDefs = [
-    [Math.round(pu.total_minutes) + "m", "phone total", false],
-    [Math.round(unauthMin) + "m", "not allowed", unauthMin > 0],
-    [Math.round(asleepMin) + "m", "while baby asleep", false],
-    [Math.round(pu.unclear_minutes ?? 0) + "m", "unclear", false],
-  ];
-  for (const [num, lbl, warn] of tileDefs) {
-    const t = el("div", "tile" + (warn ? " warn" : ""));
-    t.append(el("div", "num", String(num)), el("div", "lbl", lbl));
-    tiles.append(t);
-  }
-  contentEl.append(tiles);
+  contentEl.append(tileRow([
+    [fmtMin(pu.total_minutes), "phone total", false],
+    [fmtMin(unauthMin), "not allowed", unauthMin > 0],
+    [fmtMin(asleepMin), "while baby asleep", false],
+    [fmtMin(pu.unclear_minutes ?? 0), "unclear", false],
+  ]));
 
   if (pu.events.length) {
     const c = el("div", "card");
@@ -202,6 +328,10 @@ function render(report, status) {
       rule.append(el("div", null, "+" + Math.round(pu.unauthorized_unconfirmed_minutes) +
         "m more would be flagged if the low-confidence detections below are really a phone."));
     }
+    if (pu.other_adult_event_count > 0) {
+      rule.append(el("div", null, pu.other_adult_event_count +
+        " event(s) below were another adult rather than the caregiver, and count toward nothing."));
+    }
     c.append(rule);
     for (const ev of pu.events) {
       const box = el("div", "phone-event" + (ev.authorization === "unauthorized" ? " flagged" : ""));
@@ -211,9 +341,17 @@ function render(report, status) {
       const [lbl, kind] = CONTEXT_LABELS[ev.context] || [ev.context, ""];
       when.append(el("span", "badge " + kind, lbl));
       when.append(el("span", "badge", ev.room || ev.camera));
-      if (ev.confidence === "low") when.append(el("span", "badge", "low confidence"));
+      // Always, not only for "low": a medium-confidence detection counts toward
+      // the flagged minutes, and rendering it identically to a high-confidence
+      // one overstates certainty exactly where someone might act on it.
+      when.append(el("span", "badge", (ev.confidence || "unknown") + " confidence"));
       box.append(when);
       if (ev.description) box.append(el("div", "desc", ev.description));
+      // One event, one video: the other cameras that saw the same moment are
+      // credited in text rather than repeated as a second clip of it.
+      if (ev.also_seen_by && ev.also_seen_by.length) {
+        box.append(el("div", "desc", "Also seen by " + ev.also_seen_by.join(", ") + "."));
+      }
       if (ev.clip) {
         const v = document.createElement("video");
         v.controls = true; v.preload = "none";
@@ -222,6 +360,73 @@ function render(report, status) {
       }
       c.append(box);
     }
+    contentEl.append(c);
+  }
+
+  // Every metric block is guarded on its key: a report JSON written before
+  // these existed must still render the rest of the page.
+  const att = report.attendance;
+  if (att) {
+    const c = el("div", "card");
+    c.append(el("h2", null, "Attendance"));
+    c.append(tileRow([
+      [fmtMin(att.unattended_minutes), "awake & alone", att.unattended_minutes > 0],
+      [fmtMin(att.longest_unattended_stretch_minutes), "longest alone", false],
+      [fmtMin(att.caregiver_present_minutes), "caregiver in view", false],
+      [fmtMin(att.unclear_minutes), "unclear", false],
+    ]));
+    c.append(el("div", "rule",
+      "Counts only an awake baby with no caregiver visible on any camera; a " +
+      "sleeping baby alone is not counted. " + fmtMin(att.uncovered_minutes) +
+      " of the window had no footage at all and is counted as unclear, never " +
+      "as time alone."));
+    for (const iv of att.unattended_intervals || []) {
+      c.append(kvRow(fmtTime(iv.start_iso) + " – " + fmtTime(iv.end_iso), "alone"));
+    }
+    contentEl.append(c);
+  }
+
+  const sl = report.sleep;
+  if (sl) {
+    const c = el("div", "card");
+    c.append(el("h2", null, "Sleep"));
+    c.append(tileRow([
+      [fmtMin(sl.total_sleep_minutes), "asleep", false],
+      [String(sl.nap_count), "naps", false],
+      [fmtMin(sl.longest_nap_minutes), "longest nap", false],
+      [fmtMin(sl.longest_awake_stretch_minutes), "longest awake", false],
+    ]));
+    for (const n of sl.naps || []) {
+      c.append(kvRow(fmtTime(n.start_iso) + " – " + fmtTime(n.end_iso),
+                     fmtMin(n.duration_minutes)));
+    }
+    // The two sources of "asleep" are independent, so a disagreement is a
+    // signal in itself: bedroom naps are invisible to the crib monitor, but
+    // crib-only minutes mean one of the two is wrong.
+    const cribOnly = sl.crib_only_minutes || 0, camOnly = sl.camera_only_minutes || 0;
+    if (cribOnly >= 10 || camOnly >= 10) {
+      const parts = [];
+      if (camOnly >= 10) parts.push("the cameras saw " + fmtMin(camOnly) +
+        " the crib monitor did not (expected for naps outside the nursery)");
+      if (cribOnly >= 10) parts.push("the crib monitor saw " + fmtMin(cribOnly) +
+        " the cameras did not");
+      c.append(el("div", "rule", "Sources disagree: " + parts.join("; ") + "."));
+    }
+    contentEl.append(c);
+  }
+
+  const care = report.care;
+  const careCats = Object.entries((care || {}).minutes_by_category || {})
+    .sort((a, b) => b[1] - a[1]);
+  if (careCats.length) {
+    const c = el("div", "card");
+    c.append(el("h2", null, "Care activities"));
+    for (const [cat, min] of careCats) {
+      const n = (care.event_counts || {})[cat] || 0;
+      c.append(kvRow(CATEGORY_LABELS[cat] || cat, fmtMin(min) + " · " + n + "×"));
+    }
+    c.append(el("div", "rule",
+      "Deduplicated across cameras — an activity two cameras both saw counts once."));
     contentEl.append(c);
   }
 
@@ -259,18 +464,7 @@ function render(report, status) {
   if (!report.timeline.length) tl.append(el("div", "empty", "No activity recorded."));
   contentEl.append(tl);
 
-  if (report.notable_events && report.notable_events.length) {
-    const c = el("div", "card");
-    c.append(el("h2", null, "Notable events"));
-    for (const n of report.notable_events) {
-      const row = el("div", "tl-row");
-      row.append(el("span", "tl-time", fmtTime(n.time_iso)),
-                 el("span", null, n.description),
-                 el("span", "tl-cam", n.camera));
-      c.append(row);
-    }
-    contentEl.append(c);
-  }
+  renderTrend(trend);
 
   const foot = el("div", "card");
   foot.append(el("h2", null, "Coverage"));
@@ -301,6 +495,19 @@ function render(report, status) {
   } else {
     lines.push("analyzer has not recorded a run yet");
   }
+  const st = report.storage;
+  if (st) {
+    let line = "disk: " + (st.free_gb ?? "?") + " GB free (floor " + st.free_floor_gb + " GB)";
+    if (st.pending_segments) {
+      line += " · " + st.pending_segments + " hour(s) of footage still unanalyzed" +
+        (st.oldest_pending_hours ? ", oldest " + st.oldest_pending_hours + "h old" : "");
+    }
+    if (st.dropped_for_disk_pressure) {
+      line += " · ⚠️ " + st.dropped_for_disk_pressure +
+        " segment(s) deleted unanalyzed for disk pressure";
+    }
+    lines.push(line);
+  }
   lines.push("generated " + new Date(report.generated_at).toLocaleString());
   f.textContent = lines.join("\n");
   f.style.whiteSpace = "pre-line";
@@ -325,7 +532,7 @@ async function load(dateStr) {
     contentEl.append(el("div", "empty", "No reports yet. The first report appears after the first recorded care day."));
     return;
   }
-  render(data.report, data.status);
+  render(data.report, data.status, data.trend);
 }
 
 dateSel.addEventListener("change", () => load(dateSel.value));

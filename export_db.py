@@ -23,6 +23,9 @@ import sys
 
 from storage import DATA_FILE, SLEEP_FILE, USE_DB, db
 
+REPORTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "nanny", "reports")
+
 
 def _refuse_overwrite(path, force):
     if force or not os.path.exists(path):
@@ -73,11 +76,35 @@ def main():
                 "duration_minutes": float(dur) if dur is not None else None,
             } for i, (start, end, dur) in enumerate(cur.fetchall())]
 
+            reports = []
+            try:
+                cur.execute("SELECT report_date, report FROM nanny_reports "
+                            "ORDER BY report_date")
+                reports = cur.fetchall()
+            except Exception:
+                # The table only exists once the nanny feature has been backed
+                # up at least once; its absence is not a failed restore.
+                conn.rollback()
+                print("No nanny_reports table in Neon — skipping nanny reports.")
+
     _atomic_write(DATA_FILE, events)
     _atomic_write(SLEEP_FILE, sessions)
 
+    written = 0
+    if reports:
+        os.makedirs(REPORTS_DIR, exist_ok=True)
+        for day, payload in reports:
+            path = os.path.join(REPORTS_DIR, f"{day.isoformat()}.json")
+            if os.path.exists(path) and not args.force:
+                continue          # local wins without --force, same as above
+            _atomic_write(path, payload if isinstance(payload, (dict, list))
+                          else json.loads(payload))
+            written += 1
+
     print(f"Exported {len(events)} events -> {DATA_FILE}")
     print(f"Exported {len(sessions)} sleep sessions -> {SLEEP_FILE}")
+    if reports:
+        print(f"Exported {written} of {len(reports)} nanny reports -> {REPORTS_DIR}")
     print("Verify these counts against Neon, then remove DATABASE_URL from both service units.")
 
 

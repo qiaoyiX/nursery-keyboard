@@ -72,9 +72,9 @@ import time
 from datetime import datetime, timedelta
 
 from nanny_common import (
-    CLIPS_DIR, LOWRES_DIR, MIN_FREE_BYTES, RAW_DIR, AnalyzeLock,
+    CHUNKS_DIR, CLIPS_DIR, LOWRES_DIR, MIN_FREE_BYTES, RAW_DIR, AnalyzeLock,
     atomic_write_json, chunk_path, ensure_dirs, load_camera_rooms, load_cameras,
-    offset_to_wallclock, pending_segments, update_status,
+    load_context, offset_to_wallclock, pending_segments, update_status,
 )
 
 logging.basicConfig(level=logging.INFO,
@@ -124,6 +124,33 @@ def _env_int(name, default, minimum=0):
         return default
 
 
+def _env_float(name, default, minimum=0.0):
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return max(float(raw), minimum)
+    except ValueError:
+        logging.warning("%s=%r is not a number — using %s", name, raw, default)
+        return default
+
+
+def sample_fps():
+    """Frames per second of video actually looked at.
+
+    The dominant cost of this pipeline. Gemini bills 66 tokens per sampled frame
+    at MEDIA_RESOLUTION_LOW, so the default 1 fps is ~237k input tokens per
+    camera-hour — and the report's own granularity is about one minute, so 59 of
+    every 60 frames were paid for and discarded. At 0.25 (one frame per 4s) a
+    camera-hour is ~59k tokens.
+
+    This value has to reach BOTH ffmpeg and the API. Downsampling the upload
+    alone saves nothing: Gemini samples at its own default 1 fps and simply
+    interpolates the missing frames back, billing the full amount.
+    """
+    return _env_float("NANNY_SAMPLE_FPS", 0.25, minimum=0.01)
+
+
 def piece_minutes():
     """Minutes of footage per Gemini call (0 = one call per whole segment)."""
     return _env_int("NANNY_PIECE_MINUTES", 30)
@@ -146,6 +173,10 @@ def max_segment_attempts():
 
 PHONE_CONTEXTS = ["while_holding_baby", "baby_nearby_awake", "baby_unattended",
                   "baby_napping", "baby_not_in_frame", "unclear"]
+# Who is holding the phone. The report scores only the caregiver's minutes, so
+# "unclear" is deliberately scored like "caregiver": an unattributed event must
+# never be silently dropped from a finding about someone's conduct.
+PHONE_PERSONS = ["caregiver", "other_adult", "unclear"]
 ACTIVITY_CATEGORIES = ["feeding", "diaper", "play", "holding_baby", "sleep_prep",
                        "housework", "eating", "resting", "out_of_frame", "other"]
 # Judged from THIS camera only; the report fuses the rooms afterwards.
@@ -180,8 +211,9 @@ CHUNK_SCHEMA = {
                     "context":     {"type": "STRING", "enum": PHONE_CONTEXTS},
                     "description": {"type": "STRING"},
                     "confidence":  {"type": "STRING", "enum": ["low", "medium", "high"]},
+                    "person":      {"type": "STRING", "enum": PHONE_PERSONS},
                 },
-                "required": ["start", "end", "context", "confidence"],
+                "required": ["start", "end", "context", "confidence", "person"],
             },
         },
         "notable_events": {
@@ -202,9 +234,9 @@ CHUNK_SCHEMA = {
     "required": ["activities", "phone_use", "notable_events", "summary"],
 }
 
-PROMPT = """You are reviewing security-camera footage (sampled at 1 frame per second) \
-from a private home where a nanny cares for an infant.
-
+PROMPT = """You are reviewing security-camera footage from a private home where a nanny \
+cares for an infant.
+{household}
 THE CAMERA SYSTEM
 {scene}
 All of these cameras record the SAME hours simultaneously; you are being shown one \
@@ -217,7 +249,7 @@ scene, not two different places.
 
 THIS VIDEO: camera '{camera}', which watches the {room}. The segment starts at \
 {start_local} local time and is about {minutes} minutes long.{part_note}
-
+{earlier}
 Produce:
 1. activities — a factual timeline of what the caregiver does. Merge contiguous spans \
 of the same activity; minimum granularity about one minute. Use the category enum; put \
@@ -226,17 +258,24 @@ all) and baby_state: "asleep" only when the baby is visibly settled and still (l
 down, eyes closed, no active movement) for the span, "awake" when visibly moving, \
 being held, fed, played with or attended to, "not_visible" when the baby is not in \
 frame, "unclear" when in frame but you cannot tell.
-2. phone_use — EVERY interval where the caregiver is holding, looking at, or \
+2. phone_use — EVERY interval where an adult is holding, looking at, or \
 interacting with a mobile phone. Classify the baby's situation during it with the \
 context enum: while_holding_baby, baby_nearby_awake (baby awake in the same room), \
 baby_unattended (baby awake and needing attention while the caregiver is on the phone), \
 baby_napping (baby visibly asleep in this room), baby_not_in_frame (the baby is simply \
-not in this camera's view), unclear. Be conservative: if you are unsure it is a phone, \
-still report it with confidence "low" rather than omitting it. Do not count baby \
-monitors or TV remotes as phones if distinguishable.
+not in this camera's view), unclear. Also set person: "caregiver" for the paid caregiver \
+described above, "other_adult" for a household member or visitor who is NOT the \
+caregiver, and "unclear" when you cannot tell them apart — only use "other_adult" when \
+the household description gives you a positive reason to, because this report is about \
+the caregiver's hours and mislabelling hides real findings. Be conservative: if you are \
+unsure it is a phone, still report it with confidence "low" rather than omitting it. Do \
+not count baby monitors or TV remotes as phones if distinguishable.
 3. notable_events — safety-relevant moments (baby unattended on a raised surface, \
 falls, distress ignored), visitors, or milestones.
 4. summary — 2-3 plain sentences describing this hour. Mention which room this is.
+
+Frames are sampled every few seconds rather than continuously, so treat a brief \
+action as possibly clipped and do not read a single frame as a whole event.
 
 All times are offsets from the start of the video as MM:SS. If nobody is in frame for \
 the whole segment, return empty lists and say so in the summary. Output only JSON \
@@ -259,6 +298,28 @@ def scene_description(rooms, this_camera):
             mark = "  <- THIS VIDEO" if cam == this_camera else ""
             lines.append(f"- '{cam}' watches the {room}{shared}{mark}")
     return "\n".join(lines)
+
+
+def household_block(context):
+    """The 'who is who' block. Without it every half-hour is read cold: the
+    model cannot tell the paid caregiver from the child's mother, and describes
+    'a person' doing things instead of naming the roles."""
+    if not context:
+        return ""
+    return ("\nTHE HOUSEHOLD (standing context, true every day)\n"
+            f"{context}\n"
+            "Adults other than the caregiver live here and appear on camera. "
+            "Use this to tell them apart; never assume every adult is the caregiver.\n")
+
+
+def earlier_block(summaries):
+    """The tail of the day so far, so a 30-minute piece is not read as if the
+    day started at its first frame (a nap already under way is not a new nap)."""
+    kept = [s.strip() for s in summaries if s and s.strip()][-2:]
+    if not kept:
+        return ""
+    joined = " ".join(kept)[:600]
+    return f"\nEARLIER TODAY on this camera: {joined}\n"
 
 
 def part_note(index, total):
@@ -297,8 +358,11 @@ def downsample(raw_path, camera, piece_seconds=0):
                             os.path.splitext(os.path.basename(raw_path))[0])
     shutil.rmtree(work_dir, ignore_errors=True)
     os.makedirs(work_dir, exist_ok=True)
+    # Must match the fps handed to the API below, or Gemini re-samples at its
+    # own rate and the saving disappears. The fps filter drops frames without
+    # touching duration, so every offset below stays on the wall clock.
     cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
-           "-i", raw_path, "-vf", "fps=1",
+           "-i", raw_path, "-vf", f"fps={sample_fps()}",
            "-c:v", "libx264", "-preset", "veryfast", "-crf", "30", "-an"]
     if piece_seconds:
         # A keyframe exactly on each cut point: the segment muxer cuts at the
@@ -483,7 +547,7 @@ def generation_config(types, extras=True):
 
 
 def analyze_video(client, model, lowres_path, camera, piece_start, minutes, rooms,
-                  note="", extras=True):
+                  note="", extras=True, with_fps=True, context="", earlier=()):
     """Upload + generate for ONE video. Returns (parsed_dict_or_None, usage).
 
     Raises on transport failure or a truncated answer (the caller retries);
@@ -509,10 +573,17 @@ def analyze_video(client, model, lowres_path, camera, piece_start, minutes, room
                                room=rooms.get(camera, camera),
                                scene=scene_description(rooms, camera),
                                start_local=piece_start.strftime("%H:%M on %A"),
-                               part_note=note)
+                               part_note=note,
+                               household=household_block(context),
+                               earlier=earlier_block(earlier))
+        # video_metadata lives on the Part, never inside FileData or Blob —
+        # nesting it wrong is what returns a 500 (googleapis/python-genai#854).
+        part = types.Part(
+            file_data=types.FileData(file_uri=video.uri, mime_type=video.mime_type),
+            video_metadata=types.VideoMetadata(fps=sample_fps()) if with_fps else None)
         resp = client.models.generate_content(
             model=model,
-            contents=[video, prompt],
+            contents=[part, prompt],
             config=generation_config(types, extras=extras),
         )
     finally:
@@ -547,15 +618,25 @@ def analyze_with_retries(client, model, pacer, *args, **kwargs):
     Only transient failures are retried. A 400 that names one of the optional
     config knobs retries once without them rather than failing the whole day.
     """
-    extras = True
+    extras, with_fps = True, True
     for attempt in range(1, GEMINI_RETRIES + 1):
         pacer.wait()
         try:
-            parsed, usage = analyze_video(client, model, *args, extras=extras, **kwargs)
+            parsed, usage = analyze_video(client, model, *args, extras=extras,
+                                          with_fps=with_fps, **kwargs)
             pacer.charge(usage.get("input_tokens"))
             return parsed, usage, None if parsed is not None else "unparseable_json"
         except Exception as e:
             code = status_code(e)
+            if with_fps and code == 400 and re.search(r"video_?metadata|fps", str(e), re.I):
+                # Custom sampling is an optimisation, not a requirement: fall
+                # back to the API default rather than lose the segment. Costs
+                # 4x more for this call and says so loudly.
+                logging.error("Model %s rejected video_metadata fps (%s) — retrying at "
+                              "the API's default 1 fps, which costs ~4x more tokens",
+                              model, e)
+                with_fps = False
+                continue
             if extras and code == 400 and re.search(r"thinking|max_output_tokens|maxOutputTokens",
                                                     str(e), re.I):
                 logging.error("Model %s rejected the optional generation config (%s) — "
@@ -621,11 +702,14 @@ def build_chunk(parsed, camera, seg_start, minutes, model, usage, room=None):
         if s is None or e is None or e < s:
             dropped += 1
             continue
-        ctx = p.get("context")
+        ctx, who = p.get("context"), p.get("person")
         phone_use.append({"start_iso": s.isoformat(), "end_iso": e.isoformat(),
                           "context": ctx if ctx in PHONE_CONTEXTS else "unclear",
                           "description": p.get("description", ""),
-                          "confidence": p.get("confidence", "low")})
+                          "confidence": p.get("confidence", "low"),
+                          # Missing/unknown → "unclear", which the report still
+                          # scores. Only a positive "other_adult" excuses it.
+                          "person": who if who in PHONE_PERSONS else "unclear"})
     for n in parsed.get("notable_events") or []:
         t = wall(n.get("time"))
         if t is None:
@@ -670,7 +754,7 @@ def merge_pieces(piece_chunks, camera, room, seg_start, minutes, model):
         "notable_events": [],
         "summary": "",
     }
-    summaries, failed = [], 0
+    summaries, failed, lost = [], 0, []
     for piece in piece_chunks:
         usage = piece.get("usage") or {}
         merged["usage"]["input_tokens"] += usage.get("input_tokens") or 0
@@ -680,6 +764,14 @@ def merge_pieces(piece_chunks, camera, room, seg_start, minutes, model):
             merged[key].extend(piece.get(key) or [])
         if piece.get("parse_error"):
             failed += 1
+            start, mins = piece.get("piece_start_iso"), piece.get("piece_minutes")
+            if start and mins:
+                try:
+                    s = datetime.fromisoformat(start)
+                    lost.append({"start_iso": start,
+                                 "end_iso": (s + timedelta(minutes=mins)).isoformat()})
+                except ValueError:
+                    pass
         if piece.get("summary"):
             summaries.append(piece["summary"].strip())
     merged["activities"].sort(key=lambda a: a["start_iso"])
@@ -693,7 +785,21 @@ def merge_pieces(piece_chunks, camera, room, seg_start, minutes, model):
         merged["parse_error"] = True
         merged["failed_pieces"] = failed
         merged["pieces"] = len(piece_chunks)
+        # The lost ranges, so coverage can subtract them. Reporting the whole
+        # segment as analyzed while a piece of it produced nothing overstates
+        # the very number the reader uses to calibrate everything else.
+        merged["unanalyzed_intervals"] = sorted(lost, key=lambda iv: iv["start_iso"])
+        merged["analyzed_minutes"] = max(
+            minutes - sum(_iv_minutes(iv) for iv in lost), 0)
     return merged
+
+
+def _iv_minutes(iv):
+    try:
+        return (datetime.fromisoformat(iv["end_iso"])
+                - datetime.fromisoformat(iv["start_iso"])).total_seconds() / 60
+    except (KeyError, ValueError):
+        return 0
 
 
 def _partial_path(camera, seg_start):
@@ -843,11 +949,39 @@ def preflight(camera, room, raw_path, seg_start):
     return True
 
 
+def previous_summaries(camera, seg_start, limit=2):
+    """What this camera already reported earlier today, oldest first.
+
+    Chunks are the only memory the pipeline has — each Gemini call is
+    stateless, so without this every half-hour is described as if the day began
+    at its first frame.
+    """
+    day_dir = os.path.join(CHUNKS_DIR, seg_start.date().isoformat())
+    if not os.path.isdir(day_dir):
+        return []
+    out = []
+    for name in sorted(os.listdir(day_dir)):
+        if not (name.startswith(f"{camera}_") and name.endswith(".json")):
+            continue
+        try:
+            with open(os.path.join(day_dir, name)) as f:
+                chunk = json.load(f)
+        except (OSError, ValueError):
+            continue
+        if (chunk.get("segment_start_iso") or "") >= seg_start.isoformat():
+            continue
+        if chunk.get("summary"):
+            out.append(chunk["summary"])
+    return out[-limit:]
+
+
 def process_segment(client, model, camera, raw_path, seg_start, rooms, pacer):
     room = rooms.get(camera, camera)
     if preflight(camera, room, raw_path, seg_start):
         return
     minutes = segment_minutes(raw_path)
+    context = load_context()
+    earlier = previous_summaries(camera, seg_start)
     pieces, work_dir = downsample(raw_path, camera, piece_minutes() * 60)
     try:
         done = load_partial(camera, seg_start, len(pieces))
@@ -858,14 +992,22 @@ def process_segment(client, model, camera, raw_path, seg_start, rooms, pacer):
             if i in done:
                 continue
             piece_start = seg_start + timedelta(seconds=offset_s)
+            # Everything already summarised for this camera today, earliest
+            # first: previous segments plus the pieces of this one.
+            so_far = earlier + [done[j].get("summary", "") for j in sorted(done) if j < i]
             parsed, usage, err = analyze_with_retries(
                 client, model, pacer, path, camera, piece_start, piece_mins, rooms,
-                note=part_note(i, len(pieces)))
+                note=part_note(i, len(pieces)), context=context, earlier=so_far)
             if parsed is None:
                 logging.error("[%s %s] piece %d/%d unusable (%s) — the rest of the "
                               "segment still counts", camera,
                               piece_start.strftime("%H:%M"), i + 1, len(pieces), err)
+                # The piece's own time range travels with the failure: without
+                # it nothing downstream can know WHICH half hour was lost, and
+                # coverage silently counts the whole segment as reviewed.
                 done[i] = {"parse_error": True, "error": err, "usage": usage,
+                           "piece_start_iso": piece_start.isoformat(),
+                           "piece_minutes": piece_mins,
                            "activities": [], "phone_use": [], "notable_events": [],
                            "summary": ""}
             else:
@@ -889,6 +1031,20 @@ def process_segment(client, model, camera, raw_path, seg_start, rooms, pacer):
                              datetime.fromisoformat(p["end_iso"]), clip_out)
                 p["clip"] = f"{day}/{clip_name}"
             except (subprocess.SubprocessError, OSError) as e:
+                logging.warning("Clip extraction failed for %s: %s", clip_name, e)
+
+        # Notable events (safety concerns above all) are the findings most
+        # likely to prompt a real conversation, and they used to ship as prose
+        # with nothing to check it against. Rare by construction, so clipping
+        # every one of them is bounded.
+        for i, n in enumerate(chunk["notable_events"], start=1):
+            clip_name = f"{camera}_{seg_start.strftime('%H%M')}_notable_{i}.mp4"
+            clip_out = os.path.join(CLIPS_DIR, day, clip_name)
+            try:
+                at = datetime.fromisoformat(n["time_iso"])
+                extract_clip(raw_path, seg_start, at, at, clip_out)
+                n["clip"] = f"{day}/{clip_name}"
+            except (subprocess.SubprocessError, OSError, KeyError, ValueError) as e:
                 logging.warning("Clip extraction failed for %s: %s", clip_name, e)
 
         atomic_write_json(chunk_path(camera, seg_start), chunk)

@@ -551,7 +551,40 @@ def nanny_data():
             status = json.load(f)
     except (OSError, ValueError):
         pass
-    return jsonify({"dates": dates, "report": report, "status": status})
+    return jsonify({"dates": dates, "report": report, "status": status,
+                    "trend": nanny_trend(REPORTS_DIR, dates)})
+
+
+# A single day's flagged minutes means little without a baseline — the same
+# number is a one-off or a pattern, and that is the actual judgement being made.
+# Reads local report files only: never Neon, whose compute-hours are exactly
+# what the local-first storage design exists to avoid.
+NANNY_TREND_DAYS = 28
+
+
+def nanny_trend(reports_dir, dates):
+    """Compact per-day rollup for the trend strip, newest date last."""
+    trend = []
+    for day in sorted(dates)[-NANNY_TREND_DAYS:]:
+        try:
+            with open(os.path.join(reports_dir, f"{day}.json")) as f:
+                rep = json.load(f)
+        except (OSError, ValueError):
+            continue
+        phone = rep.get("phone_use", {})
+        cov = [c for c in (rep.get("coverage") or {}).values() if c.get("window_minutes")]
+        worst = min((c["analyzed_minutes"] / c["window_minutes"] for c in cov),
+                    default=0.0)
+        trend.append({
+            "date": day,
+            "unauthorized_minutes": phone.get("unauthorized_minutes", 0),
+            "total_phone_minutes": phone.get("total_minutes", 0),
+            "notable_count": len(rep.get("notable_events", [])),
+            "sleep_minutes": (rep.get("sleep") or {}).get("total_sleep_minutes", 0),
+            "coverage_pct": round(worst * 100),
+            "verdict_level": (rep.get("verdict") or {}).get("level", "clear"),
+        })
+    return trend
 
 
 @app.route("/nanny/clips/<day>/<path:filename>")

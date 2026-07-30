@@ -7,11 +7,12 @@ no ffmpeg (analyze_video's imports are function-local by design).
 Run:  venv/bin/python tests/test_nanny_analyze.py
 """
 
+import inspect
 import os
 import shutil
 import sys
 import tempfile
-from datetime import datetime
+from datetime import datetime, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -229,10 +230,177 @@ def test_env_knobs():
                 os.environ[k] = v
 
 
+def test_sample_fps():
+    print("sample fps (the token lever)")
+    saved = os.environ.get("NANNY_SAMPLE_FPS")
+    try:
+        os.environ.pop("NANNY_SAMPLE_FPS", None)
+        check("default is 0.25", nanny_analyze.sample_fps() == 0.25)
+        os.environ["NANNY_SAMPLE_FPS"] = "0.5"
+        check("overridable", nanny_analyze.sample_fps() == 0.5)
+        os.environ["NANNY_SAMPLE_FPS"] = "0"
+        check("floored above zero", nanny_analyze.sample_fps() == 0.01)
+        os.environ["NANNY_SAMPLE_FPS"] = "banana"
+        check("garbage falls back to the default", nanny_analyze.sample_fps() == 0.25)
+    finally:
+        if saved is None:
+            os.environ.pop("NANNY_SAMPLE_FPS", None)
+        else:
+            os.environ["NANNY_SAMPLE_FPS"] = saved
+
+
+def test_downsample_uses_configured_fps():
+    print("ffmpeg is told the same fps as the API")
+    calls = []
+    orig_run, orig_probe = nanny_analyze.subprocess.run, nanny_analyze.probe_seconds
+    saved = os.environ.get("NANNY_SAMPLE_FPS")
+    tmp = tempfile.mkdtemp()
+    orig_lowres = nanny_analyze.LOWRES_DIR
+    nanny_analyze.LOWRES_DIR = os.path.join(tmp, "lowres")
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        # Stand in for the transcode: one output file where ffmpeg would put it.
+        out = cmd[-1].replace("%03d", "000")
+        os.makedirs(os.path.dirname(out), exist_ok=True)
+        open(out, "w").close()
+        return None
+
+    try:
+        nanny_analyze.subprocess.run = fake_run
+        nanny_analyze.probe_seconds = lambda p: 1800.0
+        os.environ["NANNY_SAMPLE_FPS"] = "0.25"
+        pieces, work = nanny_analyze.downsample("/tmp/raw.mp4", "kitchen")
+        vf = calls[0][calls[0].index("-vf") + 1]
+        check("ffmpeg gets the configured rate", vf == "fps=0.25", vf)
+        check("a piece came back", len(pieces) == 1)
+        # Duration is untouched by the fps filter, so offsets stay wall-clock.
+        check("30 minutes of footage stays 30 minutes", pieces[0][2] == 30,
+              str(pieces[0]))
+    finally:
+        nanny_analyze.subprocess.run, nanny_analyze.probe_seconds = orig_run, orig_probe
+        nanny_analyze.LOWRES_DIR = orig_lowres
+        if saved is None:
+            os.environ.pop("NANNY_SAMPLE_FPS", None)
+        else:
+            os.environ["NANNY_SAMPLE_FPS"] = saved
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_fps_rejection_falls_back():
+    print("a model that rejects video_metadata still gets analyzed")
+    seen = []
+
+    class Pacer:
+        def wait(self): pass
+        def charge(self, n): pass
+        def defer(self, s): pass
+
+    def fake_analyze(client, model, *args, extras=True, with_fps=True, **kw):
+        seen.append(with_fps)
+        if with_fps:
+            raise FakeAPIError(400, "Invalid value at 'contents.video_metadata.fps'")
+        return {"ok": True}, {"input_tokens": 10}
+
+    orig = nanny_analyze.analyze_video
+    try:
+        nanny_analyze.analyze_video = fake_analyze
+        parsed, usage, err = nanny_analyze.analyze_with_retries(
+            None, "some-model", Pacer(), "/tmp/x.mp4", "kitchen",
+            datetime(2026, 7, 27, 10, 0), 30, {})
+        check("tried with fps, then without", seen == [True, False], str(seen))
+        check("the segment still produced a result", parsed == {"ok": True} and err is None)
+    finally:
+        nanny_analyze.analyze_video = orig
+
+
+def test_household_context():
+    print("household context and continuity blocks")
+    tmp = tempfile.mkdtemp()
+    saved = os.environ.get("NANNY_CONTEXT_FILE")
+    try:
+        path = os.path.join(tmp, "ctx.md")
+        with open(path, "w") as f:
+            f.write("# a comment line that should be stripped\n"
+                    "Baby: Mia, 7 months.\nCaregiver: Ana.\n")
+        os.environ["NANNY_CONTEXT_FILE"] = path
+        ctx = nanny_common.load_context()
+        check("context loaded", "Baby: Mia" in ctx and "Caregiver: Ana" in ctx)
+        check("comments stripped", "a comment line" not in ctx)
+
+        os.environ["NANNY_CONTEXT_FILE"] = os.path.join(tmp, "nope.md")
+        check("a missing file is not an error", nanny_common.load_context() == "")
+
+        with open(path, "w") as f:
+            f.write("x" * (nanny_common.CONTEXT_MAX_CHARS + 500))
+        os.environ["NANNY_CONTEXT_FILE"] = path
+        check("context is truncated",
+              len(nanny_common.load_context()) == nanny_common.CONTEXT_MAX_CHARS)
+
+        block = nanny_analyze.household_block("Caregiver: Ana.")
+        check("block names the caregiver", "Caregiver: Ana." in block)
+        check("block warns about other adults",
+              "never assume every adult is the caregiver" in block.lower(), block)
+        check("no context → no block", nanny_analyze.household_block("") == "")
+
+        check("no summaries → no block", nanny_analyze.earlier_block([]) == "")
+        check("blank summaries → no block", nanny_analyze.earlier_block(["", "  "]) == "")
+        e = nanny_analyze.earlier_block(["first hour", "second hour", "third hour"])
+        check("keeps the two most recent", "second hour" in e and "third hour" in e
+              and "first hour" not in e, e)
+    finally:
+        if saved is None:
+            os.environ.pop("NANNY_CONTEXT_FILE", None)
+        else:
+            os.environ["NANNY_CONTEXT_FILE"] = saved
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_failed_piece_records_its_range():
+    print("a failed piece says which minutes were lost")
+    seg = datetime(2026, 7, 27, 10, 0)
+
+    def piece(offset_min, minutes, ok=True):
+        start = seg + timedelta(minutes=offset_min)
+        base = {"activities": [], "phone_use": [], "notable_events": [],
+                "summary": "ok" if ok else "", "usage": {}}
+        if ok:
+            return base
+        base.update({"parse_error": True, "error": "truncated",
+                     "piece_start_iso": start.isoformat(), "piece_minutes": minutes})
+        return base
+
+    merged = nanny_analyze.merge_pieces(
+        [piece(0, 30), piece(30, 30, ok=False)], "kitchen", "kitchen", seg, 60, "m")
+    check("the hour is still one chunk", merged["segment_minutes"] == 60)
+    check("only half of it was analyzed", merged["analyzed_minutes"] == 30,
+          str(merged.get("analyzed_minutes")))
+    check("the lost range is explicit",
+          merged["unanalyzed_intervals"] == [{"start_iso": "2026-07-27T10:30:00",
+                                              "end_iso": "2026-07-27T11:00:00"}],
+          str(merged.get("unanalyzed_intervals")))
+
+    clean = nanny_analyze.merge_pieces([piece(0, 30), piece(30, 30)],
+                                       "kitchen", "kitchen", seg, 60, "m")
+    check("a clean hour carries no lost ranges", "unanalyzed_intervals" not in clean)
+
+
+def test_notable_events_get_clips():
+    print("notable events get evidence, like phone events already do")
+    src = inspect.getsource(nanny_analyze.process_segment)
+    notable_part = src.split("notable_events")[-1]
+    check("extract_clip is called for them", "extract_clip" in notable_part, notable_part[:200])
+    # Clips are cut from the raw segment, so this must happen before it is deleted.
+    check("before the raw segment is removed",
+          src.index("_notable_") < src.index("os.remove(raw_path)"))
+
+
 def main():
     for fn in (test_error_classification, test_retry_delay, test_pacer,
                test_merge_pieces, test_partial_checkpoint, test_part_note,
-               test_env_knobs):
+               test_env_knobs, test_sample_fps, test_downsample_uses_configured_fps,
+               test_fps_rejection_falls_back, test_household_context,
+               test_failed_piece_records_its_range, test_notable_events_get_clips):
         fn()
     print()
     if FAILURES:

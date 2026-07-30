@@ -41,6 +41,7 @@ import fcntl
 import json
 import os
 import re
+import shutil
 from datetime import datetime, time as dtime
 
 BASE_DIR    = os.path.dirname(os.path.abspath(__file__))
@@ -122,6 +123,71 @@ def load_camera_rooms(cameras, env=os.environ):
     for cam in cameras:
         mapping.setdefault(cam, cam)
     return mapping
+
+
+CONTEXT_FILE_DEFAULT = "/etc/nursery-tracker/nanny_context.md"
+CONTEXT_MAX_CHARS = 4000
+
+
+def load_context(env=os.environ):
+    """Standing household context for the prompt: who the caregiver is, who else
+    lives here, the baby's name and age.
+
+    Kept out of the repo (real names of a child and an employee do not belong in
+    git history) and out of nanny.env, which is a shell-ish key=value file that
+    cannot hold a paragraph. Never raises: a missing or unreadable context file
+    costs the model some background, it does not stop the day being analyzed.
+    Truncated because it rides on every single call.
+    """
+    path = env.get("NANNY_CONTEXT_FILE", "").strip() or CONTEXT_FILE_DEFAULT
+    try:
+        with open(path) as f:
+            text = f.read()
+    except OSError:
+        return ""
+    lines = [ln for ln in text.splitlines() if not ln.lstrip().startswith("#")]
+    return "\n".join(lines).strip()[:CONTEXT_MAX_CHARS]
+
+
+def context_age_days(env=os.environ):
+    """Days since the household context was last edited, or None if absent.
+
+    A caregiver change against a stale file miscasts people in every prompt,
+    indefinitely and silently — the model keeps confidently naming someone who
+    no longer works here.
+    """
+    path = env.get("NANNY_CONTEXT_FILE", "").strip() or CONTEXT_FILE_DEFAULT
+    try:
+        mtime = os.path.getmtime(path)
+    except OSError:
+        return None
+    return (datetime.now() - datetime.fromtimestamp(mtime)).days
+
+
+def disk_status():
+    """Free space and the unanalyzed-raw backlog behind it.
+
+    The silent failure mode of this pipeline is the analyzer falling behind on
+    quota until purge_raw_under_disk_pressure() starts deleting hours nobody
+    ever looked at. That is visible here *before* it fires; until now the first
+    sign was footage already gone.
+    """
+    out = {"free_gb": None, "free_floor_gb": round(MIN_FREE_BYTES / 1024**3, 1),
+           "pending_segments": 0, "oldest_pending_hours": None}
+    try:
+        out["free_gb"] = round(shutil.disk_usage(BASE_DIR).free / 1024**3, 1)
+    except OSError:
+        pass
+    try:
+        pending = pending_segments(now=datetime.now())
+    except OSError:
+        return out
+    out["pending_segments"] = len(pending)
+    if pending:
+        oldest = min(seg_start for _, _, seg_start in pending)
+        out["oldest_pending_hours"] = round(
+            (datetime.now() - oldest).total_seconds() / 3600, 1)
+    return out
 
 
 def load_window(env=os.environ):

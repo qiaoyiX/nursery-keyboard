@@ -7,6 +7,8 @@ Gemini is exercised on the Pi / with a real key instead (see plan).
 Run:  venv/bin/python tests/test_nanny_report.py
 """
 
+import inspect
+import io
 import json
 import os
 import shutil
@@ -239,11 +241,16 @@ def test_missing_toolchain_deletes_nothing():
 def test_give_up_policy():
     print("give up on attempts, not on age")
     import nanny_analyze
-    seg_start = datetime(2026, 7, 27, 12, 0)
+    # Relative to now, never a fixed date: give_up_on_failed_raw() also writes
+    # footage off once it is older than RAW_MAX_AGE_HOURS and has been tried,
+    # so a hard-coded segment name silently starts failing this test two days
+    # after it was written.
+    seg_start = (datetime.now() - timedelta(hours=2)).replace(
+        minute=0, second=0, microsecond=0)
     budget = nanny_analyze.max_segment_attempts()
 
     with RawFixture() as fx:
-        raw = fx.raw("kitchen", "20260727_120000.mp4")
+        raw = fx.raw("kitchen", seg_start.strftime("%Y%m%d_%H%M%S") + ".mp4")
         for i in range(budget - 1):
             nanny_analyze.record_failure(raw, f"boom {i}")
         nanny_analyze.give_up_on_failed_raw()
@@ -642,6 +649,567 @@ def test_coverage():
     check("silent camera flagged", cov["kitchen"]["gaps"] == [{"whole_day": True}])
 
 
+# ── Day metrics ───────────────────────────────────────────────────────────────
+
+WINDOW = (dtime(10, 0), dtime(18, 0))
+DAY = date(2026, 7, 27)
+
+
+def _iso(h, m=0):
+    return datetime.combine(DAY, dtime(h, m)).isoformat()
+
+
+def _chunk(camera, hour, activities=(), phone=(), minutes=60):
+    return {"camera": camera, "segment_start_iso": _iso(hour),
+            "segment_minutes": minutes, "activities": list(activities),
+            "phone_use": list(phone), "notable_events": [], "summary": ""}
+
+
+def _act(cat, h0, h1, state="awake", m0=0, m1=0):
+    return {"category": cat, "start_iso": _iso(h0, m0), "end_iso": _iso(h1, m1),
+            "description": "", "baby_visible": True, "baby_state": state}
+
+
+def test_sleep_metrics():
+    print("sleep metrics (window clipping, crib ∪ camera, cross-check)")
+    import nanny_report as R
+
+    # Crib monitor: 09:00-11:00 (overnight tail crosses into the window) and
+    # 14:00-15:00. Bedroom camera additionally sees 16:00-16:30, which the crib
+    # monitor cannot: there is no crib monitor in the bedroom.
+    naps = [(datetime.combine(DAY, dtime(9, 0)), datetime.combine(DAY, dtime(11, 0))),
+            (datetime.combine(DAY, dtime(14, 0)), datetime.combine(DAY, dtime(15, 0)))]
+    chunks = [_chunk("bedcam", 16, [_act("resting", 16, 16, "asleep", m1=30)])]
+    rooms = {"bedcam": "bedroom"}
+
+    m = R.sleep_metrics(DAY, chunks, rooms, naps, WINDOW)
+    # 10-11 (clipped from 09:00) + 14-15 + 16:00-16:30 = 60 + 60 + 30
+    check("sleep clipped to the care window", m["total_sleep_minutes"] == 150.0,
+          str(m["total_sleep_minutes"]))
+    check("nap count on the merged union", m["nap_count"] == 3, str(m["nap_count"]))
+    check("longest nap", m["longest_nap_minutes"] == 60.0, str(m["longest_nap_minutes"]))
+    check("first sleep is the clipped start", m["first_sleep_start_iso"] == _iso(10))
+    check("last wake", m["last_wake_iso"] == _iso(16, 30))
+    # Awake gaps inside 10-18: 11-14 (180), 15-16 (60), 16:30-18 (90)
+    check("longest awake stretch", m["longest_awake_stretch_minutes"] == 180.0,
+          str(m["longest_awake_stretch_minutes"]))
+    check("crib monitor minutes clipped", m["crib_monitor_minutes"] == 120.0,
+          str(m["crib_monitor_minutes"]))
+    check("camera-observed minutes", m["camera_observed_minutes"] == 30.0,
+          str(m["camera_observed_minutes"]))
+    check("the bedroom nap is camera-only", m["camera_only_minutes"] == 30.0,
+          str(m["camera_only_minutes"]))
+    check("crib-only is what the cameras missed", m["crib_only_minutes"] == 120.0,
+          str(m["crib_only_minutes"]))
+    check("no agreement in this fixture", m["agreement_minutes"] == 0.0)
+
+    empty = R.sleep_metrics(DAY, [], {}, [], WINDOW)
+    check("no sleep → zeros, not a crash",
+          empty["total_sleep_minutes"] == 0.0 and empty["nap_count"] == 0
+          and empty["first_sleep_start_iso"] is None)
+    check("no sleep → the whole window is one awake stretch",
+          empty["longest_awake_stretch_minutes"] == 480.0,
+          str(empty["longest_awake_stretch_minutes"]))
+
+
+def test_activity_metrics():
+    print("care activities (double coverage counts once)")
+    import nanny_report as R
+
+    # The same feeding, seen by two cameras in the same room, with slightly
+    # different boundaries — the union must not bill it twice.
+    chunks = [
+        _chunk("cam1", 10, [_act("feeding", 10, 10, m1=30), _act("play", 11, 12)]),
+        _chunk("cam2", 10, [_act("feeding", 10, 10, m0=10, m1=40)]),
+        _chunk("cam1", 12, [_act("diaper", 12, 12, m1=10),
+                            _act("housework", 17, 19)]),   # runs past the window
+    ]
+    m = R.activity_metrics(DAY, chunks, {"cam1": "nursery", "cam2": "nursery"}, WINDOW)
+
+    check("overlapping feeding counted once", m["minutes_by_category"]["feeding"] == 40.0,
+          str(m["minutes_by_category"]["feeding"]))
+    check("one merged feeding event", m["feeding_count"] == 1, str(m["feeding_count"]))
+    check("diaper counted", m["diaper_count"] == 1)
+    check("housework clipped at the window end",
+          m["minutes_by_category"]["housework"] == 60.0,
+          str(m["minutes_by_category"]["housework"]))
+    check("active care = feeding ∪ play", m["active_care_minutes"] == 100.0,
+          str(m["active_care_minutes"]))
+    check("categories with no minutes are omitted",
+          "sleep_prep" not in m["minutes_by_category"])
+
+    unknown = _chunk("cam1", 10, [_act("napping_on_the_job", 10, 11)])
+    m2 = R.activity_metrics(DAY, [unknown], {}, WINDOW)
+    check("a category outside the schema is ignored", m2["minutes_by_category"] == {})
+
+
+def test_attendance_metrics():
+    print("attendance (presence outranks absence; gaps are unclear, not neglect)")
+    import nanny_report as R
+
+    # 10-11: the caregiver is out of frame with an awake baby and no camera
+    # anywhere shows them → the one flaggable span. 11-12: out of frame again,
+    # but the kitchen camera has them doing housework → presence clears it.
+    chunks = [
+        _chunk("nursery1", 10, [_act("out_of_frame", 10, 11)]),
+        _chunk("nursery2", 11, [_act("out_of_frame", 11, 12)]),
+        _chunk("kitchen", 11, [_act("housework", 11, 12)]),
+    ]
+    rooms = {"nursery1": "nursery", "nursery2": "nursery", "kitchen": "kitchen"}
+
+    m = R.attendance_metrics(DAY, chunks, rooms, [], WINDOW)
+    check("awake baby + nobody in frame is flagged",
+          m["unattended_minutes"] == 60.0, str(m["unattended_minutes"]))
+    check("longest unattended stretch", m["longest_unattended_stretch_minutes"] == 60.0)
+    check("presence in another room clears the second span",
+          all(iv["start_iso"] != _iso(11) for iv in m["unattended_intervals"]),
+          str(m["unattended_intervals"]))
+
+    # An asleep baby alone in a crib is the normal state of affairs.
+    naps = [(datetime.combine(DAY, dtime(10, 0)), datetime.combine(DAY, dtime(11, 0)))]
+    m2 = R.attendance_metrics(DAY, chunks, rooms, naps, WINDOW)
+    check("a sleeping baby alone is not a finding", m2["unattended_minutes"] == 0.0,
+          str(m2["unattended_minutes"]))
+
+    # Only two hours were analyzed at all; the rest of the window is a blind
+    # spot and must land in unclear, never in the flagged number.
+    check("unanalyzed hours are uncovered", m["uncovered_minutes"] == 360.0,
+          str(m["uncovered_minutes"]))
+    check("blind spots are unclear, not neglect", m["unclear_minutes"] >= 360.0,
+          str(m["unclear_minutes"]))
+    check("observed minutes", m["observed_minutes"] == 120.0, str(m["observed_minutes"]))
+
+    # A low-confidence baby_unattended detection can never flag.
+    low = [_chunk("nursery1", 13,
+                  [_act("play", 13, 14)],
+                  [{"start_iso": _iso(13), "end_iso": _iso(14),
+                    "context": "baby_unattended", "confidence": "low"}])]
+    m3 = R.attendance_metrics(DAY, low, {"nursery1": "nursery"}, [], WINDOW)
+    check("low-confidence unattended never flags", m3["unattended_minutes"] == 0.0,
+          str(m3["unattended_minutes"]))
+
+
+# ── Dry-run CLI ───────────────────────────────────────────────────────────────
+
+def _cli_fixture(tmp):
+    """chunks/reports dirs under tmp with one day of chunks. Returns the day."""
+    import nanny_report, storage
+    nanny_report.CHUNKS_DIR = nanny_common.CHUNKS_DIR = os.path.join(tmp, "chunks")
+    nanny_report.REPORTS_DIR = nanny_common.REPORTS_DIR = os.path.join(tmp, "reports")
+    nanny_common.STATUS_FILE = os.path.join(tmp, "status.json")
+    storage.get_sleep_sessions_range = lambda days=7: []
+    os.makedirs(os.path.join(nanny_report.CHUNKS_DIR, DAY.isoformat()))
+    os.makedirs(nanny_report.REPORTS_DIR)
+    with open(os.path.join(nanny_report.CHUNKS_DIR, DAY.isoformat(),
+                           "cam1_100000.json"), "w") as f:
+        json.dump(_chunk("cam1", 10, [_act("feeding", 10, 11)]), f)
+    return DAY
+
+
+def test_dry_run_writes_nothing():
+    print("dry run: no sweep, no writes, no cleanup")
+    import nanny_report as R, storage
+
+    tmp = tempfile.mkdtemp()
+    orig = (R.CHUNKS_DIR, R.REPORTS_DIR, nanny_common.CHUNKS_DIR,
+            nanny_common.REPORTS_DIR, nanny_common.STATUS_FILE,
+            R.analyze_pending, R.cleanup, storage.get_sleep_sessions_range)
+    swept, cleaned = [], []
+    R.analyze_pending = lambda limit=-1: swept.append(limit)
+    R.cleanup = lambda: cleaned.append(True)
+    saved = {k: os.environ.get(k) for k in ("NANNY_CAM_1", "NANNY_WINDOW", "GEMINI_API_KEY")}
+    out = io.StringIO()
+    try:
+        day = _cli_fixture(tmp)
+        os.environ.pop("GEMINI_API_KEY", None)
+        os.environ["NANNY_CAM_1"] = "cam1=rtsp://x/y"
+        os.environ["NANNY_WINDOW"] = "10:00-18:00"
+
+        stdout, sys.stdout = sys.stdout, out
+        try:
+            R.main(["--dry-run", "--date", day.isoformat()])
+        finally:
+            sys.stdout = stdout
+
+        check("no straggler sweep", swept == [], str(swept))
+        check("no cleanup", cleaned == [], str(cleaned))
+        check("nothing written to the reports dir",
+              os.listdir(R.REPORTS_DIR) == [], str(os.listdir(R.REPORTS_DIR)))
+        check("no status file", not os.path.exists(nanny_common.STATUS_FILE))
+        printed = json.loads(out.getvalue())
+        check("the report went to stdout", printed["date"] == day.isoformat())
+        check("narrative suppressed under dry run", printed["narrative"] is None)
+        check("metrics present", {"sleep", "care", "attendance"} <= set(printed))
+        check("care metrics computed",
+              printed["care"]["minutes_by_category"]["feeding"] == 60.0)
+
+        # --no-sweep alone still writes; it is only the API call that is skipped.
+        R.main(["--no-sweep", "--date", day.isoformat(), "--no-narrative"])
+        check("--no-sweep still writes the report",
+              os.path.exists(os.path.join(R.REPORTS_DIR, f"{day.isoformat()}.json")))
+        check("--no-sweep skipped the sweep", swept == [], str(swept))
+    finally:
+        (R.CHUNKS_DIR, R.REPORTS_DIR, nanny_common.CHUNKS_DIR,
+         nanny_common.REPORTS_DIR, nanny_common.STATUS_FILE,
+         R.analyze_pending, R.cleanup, storage.get_sleep_sessions_range) = orig
+        for k, v in saved.items():
+            os.environ.pop(k, None) if v is None else os.environ.__setitem__(k, v)
+        shutil.rmtree(tmp)
+
+
+def test_force_and_out():
+    print("--force rebuilds, --out redirects")
+    import nanny_report as R, storage
+
+    tmp = tempfile.mkdtemp()
+    orig = (R.CHUNKS_DIR, R.REPORTS_DIR, nanny_common.CHUNKS_DIR,
+            nanny_common.REPORTS_DIR, nanny_common.STATUS_FILE,
+            R.analyze_pending, R.cleanup, storage.get_sleep_sessions_range)
+    R.analyze_pending = lambda limit=-1: (0, 0)
+    R.cleanup = lambda: None
+    saved = {k: os.environ.get(k) for k in ("NANNY_CAM_1", "NANNY_WINDOW", "GEMINI_API_KEY")}
+    try:
+        day = _cli_fixture(tmp)
+        os.environ.pop("GEMINI_API_KEY", None)
+        os.environ["NANNY_CAM_1"] = "cam1=rtsp://x/y"
+        os.environ["NANNY_WINDOW"] = "10:00-18:00"
+        live = os.path.join(R.REPORTS_DIR, f"{day.isoformat()}.json")
+
+        R.main(["--date", day.isoformat(), "--no-sweep", "--no-narrative"])
+        first = json.load(open(live))["generated_at"]
+
+        # Without --force the day is already reported, so an auto-selected run
+        # must leave it exactly as it was.
+        R.main(["--no-sweep", "--no-narrative"])
+        check("an already-reported day is not rebuilt",
+              json.load(open(live))["generated_at"] == first)
+
+        R.main(["--date", day.isoformat(), "--force", "--no-sweep", "--no-narrative"])
+        check("--force rebuilds it",
+              json.load(open(live))["generated_at"] != first)
+
+        scratch = os.path.join(tmp, "scratch")
+        live_before = json.load(open(live))["generated_at"]
+        status_before = open(nanny_common.STATUS_FILE).read()
+        R.main(["--date", day.isoformat(), "--out", scratch, "--no-sweep",
+                "--no-narrative"])
+        check("--out writes there", os.path.exists(
+            os.path.join(scratch, f"{day.isoformat()}.json")))
+        check("--out leaves the live report alone",
+              json.load(open(live))["generated_at"] == live_before)
+        check("--out does not claim a production run",
+              open(nanny_common.STATUS_FILE).read() == status_before)
+    finally:
+        (R.CHUNKS_DIR, R.REPORTS_DIR, nanny_common.CHUNKS_DIR,
+         nanny_common.REPORTS_DIR, nanny_common.STATUS_FILE,
+         R.analyze_pending, R.cleanup, storage.get_sleep_sessions_range) = orig
+        for k, v in saved.items():
+            os.environ.pop(k, None) if v is None else os.environ.__setitem__(k, v)
+        shutil.rmtree(tmp)
+
+
+# ── Cross-camera phone merge / person attribution / clip hygiene ──────────────
+
+def _phone(camera, room, h0, m0, h1, m1, conf="high", ctx="unclear",
+           person="caregiver", clip=None):
+    ev = {"camera": camera, "room": room, "confidence": conf, "context": ctx,
+          "person": person, "description": f"{camera} view",
+          "start_iso": _iso(h0, m0), "end_iso": _iso(h1, m1)}
+    if clip:
+        ev["clip"] = clip
+    return ev
+
+
+def test_merge_phone_events():
+    print("two angles on one phone pickup are one event")
+    import nanny_report as R
+
+    # Same room, overlapping: 10:04-10:06 and 10:05-10:07.
+    events = [
+        _phone("nursery1", "nursery", 10, 4, 10, 6, conf="medium",
+               ctx="baby_not_in_frame", clip="d/nursery1_phone_1.mp4"),
+        _phone("nursery2", "nursery", 10, 5, 10, 7, conf="high",
+               ctx="while_holding_baby", clip="d/nursery2_phone_1.mp4"),
+        # Different room at the same time: a genuinely separate observation.
+        _phone("kitchen", "kitchen", 10, 5, 10, 6, clip="d/kitchen_phone_1.mp4"),
+    ]
+    merged = R.merge_phone_events(events)
+    check("nursery pair collapsed, kitchen kept", len(merged) == 2, str(len(merged)))
+
+    nursery = [m for m in merged if m["room"] == "nursery"][0]
+    check("span is the union", nursery["start_iso"] == _iso(10, 4)
+          and nursery["end_iso"] == _iso(10, 7), str(nursery))
+    check("highest confidence wins", nursery["confidence"] == "high")
+    check("most specific context wins", nursery["context"] == "while_holding_baby")
+    check("one clip, from the most confident camera",
+          nursery["clip"] == "d/nursery2_phone_1.mp4", nursery.get("clip"))
+    check("the other angle is credited, not shown",
+          nursery.get("also_seen_by") == ["nursery1"], str(nursery.get("also_seen_by")))
+    check("the other room is untouched",
+          [m for m in merged if m["room"] == "kitchen"][0]["clip"] == "d/kitchen_phone_1.mp4")
+
+    # A chain of staggered overlaps is still one event.
+    chain = [_phone("a", "r", 10, 0, 10, 2), _phone("b", "r", 10, 1, 10, 5),
+             _phone("c", "r", 10, 4, 10, 6)]
+    check("staggered chain collapses", len(R.merge_phone_events(chain)) == 1)
+    # Far apart in the same room: two real events.
+    apart = [_phone("a", "r", 10, 0, 10, 2), _phone("a", "r", 11, 0, 11, 2)]
+    check("distant events stay separate", len(R.merge_phone_events(apart)) == 2)
+    # Unparseable timestamps must never be silently dropped.
+    bad = [{"camera": "a", "room": "r", "start_iso": "nonsense"}]
+    check("unusable events pass through", len(R.merge_phone_events(bad)) == 1)
+
+
+def test_person_attribution():
+    print("only the caregiver's phone minutes are scored")
+    import nanny_report as R
+
+    naps = []
+    awake = [_chunk("cam1", 10, [_act("play", 10, 12)])]
+    rooms = {"cam1": "nursery"}
+
+    def stats_for(person):
+        ev = _phone("cam1", "nursery", 10, 0, 10, 30, ctx="baby_nearby_awake",
+                    person=person)
+        st, _ = R.classify_phone_use([ev], awake, rooms, naps)
+        return st, ev
+
+    st, ev = stats_for("caregiver")
+    check("caregiver is flagged", st["unauthorized_minutes"] == 30.0
+          and ev["authorization"] == "unauthorized", str(st))
+
+    st, ev = stats_for("unclear")
+    check("unattributed is still flagged", st["unauthorized_minutes"] == 30.0,
+          str(st["unauthorized_minutes"]))
+
+    st, ev = stats_for("other_adult")
+    check("another adult counts toward nothing",
+          st["unauthorized_minutes"] == 0.0 and st["total_minutes"] == 0.0, str(st))
+    check("and is labelled as such", ev["authorization"] == "not_caregiver",
+          ev.get("authorization"))
+    check("but is still counted separately", st["other_adult_event_count"] == 1
+          and st["event_count"] == 0, str(st))
+
+
+def test_clip_pruning():
+    print("superseded clips are pruned, unreported days are not touched")
+    import nanny_report as R
+
+    tmp = tempfile.mkdtemp()
+    orig = (R.CLIPS_DIR, R.REPORTS_DIR, nanny_common.CLIPS_DIR, nanny_common.REPORTS_DIR)
+    R.CLIPS_DIR = nanny_common.CLIPS_DIR = os.path.join(tmp, "clips")
+    R.REPORTS_DIR = nanny_common.REPORTS_DIR = os.path.join(tmp, "reports")
+    try:
+        reported, pending = "2026-07-27", "2026-07-28"
+        for day in (reported, pending):
+            os.makedirs(os.path.join(R.CLIPS_DIR, day))
+            for f in ("keep.mp4", "superseded.mp4"):
+                open(os.path.join(R.CLIPS_DIR, day, f), "w").close()
+        os.makedirs(R.REPORTS_DIR)
+        with open(os.path.join(R.REPORTS_DIR, f"{reported}.json"), "w") as f:
+            json.dump({"phone_use": {"events": [{"clip": f"{reported}/keep.mp4"}]}}, f)
+
+        R.prune_superseded_clips()
+        left = sorted(os.listdir(os.path.join(R.CLIPS_DIR, reported)))
+        check("the referenced clip survives", left == ["keep.mp4"], str(left))
+        untouched = sorted(os.listdir(os.path.join(R.CLIPS_DIR, pending)))
+        check("a day with no report keeps everything",
+              untouched == ["keep.mp4", "superseded.mp4"], str(untouched))
+    finally:
+        (R.CLIPS_DIR, R.REPORTS_DIR,
+         nanny_common.CLIPS_DIR, nanny_common.REPORTS_DIR) = orig
+        shutil.rmtree(tmp)
+
+
+# ── Coverage honesty / verdict / retention ────────────────────────────────────
+
+def test_coverage_counts_failed_pieces():
+    print("a failed piece is a coverage gap, not analyzed time")
+    import nanny_report as R
+
+    partial = _chunk("cam1", 10)
+    partial["unanalyzed_intervals"] = [{"start_iso": _iso(10, 30), "end_iso": _iso(11)}]
+    cov = R.coverage_for([partial, _chunk("cam1", 11)], ["cam1"], WINDOW)["cam1"]
+    check("the lost half hour is not counted as analyzed",
+          cov["analyzed_minutes"] == 90, str(cov["analyzed_minutes"]))
+    check("and shows up as a real gap",
+          {"start_iso": _iso(10, 30), "end_iso": _iso(11)} in cov["gaps"], str(cov["gaps"]))
+
+    # A chunk written before this existed must read exactly as it used to.
+    old = R.coverage_for([_chunk("cam1", 10)], ["cam1"], WINDOW)["cam1"]
+    check("pre-change chunks still count in full", old["analyzed_minutes"] == 60,
+          str(old["analyzed_minutes"]))
+
+
+def test_day_verdict():
+    print("the verdict a parent reads first")
+    import nanny_report as R
+
+    full = {"cam1": {"analyzed_minutes": 480, "window_minutes": 480}}
+    def rep(**kw):
+        base = {"notable_events": [], "phone_use": {"unauthorized_minutes": 0,
+                                                    "unauthorized_event_count": 0},
+                "coverage": full, "failures": [], "config_errors": [],
+                "no_analysis": False}
+        base.update(kw)
+        return R.day_verdict(base)
+
+    check("a clean, fully covered day is clear", rep()["level"] == "clear")
+    check("flagged minutes need attention",
+          rep(phone_use={"unauthorized_minutes": 12, "unauthorized_event_count": 2})["level"]
+          == "attention")
+    check("a safety concern outranks flagged minutes",
+          rep(notable_events=[{"type": "safety_concern", "description": "left on couch"}],
+              phone_use={"unauthorized_minutes": 12, "unauthorized_event_count": 1}
+              )["level"] == "concern")
+    thin = rep(coverage={"cam1": {"analyzed_minutes": 120, "window_minutes": 480}})
+    check("a day nobody watched is not a clean day", thin["level"] == "degraded", thin["level"])
+    check("and says why", any("25%" in r for r in thin["reasons"]), str(thin["reasons"]))
+    check("no analysis at all is degraded", rep(no_analysis=True)["level"] == "degraded")
+
+    # Degradation qualifies a finding rather than replacing it.
+    both = rep(phone_use={"unauthorized_minutes": 12, "unauthorized_event_count": 1},
+               coverage={"cam1": {"analyzed_minutes": 120, "window_minutes": 480}})
+    check("a flag in thin coverage is still a flag", both["level"] == "attention")
+    check("but carries the coverage caveat",
+          any("25%" in r for r in both["reasons"]), str(both["reasons"]))
+
+
+def test_retention():
+    print("chunks die with their clips; unmerged days survive")
+    import nanny_report as R
+
+    tmp = tempfile.mkdtemp()
+    orig = (R.CHUNKS_DIR, R.REPORTS_DIR, R.CLIPS_DIR,
+            nanny_common.CHUNKS_DIR, nanny_common.REPORTS_DIR, nanny_common.CLIPS_DIR)
+    R.CHUNKS_DIR = nanny_common.CHUNKS_DIR = os.path.join(tmp, "chunks")
+    R.REPORTS_DIR = nanny_common.REPORTS_DIR = os.path.join(tmp, "reports")
+    R.CLIPS_DIR = nanny_common.CLIPS_DIR = os.path.join(tmp, "clips")
+    saved = {k: os.environ.get(k) for k in
+             ("NANNY_CHUNK_RETENTION_DAYS", "NANNY_REPORT_RETENTION_DAYS")}
+    try:
+        os.makedirs(R.REPORTS_DIR)
+        old = date.today() - timedelta(days=40)
+        recent = date.today() - timedelta(days=2)
+        unmerged = date.today() - timedelta(days=30)
+        for day in (old, recent, unmerged):
+            os.makedirs(os.path.join(R.CHUNKS_DIR, day.isoformat()))
+        for day in (old, recent):
+            with open(os.path.join(R.REPORTS_DIR, f"{day.isoformat()}.json"), "w") as f:
+                json.dump({"date": day.isoformat()}, f)
+
+        os.environ["NANNY_CHUNK_RETENTION_DAYS"] = "14"
+        R.prune_old_chunks()
+        check("old merged chunks pruned",
+              not os.path.isdir(os.path.join(R.CHUNKS_DIR, old.isoformat())))
+        check("recent chunks kept",
+              os.path.isdir(os.path.join(R.CHUNKS_DIR, recent.isoformat())))
+        check("an unmerged day is never pruned, however old",
+              os.path.isdir(os.path.join(R.CHUNKS_DIR, unmerged.isoformat())))
+
+        os.environ["NANNY_REPORT_RETENTION_DAYS"] = "365"
+        R.prune_old_reports()
+        check("reports well inside retention survive",
+              os.path.exists(os.path.join(R.REPORTS_DIR, f"{old.isoformat()}.json")))
+        os.environ["NANNY_REPORT_RETENTION_DAYS"] = "30"
+        R.prune_old_reports()
+        check("and prune once past it",
+              not os.path.exists(os.path.join(R.REPORTS_DIR, f"{old.isoformat()}.json")))
+    finally:
+        (R.CHUNKS_DIR, R.REPORTS_DIR, R.CLIPS_DIR,
+         nanny_common.CHUNKS_DIR, nanny_common.REPORTS_DIR, nanny_common.CLIPS_DIR) = orig
+        for k, v in saved.items():
+            os.environ.pop(k, None) if v is None else os.environ.__setitem__(k, v)
+        shutil.rmtree(tmp)
+
+
+def test_notable_clips_survive_pruning():
+    print("notable-event clips are not swept as unreferenced")
+    import nanny_report as R
+
+    tmp = tempfile.mkdtemp()
+    orig = (R.CLIPS_DIR, R.REPORTS_DIR, nanny_common.CLIPS_DIR, nanny_common.REPORTS_DIR)
+    R.CLIPS_DIR = nanny_common.CLIPS_DIR = os.path.join(tmp, "clips")
+    R.REPORTS_DIR = nanny_common.REPORTS_DIR = os.path.join(tmp, "reports")
+    try:
+        day = "2026-07-27"
+        os.makedirs(os.path.join(R.CLIPS_DIR, day))
+        os.makedirs(R.REPORTS_DIR)
+        for f in ("phone.mp4", "notable.mp4", "orphan.mp4"):
+            open(os.path.join(R.CLIPS_DIR, day, f), "w").close()
+        with open(os.path.join(R.REPORTS_DIR, f"{day}.json"), "w") as f:
+            json.dump({"phone_use": {"events": [{"clip": f"{day}/phone.mp4"}]},
+                       "notable_events": [{"clip": f"{day}/notable.mp4"}]}, f)
+        R.prune_superseded_clips()
+        left = sorted(os.listdir(os.path.join(R.CLIPS_DIR, day)))
+        check("the safety-concern clip survives", left == ["notable.mp4", "phone.mp4"], str(left))
+    finally:
+        (R.CLIPS_DIR, R.REPORTS_DIR,
+         nanny_common.CLIPS_DIR, nanny_common.REPORTS_DIR) = orig
+        shutil.rmtree(tmp)
+
+
+def test_context_staleness_is_a_warning():
+    print("a stale context warns; it never reads as broken config")
+    import nanny_report as R
+
+    tmp = tempfile.mkdtemp()
+    saved = os.environ.get("NANNY_CONTEXT_FILE")
+    try:
+        path = os.path.join(tmp, "ctx.md")
+        os.environ["NANNY_CONTEXT_FILE"] = path
+        check("no context file at all is called out",
+              any("cannot tell the caregiver" in w for w in R.pipeline_warnings()))
+
+        with open(path, "w") as f:
+            f.write("Caregiver: Ana.\n")
+        check("a fresh context is silent", R.pipeline_warnings() == [],
+              str(R.pipeline_warnings()))
+
+        old = (datetime.now() - timedelta(days=200)).timestamp()
+        os.utime(path, (old, old))
+        warns = R.pipeline_warnings()
+        check("a stale context warns", len(warns) == 1 and "200 days" in warns[0], str(warns))
+        # The distinction that matters: warnings never degrade the report.
+        cams, rooms, window, days, errors = R.load_config()
+        check("and is not a config error", errors == [], str(errors))
+    finally:
+        if saved is None:
+            os.environ.pop("NANNY_CONTEXT_FILE", None)
+        else:
+            os.environ["NANNY_CONTEXT_FILE"] = saved
+        shutil.rmtree(tmp)
+
+
+def test_neon_reports_are_an_archive():
+    print("nanny reports UPSERT into Neon, never snapshot over it")
+    import backup_sync
+
+    class FakeCursor:
+        def __init__(self): self.statements = []
+        def executemany(self, sql, rows): self.statements.append((sql, list(rows)))
+
+    cur = FakeCursor()
+    rows = [("2026-07-27", "2026-07-27T18:45:00", '{"date": "2026-07-27"}'),
+            ("2026-07-28", "2026-07-28T18:45:00", '{"date": "2026-07-28"}')]
+    n = backup_sync.sync_nanny_reports(cur, rows)
+    check("every local report is sent", n == 2)
+    sql = cur.statements[0][0]
+    # The whole point: local is a window over an archive Neon alone keeps, so a
+    # DELETE here would destroy every report older than local retention.
+    check("no DELETE anywhere near this table", "DELETE" not in sql.upper(), sql)
+    check("conflicts update in place", "ON CONFLICT" in sql and "DO UPDATE" in sql)
+    check("keyed by date", "report_date" in sql)
+    check("nothing to send is a no-op", backup_sync.sync_nanny_reports(cur, []) == 0)
+
+    # The guard that protects the snapshot tables must not be applied here:
+    # fewer local rows than remote is the designed steady state.
+    src = inspect.getsource(backup_sync.main)
+    guarded = src.split("sync_nanny_reports")[0]
+    check("shrinkage guard is not applied to reports",
+          guarded.count("guard_shrinkage") == 2, str(guarded.count("guard_shrinkage")))
+
+
 def main():
     for fn in (test_env_parsing, test_segments_and_offsets, test_pending_segments,
                test_preflight, test_missing_toolchain_deletes_nothing,
@@ -649,7 +1217,13 @@ def main():
                test_chunk_tolerance, test_interval_math, test_phone_policy,
                test_nap_windows_clipping, test_unreported_dates,
                test_report_failures, test_config_errors_never_delete_the_report,
-               test_empty_care_day_still_reported, test_coverage):
+               test_empty_care_day_still_reported, test_coverage,
+               test_sleep_metrics, test_activity_metrics, test_attendance_metrics,
+               test_dry_run_writes_nothing, test_force_and_out,
+               test_merge_phone_events, test_person_attribution, test_clip_pruning,
+               test_coverage_counts_failed_pieces, test_day_verdict, test_retention,
+               test_notable_clips_survive_pruning, test_context_staleness_is_a_warning,
+               test_neon_reports_are_an_archive):
         fn()
     print()
     if FAILURES:
