@@ -8,6 +8,11 @@ algorithm (v5, "event-gated latched presence") — [`sleep-monitor-algorithm.md`
 is the historical v4 spec, superseded 2026-07-02 — [`backlog.md`](backlog.md) for improvements and
 to-dos, and `../CLAUDE.md` for the operational guide.
 
+For the nanny pipeline specifically: [`nanny-report-review.md`](nanny-report-review.md) (product
+review — what the report is for, and what is deliberately not built) and
+[`llm-api-lessons.md`](llm-api-lessons.md) (**read before changing anything that calls a metered
+API on a schedule** — how our own retry logic turned ~25 failures into ~150 dashboard errors).
+
 ---
 
 ## ADR-001: Local-first JSON storage, Neon Postgres as snapshot-only backup

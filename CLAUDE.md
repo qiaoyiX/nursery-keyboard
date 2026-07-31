@@ -144,6 +144,12 @@ sudo journalctl -u nursery-sleep-monitor -f
 
 ## Nanny report
 
+> Before changing anything that calls Gemini on a schedule, read
+> **`docs/llm-api-lessons.md`**. It records how our own retry logic turned ~25 real failures into
+> ~150 console errors, why requests (not tokens) bind on the free tier, and the checklist that
+> would have caught both. `docs/nanny-report-review.md` covers what the report is *for* and what
+> is deliberately not built.
+
 Independent pipeline (does not touch the crib monitor): records the `NANNY_CAM_*` TAPO streams during the care window (default Mon–Fri 10:00–18:00), analyzes them with Gemini, and publishes a daily report at `/nanny`.
 
 - **`nanny_record.py`** — always-on daemon (`nursery-nanny-record.service`); one supervised `ffmpeg -c copy -an` per camera, hourly wall-clock-named segments in `nanny/raw/`. Video only (`-an`) deliberately — audio of an employee is wiretap territory. Refuses to record under 2 GB free disk. systemd reads the env file only at start: after editing `nanny.env`, `sudo systemctl restart nursery-nanny-record`.
