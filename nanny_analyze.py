@@ -86,6 +86,12 @@ RAW_MAX_AGE_HOURS = 48      # backstop only, and only for footage already tried
 CLIP_LEAD_S       = 15      # clip starts this long before the phone-use event
 CLIP_TAIL_S       = 15      # and runs this long past its end
 CLIP_MAX_S        = 300     # cap a single evidence clip at 5 minutes
+# A 4-minute phone event used to produce a 4.5-minute clip that was almost
+# entirely static. The model names the one second that best shows what happened
+# and we cut a short window around it — the reviewer's time is the scarce
+# resource here, not disk. CLIP_MAX_S stays as the backstop for events with no
+# usable key moment.
+KEY_MOMENT_PAD_S  = 20      # seconds either side of the model's key moment
 
 # Raw shorter than this is not footage, it is an artefact of how the recording
 # was cut (see nanny_record.WINDOW_END_GUARD_S). Uploading it costs a request
@@ -219,8 +225,10 @@ CHUNK_SCHEMA = {
                     "description": {"type": "STRING"},
                     "confidence":  {"type": "STRING", "enum": ["low", "medium", "high"]},
                     "person":      {"type": "STRING", "enum": PHONE_PERSONS},
+                    "key_moment":  {"type": "STRING"},
                 },
-                "required": ["start", "end", "context", "confidence", "person"],
+                "required": ["start", "end", "context", "confidence", "person",
+                             "key_moment"],
             },
         },
         "notable_events": {
@@ -274,9 +282,13 @@ not in this camera's view), unclear. Also set person: "caregiver" for the paid c
 described above, "other_adult" for a household member or visitor who is NOT the \
 caregiver, and "unclear" when you cannot tell them apart — only use "other_adult" when \
 the household description gives you a positive reason to, because this report is about \
-the caregiver's hours and mislabelling hides real findings. Be conservative: if you are \
-unsure it is a phone, still report it with confidence "low" rather than omitting it. Do \
-not count baby monitors or TV remotes as phones if distinguishable.
+the caregiver's hours and mislabelling hides real findings. Also set key_moment to the \
+single MM:SS within the interval that best SHOWS what happened — the clearest view of \
+the phone and of what the baby is doing — because a person will be shown only about 20 \
+seconds either side of it as the evidence for this event, not the whole interval. Be \
+conservative: if you are unsure it is a phone, still report it with confidence "low" \
+rather than omitting it. Do not count baby monitors or TV remotes as phones if \
+distinguishable.
 3. notable_events — safety-relevant moments (baby unattended on a raised surface, \
 falls, distress ignored), visitors, or milestones.
 4. summary — 2-3 plain sentences describing this hour. Mention which room this is.
@@ -397,10 +409,22 @@ def downsample(raw_path, camera, piece_seconds=0):
     return pieces, work_dir
 
 
-def extract_clip(raw_path, seg_start, event_start, event_end, clip_out):
-    """Cut an evidence clip around [event_start, event_end] from the raw segment."""
-    begin = max((event_start - seg_start).total_seconds() - CLIP_LEAD_S, 0)
-    dur = (event_end - event_start).total_seconds() + CLIP_LEAD_S + CLIP_TAIL_S
+def extract_clip(raw_path, seg_start, event_start, event_end, clip_out, focus=None):
+    """Cut an evidence clip from the raw segment.
+
+    With `focus` — the model's key moment — the clip is a short window around
+    that second rather than the whole event. A 4-minute phone event produced a
+    4.5-minute clip that was almost entirely static; nobody watches that, so the
+    evidence went unchecked. Without a focus it falls back to the full span,
+    still capped by CLIP_MAX_S.
+    """
+    if focus is not None:
+        begin = (focus - seg_start).total_seconds() - KEY_MOMENT_PAD_S
+        dur = KEY_MOMENT_PAD_S * 2
+    else:
+        begin = (event_start - seg_start).total_seconds() - CLIP_LEAD_S
+        dur = (event_end - event_start).total_seconds() + CLIP_LEAD_S + CLIP_TAIL_S
+    begin = max(begin, 0)
     dur = min(max(dur, 20), CLIP_MAX_S)
     os.makedirs(os.path.dirname(clip_out), exist_ok=True)
     cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
@@ -747,7 +771,14 @@ def build_chunk(parsed, camera, seg_start, minutes, model, usage, room=None):
             dropped += 1
             continue
         ctx, who = p.get("context"), p.get("person")
-        phone_use.append({"start_iso": s.isoformat(), "end_iso": e.isoformat(),
+        # The evidence clip is cut around this. A model that names a moment
+        # outside its own interval has told us nothing usable, so fall back to
+        # the start of the event — the pickup itself is the informative part.
+        km = wall(p.get("key_moment"))
+        if km is None or not (s <= km <= e):
+            km = s
+        phone_use.append({"key_moment_iso": km.isoformat(),
+                          "start_iso": s.isoformat(), "end_iso": e.isoformat(),
                           "context": ctx if ctx in PHONE_CONTEXTS else "unclear",
                           "description": p.get("description", ""),
                           "confidence": p.get("confidence", "low"),
@@ -1070,9 +1101,11 @@ def process_segment(client, model, camera, raw_path, seg_start, rooms, pacer):
             clip_name = f"{camera}_{seg_start.strftime('%H%M')}_phone_{i}.mp4"
             clip_out = os.path.join(CLIPS_DIR, day, clip_name)
             try:
+                key = p.get("key_moment_iso")
                 extract_clip(raw_path, seg_start,
                              datetime.fromisoformat(p["start_iso"]),
-                             datetime.fromisoformat(p["end_iso"]), clip_out)
+                             datetime.fromisoformat(p["end_iso"]), clip_out,
+                             focus=datetime.fromisoformat(key) if key else None)
                 p["clip"] = f"{day}/{clip_name}"
             except (subprocess.SubprocessError, OSError) as e:
                 logging.warning("Clip extraction failed for %s: %s", clip_name, e)
@@ -1086,7 +1119,9 @@ def process_segment(client, model, camera, raw_path, seg_start, rooms, pacer):
             clip_out = os.path.join(CLIPS_DIR, day, clip_name)
             try:
                 at = datetime.fromisoformat(n["time_iso"])
-                extract_clip(raw_path, seg_start, at, at, clip_out)
+                # A notable event is already a single instant — it IS the key
+                # moment, so centre on it rather than starting 15s before.
+                extract_clip(raw_path, seg_start, at, at, clip_out, focus=at)
                 n["clip"] = f"{day}/{clip_name}"
             except (subprocess.SubprocessError, OSError, KeyError, ValueError) as e:
                 logging.warning("Clip extraction failed for %s: %s", clip_name, e)

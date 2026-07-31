@@ -115,6 +115,14 @@
     .badge.danger { background: var(--danger-a); color: var(--danger); }
     .badge.nap { background: var(--sleep-a); color: var(--sleep); }
     video { width: 100%; border-radius: 10px; margin-top: 8px; background: #000; }
+    .speeds { display: flex; gap: 6px; margin-top: 6px; }
+    .speed {
+      flex: 1; min-height: 34px; font: inherit; font-size: .78rem;
+      background: var(--cream-2); color: var(--brown-mid); border: 1px solid transparent;
+      border-radius: 8px; cursor: pointer; padding: 6px 0;
+      font-variant-numeric: tabular-nums;
+    }
+    .speed.on { background: var(--brown-mid); color: var(--surface); font-weight: 600; }
     .hour-group { margin-bottom: 14px; }
     .hour-label { font-size: .78rem; color: var(--text-muted); font-weight: 600; margin-bottom: 6px; }
     .tl-row { display: flex; gap: 10px; font-size: .88rem; padding: 4px 0; }
@@ -166,6 +174,30 @@ function tileRow(defs) {
   }
   return grid;
 }
+// Evidence clips are now ~40s cut around the model's key moment rather than the
+// whole event, but 0.5x still matters: deciding whether something really is a
+// phone is a slow-down job, not a speed-up one.
+const PLAYBACK_RATES = [0.5, 1, 2, 4];
+
+function evidenceVideo(clipPath) {
+  const wrap = el("div");
+  const v = document.createElement("video");
+  v.controls = true; v.preload = "none";
+  v.src = "/nanny/clips/" + clipPath;
+  const bar = el("div", "speeds");
+  for (const rate of PLAYBACK_RATES) {
+    const b = el("button", "speed" + (rate === 1 ? " on" : ""), rate + "×");
+    b.type = "button";
+    b.addEventListener("click", () => {
+      v.playbackRate = rate;
+      for (const other of bar.children) other.classList.toggle("on", other === b);
+    });
+    bar.append(b);
+  }
+  wrap.append(v, bar);
+  return wrap;
+}
+
 function kvRow(label, value) {
   const r = el("div", "kv-row");
   r.append(el("div", null, label), el("div", "kv-val", value));
@@ -282,10 +314,7 @@ function render(report, status, trend) {
       when.append(el("span", "badge", n.room || n.camera));
       box.append(when, el("div", "desc", n.description));
       if (n.clip) {
-        const vid = document.createElement("video");
-        vid.controls = true; vid.preload = "none";
-        vid.src = "/nanny/clips/" + n.clip;
-        box.append(vid);
+        box.append(evidenceVideo(n.clip));
       } else {
         box.append(el("div", "desc", "No clip for this event."));
       }
@@ -353,10 +382,13 @@ function render(report, status, trend) {
         box.append(el("div", "desc", "Also seen by " + ev.also_seen_by.join(", ") + "."));
       }
       if (ev.clip) {
-        const v = document.createElement("video");
-        v.controls = true; v.preload = "none";
-        v.src = "/nanny/clips/" + ev.clip;
-        box.append(v);
+        // The clip is a ~40s window around the key moment, not the whole event,
+        // so say what the reader is looking at relative to the event's span.
+        if (ev.key_moment_iso) {
+          box.append(el("div", "desc", "Clip: ~40s around " + fmtTime(ev.key_moment_iso) +
+                        ", the clearest moment of this event."));
+        }
+        box.append(evidenceVideo(ev.clip));
       }
       c.append(box);
     }

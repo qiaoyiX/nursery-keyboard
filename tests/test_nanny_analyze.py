@@ -462,6 +462,63 @@ def test_daily_quota_ends_the_run():
         nanny_analyze.analyze_video = orig
 
 
+def test_key_moment_clipping():
+    print("clips are cut around the key moment, not the whole event")
+    seg = datetime(2026, 7, 27, 10, 0)
+    cmds = []
+    orig_run = nanny_analyze.subprocess.run
+    try:
+        nanny_analyze.subprocess.run = lambda cmd, **kw: cmds.append(cmd)
+
+        # A 4-minute event whose key moment is 3 minutes in.
+        nanny_analyze.extract_clip(
+            "/tmp/raw.mp4", seg, seg + timedelta(minutes=2), seg + timedelta(minutes=6),
+            "/tmp/out.mp4", focus=seg + timedelta(minutes=5))
+        ss, t = cmds[0][cmds[0].index("-ss") + 1], cmds[0][cmds[0].index("-t") + 1]
+        check("starts 20s before the key moment", ss == "280", ss)
+        check("and runs 40s, not 4 minutes", t == "40", t)
+
+        # No key moment → the old whole-span behaviour, still capped.
+        cmds.clear()
+        nanny_analyze.extract_clip(
+            "/tmp/raw.mp4", seg, seg + timedelta(minutes=2), seg + timedelta(minutes=6),
+            "/tmp/out.mp4")
+        t2 = cmds[0][cmds[0].index("-t") + 1]
+        check("fallback still covers the event", t2 == "270", t2)
+
+        # A key moment at the very start must not seek to a negative offset.
+        cmds.clear()
+        nanny_analyze.extract_clip("/tmp/raw.mp4", seg, seg, seg, "/tmp/out.mp4",
+                                   focus=seg + timedelta(seconds=5))
+        check("never seeks before the segment", cmds[0][cmds[0].index("-ss") + 1] == "0")
+    finally:
+        nanny_analyze.subprocess.run = orig_run
+
+
+def test_key_moment_validation():
+    print("a key moment outside its own event is discarded")
+    seg = datetime(2026, 7, 27, 10, 0)
+
+    def parsed(key_moment):
+        return {"activities": [], "notable_events": [], "summary": "",
+                "phone_use": [{"start": "05:00", "end": "09:00", "context": "unclear",
+                               "confidence": "high", "person": "caregiver",
+                               "key_moment": key_moment}]}
+
+    good = nanny_analyze.build_chunk(parsed("07:00"), "cam", seg, 60, "m", {})
+    check("a sane key moment is kept",
+          good["phone_use"][0]["key_moment_iso"] == "2026-07-27T10:07:00",
+          good["phone_use"][0]["key_moment_iso"])
+
+    # Outside the event, or unparseable: fall back to the start of the event,
+    # since the pickup itself is the informative part.
+    for bad in ("59:00", "01:00", "not a time"):
+        chunk = nanny_analyze.build_chunk(parsed(bad), "cam", seg, 60, "m", {})
+        check(f"{bad!r} falls back to the event start",
+              chunk["phone_use"][0]["key_moment_iso"] == "2026-07-27T10:05:00",
+              chunk["phone_use"][0]["key_moment_iso"])
+
+
 def test_poll_schedule_is_cheap():
     print("Files-API polling stays off the request budget")
     # Requests, not tokens, are the binding free-tier limit, and polls are most
@@ -483,7 +540,8 @@ def main():
                test_fps_rejection_falls_back, test_household_context,
                test_failed_piece_records_its_range, test_notable_events_get_clips,
                test_server_errors_drop_fps, test_daily_quota_ends_the_run,
-               test_poll_schedule_is_cheap):
+               test_poll_schedule_is_cheap, test_key_moment_clipping,
+               test_key_moment_validation):
         fn()
     print()
     if FAILURES:
