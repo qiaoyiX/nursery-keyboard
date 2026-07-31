@@ -395,12 +395,95 @@ def test_notable_events_get_clips():
           src.index("_notable_") < src.index("os.remove(raw_path)"))
 
 
+class _NullPacer:
+    def wait(self): pass
+    def charge(self, n): pass
+    def defer(self, s): pass
+
+
+def test_server_errors_drop_fps():
+    print("a model that 500s on video_metadata falls back instead of looping")
+    seen = []
+
+    def fake_analyze(client, model, *args, extras=True, with_fps=True, **kw):
+        seen.append(with_fps)
+        if with_fps:
+            # The real symptom: not every model answers 400 for an unsupported
+            # video_metadata — some just 500, which the 400 path never catches.
+            raise FakeAPIError(500, message="An internal error has occurred")
+        return {"ok": True}, {"input_tokens": 10}
+
+    orig = nanny_analyze.analyze_video
+    try:
+        nanny_analyze.analyze_video = fake_analyze
+        parsed, usage, err = nanny_analyze.analyze_with_retries(
+            None, "m", _NullPacer(), "/tmp/x.mp4", "kitchen",
+            datetime(2026, 7, 27, 10, 0), 30, {})
+        check("gives up on fps after two server errors, not five",
+              seen == [True, True, False], str(seen))
+        check("and the segment still succeeds", parsed == {"ok": True} and err is None)
+    finally:
+        nanny_analyze.analyze_video = orig
+
+
+def test_daily_quota_ends_the_run():
+    print("a per-day 429 stops the run; a per-minute one retries")
+    per_day = FakeAPIError(429, {"error": {"details": [
+        {"@type": "type.googleapis.com/google.rpc.QuotaFailure", "violations": [
+            {"quotaId": "GenerateRequestsPerDayPerProjectPerModel"}]}]}})
+    per_min = FakeAPIError(429, {"error": {"details": [
+        {"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "20s"}]}})
+    check("per-day quota recognised", nanny_analyze.daily_quota_exhausted(per_day))
+    check("per-minute quota is not", not nanny_analyze.daily_quota_exhausted(per_min))
+    check("a 500 is never a quota verdict",
+          not nanny_analyze.daily_quota_exhausted(FakeAPIError(500)))
+
+    calls = []
+
+    def fake_analyze(client, model, *a, **kw):
+        calls.append(1)
+        raise per_day
+
+    orig = nanny_analyze.analyze_video
+    try:
+        nanny_analyze.analyze_video = fake_analyze
+        raised = None
+        try:
+            nanny_analyze.analyze_with_retries(
+                None, "m", _NullPacer(), "/tmp/x.mp4", "kitchen",
+                datetime(2026, 7, 27, 10, 0), 30, {})
+        except nanny_analyze.QuotaExhausted as e:
+            raised = e
+        check("raises QuotaExhausted", raised is not None)
+        # The whole point: one logged error instead of five, times every
+        # remaining segment.
+        check("without burning the retry budget", len(calls) == 1, str(len(calls)))
+    finally:
+        nanny_analyze.analyze_video = orig
+
+
+def test_poll_schedule_is_cheap():
+    print("Files-API polling stays off the request budget")
+    # Requests, not tokens, are the binding free-tier limit, and polls are most
+    # of them. Walk the schedule for a file that takes ~30s to process.
+    polls, waited = 0, 0.0
+    p = nanny_analyze.POLL_INITIAL_S
+    while waited < 30:
+        waited += p
+        polls += 1
+        p = min(p * nanny_analyze.POLL_GROWTH, nanny_analyze.POLL_MAX_S)
+    check("a 30s file costs at most 3 polls", polls <= 3, str(polls))
+    check("first poll waits at least 10s", nanny_analyze.POLL_INITIAL_S >= 10)
+
+
 def main():
     for fn in (test_error_classification, test_retry_delay, test_pacer,
                test_merge_pieces, test_partial_checkpoint, test_part_note,
                test_env_knobs, test_sample_fps, test_downsample_uses_configured_fps,
                test_fps_rejection_falls_back, test_household_context,
-               test_failed_piece_records_its_range, test_notable_events_get_clips):
+               test_failed_piece_records_its_range, test_notable_events_get_clips,
+               test_server_errors_drop_fps, test_daily_quota_ends_the_run,
+               test_poll_schedule_is_cheap):
         fn()
     print()
     if FAILURES:

@@ -96,9 +96,16 @@ MIN_SEGMENT_SECONDS = 60
 # in the pipeline (one segment = 1 generate call but a poll every few seconds).
 # Backing off turns ~15 requests per segment into ~5 and keeps RPM headroom for
 # the calls that matter.
-POLL_INITIAL_S = 3
-POLL_MAX_S     = 20
-POLL_GROWTH    = 1.5
+# Files-API processing polls. These dominate the request count — one piece is
+# 1 upload + N polls + 1 delete + 1 generate, so N is most of the day's API
+# traffic, and on the free tier requests are the binding limit long before
+# tokens are. At 0.25 fps a 30-minute piece is a small file that processes in
+# seconds, so waiting longer before the FIRST poll costs almost nothing and
+# removes most of the calls (measured on the console: ~340 requests for 19
+# generations under the old 3s/1.5x schedule).
+POLL_INITIAL_S = 10
+POLL_MAX_S     = 30
+POLL_GROWTH    = 2.0
 
 GEMINI_RETRIES    = 5       # attempts per piece, transient failures only
 RETRY_BASE_S      = 30      # doubled per attempt when the server suggests nothing
@@ -471,6 +478,22 @@ def retry_delay_seconds(exc):
     return float(m.group(1)) if m else None
 
 
+class QuotaExhausted(Exception):
+    """The per-day request quota is gone. Not retryable today, by definition."""
+
+
+# A 429 can mean "slow down" (per-minute) or "come back tomorrow" (per-day).
+# Only the first is worth retrying, and telling them apart is the difference
+# between one logged error and several hundred.
+DAILY_QUOTA_RE = re.compile(
+    r"per\s*day|perday|requests?_per_day|GenerateRequestsPerDay|quota_?limit_?value.*day",
+    re.I)
+
+
+def daily_quota_exhausted(exc):
+    return status_code(exc) == 429 and bool(DAILY_QUOTA_RE.search(str(exc)))
+
+
 def is_retryable(exc):
     if isinstance(exc, (TimeoutError, ConnectionError, TruncatedResponse)):
         return True
@@ -618,7 +641,7 @@ def analyze_with_retries(client, model, pacer, *args, **kwargs):
     Only transient failures are retried. A 400 that names one of the optional
     config knobs retries once without them rather than failing the whole day.
     """
-    extras, with_fps = True, True
+    extras, with_fps, server_errors = True, True, 0
     for attempt in range(1, GEMINI_RETRIES + 1):
         pacer.wait()
         try:
@@ -628,6 +651,27 @@ def analyze_with_retries(client, model, pacer, *args, **kwargs):
             return parsed, usage, None if parsed is not None else "unparseable_json"
         except Exception as e:
             code = status_code(e)
+            if code in (500, 503):
+                server_errors += 1
+            if daily_quota_exhausted(e):
+                # A per-DAY quota does not recover in the next 30 seconds.
+                # Retrying it just spends more of tomorrow's budget on 429s,
+                # and marching it through every remaining segment is how one
+                # exhausted quota turns into hundreds of dashboard errors.
+                logging.error("Daily request quota is spent (%s) — ending this run; "
+                              "the timer will pick the backlog up tomorrow", e)
+                raise QuotaExhausted(str(e))
+            if with_fps and server_errors >= 2:
+                # Not every model/SDK combination accepts video_metadata on a
+                # Files-API part, and the ones that don't answer 500, not 400 —
+                # so the 400 fallback below never fires and five retries are
+                # spent on the same rejection. Drop the optimisation and take
+                # the 4x token cost rather than lose the segment.
+                logging.error("Two server errors with custom fps on %s — retrying at "
+                              "the API default 1 fps (~4x the tokens). Last error: %s",
+                              model, e)
+                with_fps, server_errors = False, 0
+                continue
             if with_fps and code == 400 and re.search(r"video_?metadata|fps", str(e), re.I):
                 # Custom sampling is an optimisation, not a requirement: fall
                 # back to the API default rather than lose the segment. Costs
@@ -1169,6 +1213,15 @@ def analyze_pending(limit=-1):
             try:
                 process_segment(client, model, camera, raw_path, seg_start, rooms, pacer)
                 done += 1
+            except QuotaExhausted:
+                failed += 1
+                # Distinct from a per-minute 429: nothing more will succeed
+                # today, so keep the raw and stop rather than convert the rest
+                # of the backlog into more errors on the dashboard.
+                logging.error("[%s %s] daily quota spent — raw kept, run ended. "
+                              "The backlog resumes on tomorrow's first timer.",
+                              camera, seg_start)
+                break
             except Exception as e:
                 failed += 1
                 if status_code(e) == 429:

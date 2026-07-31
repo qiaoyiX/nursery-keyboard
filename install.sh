@@ -121,6 +121,11 @@ if [ ! -f "$NANNY_ENV_FILE" ]; then
     sudo tee "$NANNY_ENV_FILE" > /dev/null <<EOF
 # Nanny report configuration (leave unset to disable the feature).
 # GEMINI_API_KEY=...
+# Use a FLASH-LITE model, not Flash. On the free tier Flash is 10 RPM / 250
+# requests per DAY while Flash-Lite is 15 RPM / 1000 — and this pipeline spends
+# most of its requests on Files-API uploads and polls, not on analysis. Check
+# AI Studio for the current flash-lite model id; the default below may have
+# been retired.
 # GEMINI_MODEL=gemini-2.5-flash-lite
 # One line per camera, name=rtsp-url (name becomes a directory: letters/digits/_/- only).
 # Use each camera's Camera Account credentials and the low-res sub-stream (stream2).
@@ -149,7 +154,10 @@ if [ ! -f "$NANNY_ENV_FILE" ]; then
 # NANNY_SAMPLE_FPS=0.25           # frames per second actually analyzed. Lower
 #                                 # is cheaper; below ~0.1 short phone pickups
 #                                 # start falling between frames.
-# NANNY_PIECE_MINUTES=30          # footage per Gemini call (0 = whole hour)
+# NANNY_PIECE_MINUTES=30          # footage per Gemini call (0 = whole hour).
+#                                 # On the free tier set this to 60: it halves
+#                                 # uploads, polls, deletes AND generate calls,
+#                                 # and at 0.25 fps an hour is only ~59k tokens.
 # NANNY_TPM_BUDGET=200000         # input tokens/min this pipeline allows itself
 # NANNY_MAX_SEGMENTS_PER_RUN=4    # cap per timer run so a backlog spreads out
 # GEMINI_THINKING_LEVEL=low       # 3.x models: minimal|low|medium|high. Thinking
