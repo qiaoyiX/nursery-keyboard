@@ -7,43 +7,8 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.1/dist/chart.umd.min.js"
           integrity="sha384-jb8JQMbMoBUzgWatfe6COACi2ljcDdZQ2OxczGA3bGNeWe+6DChMTBJemed7ZnvJ"
           crossorigin="anonymous"></script>
+  {% include "_theme.html" %}
   <style>
-    :root {
-      --cream:       #faf3e8;
-      --cream-2:     #f2e6d0;
-      --brown-deep:  #3d2b1f;
-      --brown-mid:   #7a4f35;
-      --brown-light: #a07858;
-      --brown-muted: #b8957a;
-      --text-muted:  #8a6a52;   /* darker than --brown-muted: AA-legible small text */
-      --surface:     #fff;      /* card/panel surface; flips in dark mode */
-      --wet:   #4a9fd4;  --wet-a:   rgba(74,159,212,.10);
-      --dirty: #c0813a;  --dirty-a: rgba(192,129,58,.10);
-      --play:  #8e6abf;  --play-a:  rgba(142,106,191,.10);
-      --feed:  #5aaa72;  --feed-a:  rgba(90,170,114,.10);
-      --probiotic: #c25b96;  --probiotic-a: rgba(194,91,150,.10);
-      --danger: #c0513a;
-      --sleep:   #5c7fa3;  --sleep-a: rgba(92,127,163,.13);  --sleep-2: rgba(92,127,163,.35);
-      --shadow-card: 0 1px 3px rgba(61,43,31,.07), 0 6px 18px rgba(61,43,31,.07);
-      --toast-bg: var(--brown-deep);  --toast-fg: #fff;
-      --r: 18px;
-    }
-
-    @media (prefers-color-scheme: dark) {
-      :root {
-        --cream:       #1c1712;
-        --cream-2:     #2c2218;
-        --brown-deep:  #f0e6d8;   /* primary text */
-        --brown-mid:   #cda077;   /* headings / accents on dark */
-        --brown-light: #b89677;
-        --brown-muted: #6e5a47;   /* borders / hairlines on dark */
-        --text-muted:  #b6a087;   /* muted text on dark */
-        --surface:     #271f17;   /* card surface */
-        --shadow-card: 0 1px 3px rgba(0,0,0,.35), 0 6px 18px rgba(0,0,0,.40);
-        --toast-bg: #0f0b08;  --toast-fg: #f0e6d8;
-      }
-    }
-
     * { box-sizing: border-box; margin: 0; padding: 0; }
 
     body {
@@ -52,6 +17,9 @@
       color: var(--brown-deep);
       min-height: 100vh;
       padding: 24px 16px 48px;
+      /* Was unbounded: the whole layout stretched edge-to-edge on a tablet. */
+      max-width: 680px;
+      margin: 0 auto;
     }
 
     /* ── Header ─────────────────────────── */
@@ -78,6 +46,7 @@
       gap: 10px;
       margin-bottom: 14px;
     }
+    .counts > :last-child:nth-child(odd) { grid-column: 1 / -1; }
     .count-card {
       border-radius: var(--r);
       padding: 18px 12px 14px;
@@ -143,7 +112,7 @@
       line-height: 1.25;
     }
     .nf-ok      { color: var(--feed); }
-    .nf-soon    { color: #9e7300; }
+    .nf-soon    { color: var(--warn); }
     .nf-late    { color: var(--danger); }
     .nf-neutral { color: var(--text-muted); font-family: inherit; font-size: 0.9rem; }
 
@@ -320,6 +289,8 @@
       gap: 10px;
       margin-bottom: 10px;
     }
+    /* Odd item out spans the full width instead of leaving a hole in row 3. */
+    .buttons > :last-child:nth-child(odd) { grid-column: 1 / -1; }
     .action-btn {
       border: none;
       border-radius: var(--r);
@@ -359,9 +330,9 @@
     }
     .btn-clear {
       background: transparent;
-      border: 1px solid rgba(192,81,58,.22);
-      color: rgba(192,81,58,.65);
-      font-size: 0.73rem;
+      border: 1px solid rgba(192,81,58,.35);
+      color: var(--danger);
+      font-size: var(--t-xs);
       font-weight: 500;
       min-height: 44px;
       display: inline-flex;
@@ -505,7 +476,7 @@
     .btn-edit-entry,
     .btn-delete-entry {
       background: none; border: none;
-      font-size: 0.85rem; width: 38px; height: 38px;
+      font-size: 0.9rem; width: var(--tap); height: var(--tap);
       border-radius: 50%; display: flex; align-items: center; justify-content: center;
       opacity: 0.5; cursor: pointer; transition: opacity 0.15s, background 0.15s;
       flex-shrink: 0;
@@ -686,11 +657,42 @@
       background: var(--feed);
     }
 
+    /* Time-since line inside each log button: turns the grid into a status
+       display, so "did I already log this?" is answered before you tap. */
+    .btn-ago {
+      display: block; font-size: var(--t-xs); font-weight: 400;
+      opacity: .8; margin-top: 3px; font-variant-numeric: tabular-nums;
+    }
+
+    /* Night mode: the saturated gradients are what glare in a dark nursery. */
+    :root[data-theme="night"] .action-btn {
+      background: transparent !important;
+      border: 1px solid var(--brown-muted);
+      color: var(--brown-deep);
+      box-shadow: none;
+    }
+    :root[data-theme="night"] .count-card::before,
+    :root[data-theme="night"] .next-feed-card { background: var(--surface) !important; }
+
+    .stale-note {
+      margin-top: 10px; font-size: var(--t-xs); color: var(--danger); font-weight: 600;
+    }
+    .stale-note[hidden] { display: none; }
+
+    /* Collapsed filter bar: ~180px of chrome for a weekly task is no longer
+       permanently parked above the fold. */
+    .history-filters > summary {
+      list-style: none; display: inline-flex; align-items: center;
+      min-height: var(--tap); cursor: pointer; user-select: none;
+    }
+    .history-filters > summary::-webkit-details-marker { display: none; }
+    .filter-summary-chip.is-active { border-color: var(--feed); color: var(--feed); }
+
     /* ── Toast ───────────────────────────── */
     .toast {
       position: fixed;
-      top: 20px; left: 50%;
-      transform: translateX(-50%) translateY(-6px);
+      bottom: 20px; left: 50%;
+      transform: translateX(-50%) translateY(6px);
       background: var(--toast-bg); color: var(--toast-fg);
       padding: 10px 22px; border-radius: 24px;
       font-size: 0.83rem; opacity: 0;
@@ -707,25 +709,33 @@
     <p class="date" id="dateLabel"></p>
   </div>
 
-  <div class="next-feed-card" id="nextFeedCard">
+  <!-- "Now" card: next feed and the live sleep state answer the same question
+       ("what is happening right now") and were previously two cards ~800px
+       apart, with the sleep answer below a scroll-trapping history list. -->
+  <div class="next-feed-card stale-dim" id="nextFeedCard">
     <div class="nf-title">🍼 Next Feed</div>
     <div class="nf-time nf-neutral" id="nextFeedDisplay">—</div>
+    <div class="sleep-state-text is-unknown" id="sleepStateText">⋯ Camera offline</div>
     <div class="nf-interval">
       <span>Every</span>
       <select id="feedIntervalSel" onchange="saveInterval(+this.value)"></select>
     </div>
+    <div class="stale-note" id="staleNote" hidden></div>
   </div>
 
   <div class="buttons">
-    <button class="action-btn btn-wet"   onclick="logEvent('Wet')">💧 Wet</button>
-    <button class="action-btn btn-dirty" onclick="logEvent('Dirty')">💩 Dirty</button>
-    <button class="action-btn btn-play"  onclick="logEvent('Play')">🧸 Play</button>
-    <button class="action-btn btn-feed"  onclick="logEvent('Feed')">🍼 Feed</button>
-    <button class="action-btn btn-probiotic" onclick="logEvent('Probiotic')">💊 Probiotic</button>
+    <button class="action-btn btn-wet"   onclick="logEvent('Wet')">💧 Wet<span class="btn-ago" data-ago="Wet"></span></button>
+    <button class="action-btn btn-dirty" onclick="logEvent('Dirty')">💩 Dirty<span class="btn-ago" data-ago="Dirty"></span></button>
+    <button class="action-btn btn-play"  onclick="logEvent('Play')">🧸 Play<span class="btn-ago" data-ago="Play"></span></button>
+    <button class="action-btn btn-feed"  onclick="logEvent('Feed')">🍼 Feed<span class="btn-ago" data-ago="Feed"></span></button>
+    <button class="action-btn btn-probiotic" onclick="logEvent('Probiotic')">💊 Probiotic<span class="btn-ago" data-ago="Probiotic"></span></button>
   </div>
 
   <p class="section-label">History</p>
-  <div class="history-filters">
+  <!-- The filter bar was ~180px of permanently-visible chrome above the fold
+       for a task done maybe weekly. -->
+  <details class="history-filters" id="historyFilters">
+    <summary class="filter-chip filter-summary-chip" id="filterToggle">Filter</summary>
     <div class="filter-row">
       <button class="filter-chip" id="presetToday" onclick="setDatePreset('today')">Today</button>
       <button class="filter-chip" id="presetYesterday" onclick="setDatePreset('yesterday')">Yesterday</button>
@@ -733,9 +743,9 @@
       <button class="btn-clear-filter" id="filterClear" onclick="clearHistoryFilter()" style="display:none">Reset filters</button>
     </div>
     <div class="filter-row" id="typeToggles" role="group" aria-label="Filter by type"></div>
-  </div>
+  </details>
   <p class="filter-summary" id="filterSummary" style="display:none"></p>
-  <div class="history" id="history">
+  <div class="history stale-dim" id="history">
     {% if recent %}
       {% for e in recent %}
       <div class="entry">
@@ -748,9 +758,8 @@
     {% endif %}
   </div>
 
-  <div class="sleep-timeline-card">
+  <div class="sleep-timeline-card stale-dim">
     <div class="sleep-card-title">😴 Today's Sleep</div>
-    <div class="sleep-state-text is-unknown" id="sleepStateText">⋯ Camera offline</div>
     <div class="sleep-summary-text" id="sleepSummaryText"></div>
     <div class="sleep-timeline-track" id="sleepTrack"></div>
     <div class="sleep-timeline-labels">
@@ -760,7 +769,18 @@
     <div class="nap-list" id="napList"></div>
   </div>
 
-  <div class="counts">
+  <div class="chart-card stale-dim">
+    <p class="section-label">Weekly Pattern</p>
+    <div class="week-grid" id="weekGrid"></div>
+    <div class="week-legend">
+      <span><span class="week-swatch-sleep"></span>Sleep</span>
+      <span><span class="week-swatch-feed"></span>Feed</span>
+      <span>shaded = 7p–7a</span>
+    </div>
+    <div class="nap-empty" id="weekEmpty" hidden>Patterns appear here as feeds and sleep are logged.</div>
+  </div>
+
+  <div class="counts stale-dim">
     <div class="count-card wet">
       <div class="num" id="cnt-Wet">{{ counts.Wet }}</div>
       <div class="label">Wet</div>
@@ -783,38 +803,21 @@
     </div>
   </div>
 
-  <div class="chart-card">
-    <p class="section-label">Today's Breakdown</p>
-    <div class="doughnut-wrap">
-      <canvas id="chartDoughnut"></canvas>
-    </div>
-  </div>
-
-  <div class="chart-card">
+  <div class="chart-card stale-dim">
     <p class="section-label">Today by Hour</p>
     <div class="chart-wrap"><canvas id="chartHourly"></canvas></div>
   </div>
 
-  <div class="chart-card">
+  <div class="chart-card stale-dim">
     <p class="section-label">Last 7 Days</p>
     <div class="chart-wrap"><canvas id="chartDaily"></canvas></div>
-  </div>
-
-  <div class="chart-card">
-    <p class="section-label">Weekly Pattern</p>
-    <div class="week-grid" id="weekGrid"></div>
-    <div class="week-legend">
-      <span><span class="week-swatch-sleep"></span>Sleep</span>
-      <span><span class="week-swatch-feed"></span>Feed</span>
-      <span>shaded = 7p–7a</span>
-    </div>
-    <div class="nap-empty" id="weekEmpty" hidden>Patterns appear here as feeds and sleep are logged.</div>
   </div>
 
   <!-- Maintenance actions: rarely used, kept away from the one-handed logging zone -->
   <div class="maintenance">
     <button class="btn-clear" onclick="clearData()">Clear today</button>
     <button class="btn-calibrate" id="btnCalibrate" onclick="calibrateSleep()">📷 Crib is empty</button>
+    <button class="btn-calibrate" id="btnTheme" onclick="cycleTheme()" aria-label="Change theme">🌗 Theme</button>
   </div>
 
   <div class="modal-overlay" id="editOverlay" hidden onclick="if(event.target===this)closeEdit()">
@@ -829,7 +832,7 @@
     </div>
   </div>
 
-  <div class="toast" id="toast"></div>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
   <script>
     // --- Feeding window ---
@@ -912,6 +915,9 @@
     }
 
     async function logEvent(type) {
+      // The only feedback channel that works when you are holding a baby and
+      // not looking at the screen.
+      if (navigator.vibrate) navigator.vibrate(15);
       try {
         const res  = await fetch("/log", {
           method: "POST",
@@ -919,7 +925,10 @@
           body: JSON.stringify({ type })
         });
         const data = await res.json().catch(() => ({}));
-        showToast(data.discarded ? "Skipped — logged recently" : "Logged: " + type);
+        // "Skipped" alone read as a failure with no remedy at 3am.
+        showToast(data.discarded
+          ? type + " was already logged recently — not logged again"
+          : "Logged: " + type);
         refresh();
       } catch (e) {
         showToast("Error logging");
@@ -940,6 +949,20 @@
     // --- Charts ---
 
     // Theme chart text/grid for legibility in light and dark mode.
+    // Charts are optional. If the CDN is unreachable — a completely normal
+    // state for a Pi on a LAN with no WAN — everything else on this page must
+    // still poll and render.
+    const CHARTS = !!window.Chart;
+    if (!CHARTS) {
+      console.warn("Chart.js unavailable — charts hidden, the rest of the dashboard is unaffected.");
+      for (const c of document.querySelectorAll(".chart-wrap")) {
+        c.textContent = "Charts unavailable offline.";
+        c.style.height = "auto";
+      }
+    }
+
+    let chartHourly = null, chartDaily = null;
+    if (CHARTS) {
     const prefersDark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
     Chart.defaults.color       = prefersDark ? "#b6a087" : "#7a4f35";
     Chart.defaults.borderColor = prefersDark ? "rgba(255,255,255,.10)" : "rgba(0,0,0,.06)";
@@ -950,20 +973,7 @@
       maintainAspectRatio: false,
     };
 
-    const chartDoughnut = new Chart(document.getElementById("chartDoughnut"), {
-      type: "doughnut",
-      data: {
-        labels: TYPES,
-        datasets: [{ data: TYPES.map(() => 0), backgroundColor: TYPES.map(t => COLORS[t]), borderWidth: 0 }]
-      },
-      options: {
-        ...chartOpts,
-        cutout: "62%",
-        plugins: { legend: { position: "bottom", labels: { boxWidth: 12, font: { size: 11 } } } },
-      }
-    });
-
-    const chartHourly = new Chart(document.getElementById("chartHourly"), {
+    chartHourly = new Chart(document.getElementById("chartHourly"), {
       type: "bar",
       data: {
         labels: Array.from({ length: 24 }, (_, i) => i + "h"),
@@ -985,7 +995,7 @@
       }
     });
 
-    const chartDaily = new Chart(document.getElementById("chartDaily"), {
+    chartDaily = new Chart(document.getElementById("chartDaily"), {
       type: "bar",
       data: {
         labels: [],
@@ -1005,11 +1015,10 @@
         plugins: { legend: { position: "bottom", labels: { boxWidth: 12, font: { size: 11 } } } },
       }
     });
+    }
 
     function updateCharts(data) {
-      chartDoughnut.data.datasets[0].data = TYPES.map(t => data.counts[t]);
-      chartDoughnut.update();
-
+      if (!CHARTS) return;
       TYPES.forEach((t, i) => {
         chartHourly.data.datasets[i].data = data.hourly.map(h => h[t]);
       });
@@ -1136,6 +1145,7 @@
         historyFilterActive = false;
         clearBtn.style.display = "none";
         summary.style.display = "none";
+        syncFilterChip();
         refresh();
         return;
       }
@@ -1155,6 +1165,7 @@
         const n = data.entries.length;
         summary.textContent = "Showing: " + parts.join(" · ") + " — " + n + (n === 1 ? " entry" : " entries");
         summary.style.display = "";
+        syncFilterChip();
       } catch (_) {
         notifyOffline();
       }
@@ -1171,6 +1182,11 @@
     }
 
     async function deleteEntry(id, row) {
+      // "Clear today" has always confirmed; deleting a single entry did not,
+      // which is the risk model backwards — this is the one you misfire at 3am.
+      const label = row.querySelector(".type-pill")?.textContent || "entry";
+      const when  = row.querySelector(".time")?.textContent || "";
+      if (!confirm(`Delete this ${label} entry${when ? " from " + when : ""}?`)) return;
       row.style.opacity = "0.4";
       try {
         await fetch("/log/entry", {
@@ -1212,13 +1228,28 @@
       });
     }
 
+    function syncFilterChip() {
+      const chip = document.getElementById("filterToggle");
+      const sum  = document.getElementById("filterSummary");
+      if (!chip) return;
+      const active = sum && sum.style.display !== "none" && sum.textContent.trim();
+      chip.textContent = active ? "Filter · " + sum.textContent.trim() : "Filter";
+      chip.classList.toggle("is-active", !!active);
+      if (active) document.getElementById("historyFilters").open = true;
+    }
+
     function openEdit(entry) {
       editingId = entry.id;
       selectEditType(TYPES.includes(entry.type) ? entry.type : TYPES[0]);
       // datetime-local wants local "YYYY-MM-DDThh:mm" — the stored time is already local.
       document.getElementById("editTime").value = entry.time.slice(0, 16);
       document.getElementById("editOverlay").hidden = false;
+      document.getElementById("editTime").focus();
     }
+
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && !document.getElementById("editOverlay").hidden) closeEdit();
+    });
 
     function closeEdit() {
       document.getElementById("editOverlay").hidden = true;
@@ -1320,9 +1351,13 @@
 
         const fmt = iso => new Date(iso).toLocaleTimeString("en-US",
           { hour: "numeric", minute: "2-digit" });
-        block.title = s.is_open
+        const label = s.is_open
           ? `${fmt(s.start_iso)} – now`
           : `${fmt(s.start_iso)} – ${fmt(s.end_iso)}`;
+        block.title = label;
+        // Touch has no hover, so the tooltip alone made these unreadable on
+        // the primary device. Same treatment .week-sleep-block already had.
+        block.onclick = () => showToast(label + ` · ${Math.round(s.duration_minutes)}m`);
 
         track.appendChild(block);
       }
@@ -1475,10 +1510,74 @@
 
     // --- Polling ---
 
+    // ── Theme ──────────────────────────────────────────────────────────
+    // The OS preference is the default, but a phone left in light mode still
+    // needs a way to go dark at 3am — and "night" drops the saturated button
+    // gradients that glare in a dark nursery.
+    const THEMES = ["auto", "dark", "night", "light"];
+    const THEME_LABELS = { auto: "🌗 Auto", dark: "🌙 Dark", night: "🌑 Night", light: "☀️ Light" };
+
+    function applyTheme(name) {
+      if (name === "auto") document.documentElement.removeAttribute("data-theme");
+      else document.documentElement.setAttribute("data-theme", name);
+      const btn = document.getElementById("btnTheme");
+      if (btn) btn.textContent = THEME_LABELS[name];
+    }
+
+    function cycleTheme() {
+      const now  = localStorage.getItem("theme") || "auto";
+      const next = THEMES[(THEMES.indexOf(now) + 1) % THEMES.length];
+      localStorage.setItem("theme", next);
+      applyTheme(next);
+      showToast("Theme: " + THEME_LABELS[next].replace(/^\S+\s/, ""));
+    }
+    applyTheme(localStorage.getItem("theme") || "auto");
+
+    // ── Time since each event type ─────────────────────────────────────
+    // Turns the log grid into a live status display and answers "did I already
+    // log this?" before the debounce message has to.
+    function shortAgo(iso) {
+      const mins = Math.floor((Date.now() - new Date(iso)) / 60000);
+      if (mins < 1) return "just now";
+      if (mins < 60) return mins + "m ago";
+      const h = Math.floor(mins / 60);
+      return h < 24 ? h + "h " + (mins % 60) + "m ago" : Math.floor(h / 24) + "d ago";
+    }
+
+    function updateButtonAges(recent) {
+      const latest = {};
+      for (const e of recent || []) {
+        if (!latest[e.type] || e.time > latest[e.type]) latest[e.type] = e.time;
+      }
+      for (const el of document.querySelectorAll(".btn-ago")) {
+        const t = el.dataset.ago;
+        el.textContent = latest[t] ? shortAgo(latest[t]) : "—";
+      }
+    }
+
+    // ── Stale data ─────────────────────────────────────────────────────
+    // The page polls every 8s and previously only toasted on failure, so if
+    // the Pi dropped, the numbers still looked live.
+    let lastGoodPoll = Date.now();
+    const STALE_AFTER_MS = 30000;
+
+    function updateStaleness() {
+      const age = Date.now() - lastGoodPoll;
+      const stale = age > STALE_AFTER_MS;
+      document.body.classList.toggle("is-stale", stale);
+      const note = document.getElementById("staleNote");
+      if (!note) return;
+      note.hidden = !stale;
+      if (stale) note.textContent = "⚠️ Not updating — last updated " + shortAgo(lastGoodPoll);
+    }
+    setInterval(updateStaleness, 5000);
+
     async function refresh() {
       try {
         const res  = await fetch("/data");
         const data = await res.json();
+        lastGoodPoll = Date.now();
+        updateStaleness();
         TYPES.forEach(k => {
           document.getElementById("cnt-" + k).textContent = data.counts[k];
         });
@@ -1487,6 +1586,7 @@
         } else {
           updateHistory(data.recent);
         }
+        updateButtonAges(data.recent);
         updateNextFeed(data);
         updateCharts(data);
         if (data.sleep) {

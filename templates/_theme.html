@@ -1,0 +1,140 @@
+{# Shared design tokens and primitives for index.html and nanny.html.
+
+   Included with {% include "_theme.html" %} in each page's <head>, BEFORE the
+   page's own <style> so page rules win. No build step: each page is still a
+   single self-contained document, but the palette now lives in one file
+   instead of being hand-copied into two (which is how nanny's --phone ended up
+   byte-identical to index's --play, meaning "playtime" on one page and
+   "the caregiver was on her phone" on the other).
+
+   Theming: the OS preference is the default, and an explicit data-theme on
+   <html> overrides it in BOTH directions — a phone left in light mode must
+   still be able to choose dark at 3am. #}
+<style>
+  :root {
+    /* ── Palette (light) ─────────────────────────────── */
+    --cream:       #faf3e8;
+    --cream-2:     #f2e6d0;
+    --brown-deep:  #3d2b1f;
+    --brown-mid:   #7a4f35;
+    --brown-light: #a07858;
+    --brown-muted: #b8957a;
+    --text-muted:  #8a6a52;   /* darker than --brown-muted: AA-legible small text */
+    --surface:     #fff;
+
+    /* Event types. These are duplicated in index.html's JS COLORS object for
+       Chart.js — change both together. */
+    --wet:   #4a9fd4;  --wet-a:   rgba(74,159,212,.10);
+    --dirty: #c0813a;  --dirty-a: rgba(192,129,58,.10);
+    --play:  #8e6abf;  --play-a:  rgba(142,106,191,.10);
+    --feed:  #5aaa72;  --feed-a:  rgba(90,170,114,.10);
+    --probiotic: #c25b96;  --probiotic-a: rgba(194,91,150,.10);
+    --sleep: #5c7fa3;  --sleep-a: rgba(92,127,163,.13);  --sleep-2: rgba(92,127,163,.35);
+
+    /* Status. --flag is the nanny report's "caregiver was on her phone" colour;
+       it is deliberately NOT --play. */
+    --danger: #c0513a;  --danger-a: rgba(192,81,58,.10);
+    --warn:   #8a6300;
+    --flag:   #7d5aad;  --flag-a: rgba(125,90,173,.12);
+
+    --shadow-card: 0 1px 3px rgba(61,43,31,.07), 0 6px 18px rgba(61,43,31,.07);
+    --toast-bg: var(--brown-deep);  --toast-fg: #fff;
+    --r: 18px;
+
+    /* ── Spacing scale ───────────────────────────────── */
+    --s-1: 4px; --s-2: 8px; --s-3: 12px; --s-4: 16px; --s-5: 24px; --s-6: 32px;
+
+    /* ── Type scale ──────────────────────────────────── */
+    --t-xs: .72rem; --t-sm: .82rem; --t-base: .94rem;
+    --t-lg: 1.15rem; --t-xl: 1.6rem; --t-2xl: 2.4rem;
+    --font-display: Georgia, "Times New Roman", serif;
+
+    /* Minimum comfortable touch target. Everything tappable uses this. */
+    --tap: 44px;
+  }
+
+  /* Dark, from the OS — unless the page has been explicitly set to light. */
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --cream:       #1c1712;
+      --cream-2:     #2c2218;
+      --brown-deep:  #f0e6d8;
+      --brown-mid:   #cda077;
+      --brown-light: #b89677;
+      --brown-muted: #6e5a47;
+      --text-muted:  #b6a087;
+      --surface:     #271f17;
+      --warn:        #e0a83a;
+      --danger:      #e0705a;  --danger-a: rgba(224,112,90,.14);
+      --flag:        #a98ad0;  --flag-a: rgba(169,138,208,.16);
+      --shadow-card: 0 1px 3px rgba(0,0,0,.35), 0 6px 18px rgba(0,0,0,.40);
+      --toast-bg: #0f0b08;  --toast-fg: #f0e6d8;
+    }
+  }
+
+  /* Explicit choice wins over the OS in both directions. */
+  :root[data-theme="dark"], :root[data-theme="night"] {
+    --cream:       #1c1712;
+    --cream-2:     #2c2218;
+    --brown-deep:  #f0e6d8;
+    --brown-mid:   #cda077;
+    --brown-light: #b89677;
+    --brown-muted: #6e5a47;
+    --text-muted:  #b6a087;
+    --surface:     #271f17;
+    --warn:        #e0a83a;
+    --danger:      #e0705a;  --danger-a: rgba(224,112,90,.14);
+    --flag:        #a98ad0;  --flag-a: rgba(169,138,208,.16);
+    --shadow-card: 0 1px 3px rgba(0,0,0,.35), 0 6px 18px rgba(0,0,0,.40);
+    --toast-bg: #0f0b08;  --toast-fg: #f0e6d8;
+  }
+
+  /* Night: dark, dimmer, and with the saturated button gradients dropped —
+     this is for 3am, one-handed, next to a sleeping baby. */
+  :root[data-theme="night"] {
+    --cream:      #12100d;
+    --surface:    #1a1611;
+    --brown-deep: #cdbfae;
+    --text-muted: #8f8271;
+    --shadow-card: none;
+  }
+
+  /* ── Primitives ──────────────────────────────────── */
+  .card {
+    background: var(--surface);
+    border-radius: var(--r);
+    box-shadow: var(--shadow-card);
+    padding: var(--s-4);
+    margin-bottom: var(--s-3);
+  }
+  .card h2 {
+    font-size: var(--t-xs); font-weight: 600; text-transform: uppercase;
+    letter-spacing: .07em; color: var(--text-muted); margin-bottom: var(--s-3);
+  }
+
+  .badge {
+    display: inline-block; font-size: var(--t-xs); line-height: 1.5;
+    padding: 2px 8px; border-radius: 999px;
+    background: var(--cream-2); color: var(--brown-mid);
+    text-transform: uppercase; letter-spacing: .04em;
+  }
+  /* The one badge that can prompt a real conversation must not look like the
+     four pieces of metadata beside it. */
+  .badge.danger {
+    background: var(--danger); color: #fff; font-weight: 700;
+    letter-spacing: .05em;
+  }
+  .badge.nap { background: var(--sleep-a); color: var(--sleep); }
+
+  .btn {
+    font: inherit; min-height: var(--tap); border: none; cursor: pointer;
+    border-radius: 12px; background: var(--cream-2); color: var(--brown-mid);
+    padding: var(--s-2) var(--s-4);
+  }
+  .btn:focus-visible, .speed:focus-visible, select:focus-visible,
+  button:focus-visible { outline: 2px solid var(--brown-mid); outline-offset: 2px; }
+  .btn--danger { color: var(--danger); }
+
+  /* Content that may be stale is dimmed rather than silently wrong. */
+  .is-stale .stale-dim { opacity: .55; transition: opacity .2s; }
+</style>
