@@ -164,6 +164,8 @@ CONTEXT_RANK = {"while_holding_baby": 5, "baby_unattended": 4, "baby_nearby_awak
 # "other_adult" so an unattributed event is never quietly excused.
 PERSON_RANK = {"caregiver": 2, "unclear": 1, "other_adult": 0}
 MERGE_GAP_SECONDS = 30
+NOTABLE_MERGE_GAP_SECONDS = 60
+NOTABLE_TYPE_RANK = {"other": 0, "visitor": 1, "milestone": 2, "safety_concern": 3}
 
 
 def merge_phone_events(events, gap_seconds=MERGE_GAP_SECONDS):
@@ -229,6 +231,61 @@ def _collapse(group):
     best["person"] = max((e.get("person", "unclear") for e in evs),
                          key=lambda p: PERSON_RANK.get(p, 1))
     others = sorted({e.get("camera") for e in evs} - {primary.get("camera")} - {None})
+    if others:
+        best["also_seen_by"] = others
+    return best
+
+
+def merge_notable_events(events, gap_seconds=NOTABLE_MERGE_GAP_SECONDS):
+    """Collapse simultaneous camera observations into one notable incident.
+
+    Notable events are instants rather than spans, so cameras in the same room
+    describing the same moment used to produce duplicate rows, duplicate clips,
+    and—most seriously—an inflated safety-concern count in the verdict. Keep the
+    highest-severity interpretation and one evidence clip, while preserving the
+    other cameras as provenance.
+    """
+    parsed, passthrough = [], []
+    for ev in events:
+        try:
+            at = datetime.fromisoformat(ev["time_iso"])
+        except (KeyError, TypeError, ValueError):
+            passthrough.append(ev)       # malformed input is surfaced, never lost
+            continue
+        parsed.append((at, ev))
+
+    merged = []
+    by_room = {}
+    for at, ev in parsed:
+        by_room.setdefault(ev.get("room") or ev.get("camera"), []).append((at, ev))
+    for _, items in sorted(by_room.items(), key=lambda kv: str(kv[0])):
+        items.sort(key=lambda item: item[0])
+        group = []
+        for at, ev in items:
+            if group and at <= group[-1][0] + timedelta(seconds=gap_seconds):
+                group.append((at, ev))
+            else:
+                if group:
+                    merged.append(_collapse_notable(group))
+                group = [(at, ev)]
+        if group:
+            merged.append(_collapse_notable(group))
+
+    merged.extend(passthrough)
+    merged.sort(key=lambda e: e.get("time_iso", ""))
+    return merged
+
+
+def _collapse_notable(group):
+    """Choose one primary observation without discarding corroborating cameras."""
+    primary = max(
+        (ev for _, ev in group),
+        key=lambda ev: (NOTABLE_TYPE_RANK.get(ev.get("type"), 0),
+                        bool(ev.get("clip")), len(ev.get("description", ""))))
+    best = dict(primary)
+    best["time_iso"] = min(at for at, _ in group).isoformat()
+    cameras = {ev.get("camera") for _, ev in group} - {None}
+    others = sorted(cameras - {primary.get("camera")})
     if others:
         best["also_seen_by"] = others
     return best
@@ -605,20 +662,22 @@ def day_verdict(report):
     phone = report.get("phone_use", {})
     flagged = phone.get("unauthorized_minutes", 0) or 0
 
-    coverage = report.get("coverage") or {}
-    covered = [c for c in coverage.values() if c.get("window_minutes")]
-    worst = min((c["analyzed_minutes"] / c["window_minutes"] for c in covered),
-                default=1.0)
+    decision_pct = report.get("decision_coverage_pct")
+    if decision_pct is None:
+        # Compatibility for reports written before room-level coverage existed.
+        coverage = report.get("coverage") or {}
+        covered = [c for c in coverage.values() if c.get("window_minutes")]
+        decision_pct = round(min(
+            (c["analyzed_minutes"] / c["window_minutes"] for c in covered),
+            default=1.0) * 100)
 
     degraded = []
     if report.get("no_analysis"):
         degraded.append("no footage was analyzed at all")
     if report.get("config_errors"):
         degraded.append(f"{len(report['config_errors'])} configuration problem(s)")
-    if report.get("failures"):
-        degraded.append(f"{len(report['failures'])} hour(s) of footage lost")
-    if covered and worst < MIN_TRUSTED_COVERAGE:
-        degraded.append(f"one camera covered only {worst * 100:.0f}% of the window")
+    if decision_pct < MIN_TRUSTED_COVERAGE * 100:
+        degraded.append(f"one room covered only {decision_pct:.0f}% of the window")
 
     if safety:
         level = "concern"
@@ -643,7 +702,7 @@ def day_verdict(report):
     reasons.extend(degraded)
     return {"level": level, "headline": headline,
             "reasons": [r for r in reasons if r],
-            "worst_coverage_pct": round(worst * 100)}
+            "decision_coverage_pct": round(decision_pct)}
 
 
 # ── Narrative ─────────────────────────────────────────────────────────────────
@@ -715,49 +774,93 @@ def load_chunks(day_dir):
     return chunks
 
 
-def coverage_for(chunks, cameras, window):
-    """Per-camera analyzed segments vs the care window; explicit gap list."""
+def _analyzed_for_camera(chunks, camera, day, window):
+    """What one camera successfully analyzed, clipped to the care window."""
+    segs, lost = [], []
+    for c in chunks:
+        if c["camera"] != camera:
+            continue
+        start = datetime.fromisoformat(c["segment_start_iso"])
+        segs.append((start, start + timedelta(minutes=c.get("segment_minutes", 60))))
+        for iv in c.get("unanalyzed_intervals") or []:
+            span = _span(iv)
+            if span:
+                lost.append(span)
+    analyzed = subtract_intervals(union_intervals(segs), union_intervals(lost))
+    return intersect_intervals(analyzed, window_bounds(day, window))
+
+
+def _coverage_record(analyzed, day, window):
+    """Minutes plus explicit gaps for one camera or one fused room."""
     start_t, end_t = window
     window_minutes = (datetime.combine(date.min, end_t)
                       - datetime.combine(date.min, start_t)).total_seconds() / 60
+    if not analyzed:
+        return {"analyzed_minutes": 0, "window_minutes": round(window_minutes),
+                "gaps": [{"whole_day": True}]}
+
+    cursor = datetime.combine(day, start_t)
+    w_end = datetime.combine(day, end_t)
+    gaps = []
+    for start, end in analyzed:
+        if start > cursor:
+            gaps.append({"start_iso": cursor.isoformat(),
+                         "end_iso": min(start, w_end).isoformat()})
+        cursor = max(cursor, end)
+    if cursor < w_end:
+        gaps.append({"start_iso": cursor.isoformat(), "end_iso": w_end.isoformat()})
+    return {"analyzed_minutes": round(total_minutes(analyzed)),
+            "window_minutes": round(window_minutes), "gaps": gaps}
+
+
+def coverage_for(chunks, cameras, window, day=None):
+    """Per-camera capture diagnostics; decision-making uses room coverage below."""
+    if day is None:
+        day = (datetime.fromisoformat(chunks[0]["segment_start_iso"]).date()
+               if chunks else date.today())
     cov = {}
     names = set(cameras) | {c["camera"] for c in chunks}
     for cam in sorted(names):
-        segs, lost = [], []
-        for c in chunks:
-            if c["camera"] != cam:
-                continue
-            start = datetime.fromisoformat(c["segment_start_iso"])
-            segs.append((start, start + timedelta(minutes=c.get("segment_minutes", 60))))
-            # A piece that failed inside an otherwise-fine hour is a real gap.
-            # Without this the segment counts as fully reviewed and coverage —
-            # the number that calibrates trust in every other figure on the
-            # page — overstates what anyone actually looked at.
-            for iv in c.get("unanalyzed_intervals") or []:
-                span = _span(iv)
-                if span:
-                    lost.append(span)
-        analyzed = subtract_intervals(union_intervals(segs), union_intervals(lost))
-        analyzed_min = total_minutes(analyzed)
-        gaps = []
-        if segs:
-            day0 = segs[0][0].date()
-            cursor = datetime.combine(day0, start_t)
-            w_end = datetime.combine(day0, end_t)
-            for s, e in analyzed:
-                if s > cursor:
-                    gaps.append({"start_iso": cursor.isoformat(),
-                                 "end_iso": min(s, w_end).isoformat()})
-                cursor = max(cursor, e)
-            if cursor < w_end:
-                gaps.append({"start_iso": cursor.isoformat(),
-                             "end_iso": w_end.isoformat()})
-        else:
-            gaps.append({"whole_day": True})
-        cov[cam] = {"analyzed_minutes": round(analyzed_min),
-                    "window_minutes": round(window_minutes),
-                    "gaps": gaps}
+        cov[cam] = _coverage_record(
+            _analyzed_for_camera(chunks, cam, day, window), day, window)
     return cov
+
+
+def room_coverage_for(day, chunks, cameras, window, rooms):
+    """Decision coverage after redundant camera angles in each room are fused.
+
+    A failed nursery camera is a capture diagnostic, not a blind spot, when the
+    other nursery angle covered the same time. Verdicts and trends therefore
+    use the least-covered room; per-camera coverage remains available for
+    diagnosing hardware and pipeline failures.
+    """
+    names = set(cameras) | {c["camera"] for c in chunks}
+    cameras_by_room = {}
+    for camera in names:
+        room = rooms.get(camera)
+        if not room:
+            chunk = next((c for c in chunks if c.get("camera") == camera), {})
+            room = chunk.get("room") or camera
+        cameras_by_room.setdefault(room, []).append(camera)
+
+    out = {}
+    for room, room_cameras in sorted(cameras_by_room.items()):
+        analyzed = union_intervals([
+            interval
+            for camera in room_cameras
+            for interval in _analyzed_for_camera(chunks, camera, day, window)
+        ])
+        record = _coverage_record(analyzed, day, window)
+        record["cameras"] = sorted(room_cameras)
+        out[room] = record
+    return out
+
+
+def decision_coverage_pct(room_coverage):
+    """Conservative whole-day trust score: the least-observed configured room."""
+    covered = [c for c in room_coverage.values() if c.get("window_minutes")]
+    return round(min((c["analyzed_minutes"] / c["window_minutes"] for c in covered),
+                     default=0.0) * 100)
 
 
 def build_report(day, chunks, cameras, window, rooms=None, config_errors=None,
@@ -791,18 +894,25 @@ def build_report(day, chunks, cameras, window, rooms=None, config_errors=None,
     # Before classification, so every downstream stat sees one event per
     # occurrence rather than one per camera that watched it.
     phone_events = merge_phone_events(phone_events)
-    notable.sort(key=lambda x: x["time_iso"])
+    notable = merge_notable_events(notable)
 
     naps = nap_windows_for(day)
     phone_stats, unauthorized = classify_phone_use(phone_events, chunks, rooms, naps)
 
+    camera_coverage = coverage_for(chunks, cameras, window, day=day)
+    room_coverage = room_coverage_for(day, chunks, cameras, window, rooms)
     report = {
         "date": day.isoformat(),
         "generated_at": datetime.now().isoformat(),
         "cameras": sorted(set(cameras) | {c["camera"] for c in chunks}),
         "rooms": {cam: rooms.get(cam, cam)
                   for cam in sorted(set(cameras) | {c["camera"] for c in chunks})},
-        "coverage": coverage_for(chunks, cameras, window),
+        # `coverage` remains the compatibility name for camera diagnostics.
+        # Trust decisions use the fused room view so redundant angles do not
+        # manufacture a blind spot when one camera fails.
+        "coverage": camera_coverage,
+        "room_coverage": room_coverage,
+        "decision_coverage_pct": decision_coverage_pct(room_coverage),
         "parse_errors": parse_errors,
         "failures": sorted(failures, key=lambda f: f["segment_start_iso"]),
         # Both are about the pipeline, not the day: an empty report and a

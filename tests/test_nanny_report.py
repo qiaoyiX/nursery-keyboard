@@ -960,6 +960,36 @@ def test_merge_phone_events():
     check("unusable events pass through", len(R.merge_phone_events(bad)) == 1)
 
 
+def test_merge_notable_events():
+    print("two camera descriptions of one notable incident are one finding")
+    import nanny_report as R
+
+    events = [
+        {"camera": "nursery1", "room": "nursery", "time_iso": _iso(10, 5),
+         "type": "other", "description": "Baby slipped near the couch",
+         "clip": "d/nursery1_notable_1.mp4"},
+        {"camera": "nursery2", "room": "nursery", "time_iso": _iso(10, 5),
+         "type": "safety_concern", "description": "Baby fell from the couch",
+         "clip": "d/nursery2_notable_1.mp4"},
+        {"camera": "kitchen", "room": "kitchen", "time_iso": _iso(10, 5),
+         "type": "visitor", "description": "Delivery at the door"},
+    ]
+    merged = R.merge_notable_events(events)
+    check("same-room observations collapse, other room remains",
+          len(merged) == 2, str(merged))
+    nursery = [e for e in merged if e["room"] == "nursery"][0]
+    check("the safety interpretation wins", nursery["type"] == "safety_concern",
+          str(nursery))
+    check("one strongest clip remains",
+          nursery["clip"] == "d/nursery2_notable_1.mp4", str(nursery))
+    check("the corroborating camera is credited",
+          nursery.get("also_seen_by") == ["nursery1"], str(nursery))
+
+    apart = [dict(events[0]), dict(events[1])]
+    apart[1]["time_iso"] = _iso(10, 7)
+    check("separate moments stay separate", len(R.merge_notable_events(apart)) == 2)
+
+
 def test_person_attribution():
     print("only the caregiver's phone minutes are scored")
     import nanny_report as R
@@ -1039,6 +1069,45 @@ def test_coverage_counts_failed_pieces():
     old = R.coverage_for([_chunk("cam1", 10)], ["cam1"], WINDOW)["cam1"]
     check("pre-change chunks still count in full", old["analyzed_minutes"] == 60,
           str(old["analyzed_minutes"]))
+
+
+def test_room_decision_coverage():
+    print("redundant camera failure does not manufacture a room blind spot")
+    import nanny_report as R
+
+    # nursery1 covers the whole window; nursery2 is silent. The bedroom is also
+    # fully covered. Capture diagnostics must still expose nursery2 as failed,
+    # while the decision coverage correctly remains complete.
+    chunks = []
+    for hour in range(10, 18):
+        chunks.extend([_chunk("nursery1", hour), _chunk("bedcam", hour)])
+    rooms = {"nursery1": "nursery", "nursery2": "nursery", "bedcam": "bedroom"}
+    cameras = list(rooms)
+    per_camera = R.coverage_for(chunks, cameras, WINDOW, day=DAY)
+    per_room = R.room_coverage_for(DAY, chunks, cameras, WINDOW, rooms)
+
+    check("silent redundant camera remains visible in diagnostics",
+          per_camera["nursery2"]["analyzed_minutes"] == 0, str(per_camera))
+    check("the other angle fully covers the nursery",
+          per_room["nursery"]["analyzed_minutes"] == 480, str(per_room))
+    check("decision coverage uses rooms, not the weakest camera",
+          R.decision_coverage_pct(per_room) == 100, str(per_room))
+
+    report = {"notable_events": [],
+              "phone_use": {"unauthorized_minutes": 0, "unauthorized_event_count": 0},
+              "coverage": per_camera, "room_coverage": per_room,
+              "decision_coverage_pct": R.decision_coverage_pct(per_room),
+              "failures": [{"camera": "nursery2"}], "config_errors": [],
+              "no_analysis": False}
+    check("a redundant camera failure no longer degrades the day",
+          R.day_verdict(report)["level"] == "clear", str(R.day_verdict(report)))
+
+    # Losing a whole room is still a real blind spot and must degrade the day.
+    bedroom_missing = R.room_coverage_for(
+        DAY, [c for c in chunks if c["camera"] != "bedcam"], cameras, WINDOW, rooms)
+    report["decision_coverage_pct"] = R.decision_coverage_pct(bedroom_missing)
+    check("a missing room still degrades the day",
+          R.day_verdict(report)["level"] == "degraded", str(R.day_verdict(report)))
 
 
 def test_day_verdict():
@@ -1220,8 +1289,10 @@ def main():
                test_empty_care_day_still_reported, test_coverage,
                test_sleep_metrics, test_activity_metrics, test_attendance_metrics,
                test_dry_run_writes_nothing, test_force_and_out,
-               test_merge_phone_events, test_person_attribution, test_clip_pruning,
-               test_coverage_counts_failed_pieces, test_day_verdict, test_retention,
+               test_merge_phone_events, test_merge_notable_events,
+               test_person_attribution, test_clip_pruning,
+               test_coverage_counts_failed_pieces, test_room_decision_coverage,
+               test_day_verdict, test_retention,
                test_notable_clips_survive_pruning, test_context_staleness_is_a_warning,
                test_neon_reports_are_an_archive):
         fn()

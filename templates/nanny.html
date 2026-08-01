@@ -310,6 +310,9 @@ function render(report, status, trend) {
                      (n.type || "other").replace(/_/g, " ")));
       when.append(el("span", "badge", n.room || n.camera));
       box.append(when, el("div", "desc", n.description));
+      if (n.also_seen_by && n.also_seen_by.length) {
+        box.append(el("div", "desc", "Also seen by " + n.also_seen_by.join(", ") + "."));
+      }
       if (n.clip) {
         box.append(evidenceVideo(n.clip));
       } else {
@@ -523,6 +526,17 @@ function render(report, status, trend) {
   foot.append(el("summary", "h2-summary", "Coverage & diagnostics"));
   const f = el("div", "foot");
   const lines = [];
+  if (report.room_coverage) {
+    lines.push("decision coverage: " + (report.decision_coverage_pct ?? "?") + "%");
+    for (const [room, cov] of Object.entries(report.room_coverage)) {
+      const gapNote = cov.gaps.length && !cov.gaps[0].whole_day
+        ? cov.gaps.map(g => fmtTime(g.start_iso) + "–" + fmtTime(g.end_iso)).join(", ")
+        : (cov.gaps.length ? "no footage all day" : "none");
+      lines.push(room + ": " + cov.analyzed_minutes + "/" + cov.window_minutes +
+                 " min observed" + (cov.gaps.length ? " · gaps: " + gapNote : ""));
+    }
+    lines.push("camera diagnostics:");
+  }
   for (const [cam, cov] of Object.entries(report.coverage || {})) {
     const gapNote = cov.gaps.length && !cov.gaps[0].whole_day
       ? cov.gaps.map(g => fmtTime(g.start_iso) + "–" + fmtTime(g.end_iso)).join(", ")

@@ -572,16 +572,22 @@ def nanny_trend(reports_dir, dates):
         except (OSError, ValueError):
             continue
         phone = rep.get("phone_use", {})
-        cov = [c for c in (rep.get("coverage") or {}).values() if c.get("window_minutes")]
-        worst = min((c["analyzed_minutes"] / c["window_minutes"] for c in cov),
-                    default=0.0)
+        # New reports fuse redundant camera angles into room-level decision
+        # coverage. Keep the camera-level fallback only for historical files.
+        coverage_pct = rep.get("decision_coverage_pct")
+        if coverage_pct is None:
+            cov = [c for c in (rep.get("coverage") or {}).values()
+                   if c.get("window_minutes")]
+            coverage_pct = round(min(
+                (c["analyzed_minutes"] / c["window_minutes"] for c in cov),
+                default=0.0) * 100)
         trend.append({
             "date": day,
             "unauthorized_minutes": phone.get("unauthorized_minutes", 0),
             "total_phone_minutes": phone.get("total_minutes", 0),
             "notable_count": len(rep.get("notable_events", [])),
             "sleep_minutes": (rep.get("sleep") or {}).get("total_sleep_minutes", 0),
-            "coverage_pct": round(worst * 100),
+            "coverage_pct": coverage_pct,
             "verdict_level": (rep.get("verdict") or {}).get("level", "clear"),
         })
     return trend
