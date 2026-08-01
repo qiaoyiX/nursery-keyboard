@@ -273,8 +273,13 @@ all) and baby_state: "asleep" only when the baby is visibly settled and still (l
 down, eyes closed, no active movement) for the span, "awake" when visibly moving, \
 being held, fed, played with or attended to, "not_visible" when the baby is not in \
 frame, "unclear" when in frame but you cannot tell.
-2. phone_use — EVERY interval where an adult is holding, looking at, or \
-interacting with a mobile phone. Classify the baby's situation during it with the \
+2. phone_use — EVERY interval where an adult is actively using a mobile phone: \
+holding it with the screen oriented toward them, tapping, swiping, typing, taking a \
+call, or otherwise clearly operating it. Looking or facing in a phone's direction by \
+itself is NOT phone use. Do not count a phone that is clipped to a back pocket or \
+waistband, worn or carried on the person's back, resting behind them, or merely visible \
+nearby unless the adult reaches for or operates it. Classify the baby's situation \
+during confirmed use with the \
 context enum: while_holding_baby, baby_nearby_awake (baby awake in the same room), \
 baby_unattended (baby awake and needing attention while the caregiver is on the phone), \
 baby_napping (baby visibly asleep in this room), baby_not_in_frame (the baby is simply \
@@ -286,9 +291,10 @@ the caregiver's hours and mislabelling hides real findings. Also set key_moment 
 single MM:SS within the interval that best SHOWS what happened — the clearest view of \
 the phone and of what the baby is doing — because a person will be shown only about 20 \
 seconds either side of it as the evidence for this event, not the whole interval. Be \
-conservative: if you are unsure it is a phone, still report it with confidence "low" \
-rather than omitting it. Do not count baby monitors or TV remotes as phones if \
-distinguishable.
+conservative about identity only after active use is visible: if an actively handled \
+object may be a phone, report it with confidence "low" rather than omitting it. Never \
+use low confidence to report a stationary, stored, or merely glanced-at phone. Do not \
+count baby monitors or TV remotes as phones if distinguishable.
 3. notable_events — safety-relevant moments (baby unattended on a raised surface, \
 falls, distress ignored), visitors, or milestones.
 4. summary — 2-3 plain sentences describing this hour. Mention which room this is.

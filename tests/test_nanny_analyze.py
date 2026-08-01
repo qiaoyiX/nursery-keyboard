@@ -519,6 +519,20 @@ def test_key_moment_validation():
               chunk["phone_use"][0]["key_moment_iso"])
 
 
+def test_phone_prompt_requires_active_use():
+    print("phone detection requires visible interaction")
+    prompt = nanny_analyze.PROMPT.lower()
+    check("looking alone is excluded",
+          "looking or facing in a phone's direction by itself is not phone use" in prompt)
+    check("a phone carried on the back is excluded",
+          "worn or carried on the person's back" in prompt)
+    check("active operation is required",
+          "unless the adult reaches for or operates it" in prompt)
+    check("low confidence cannot revive a stored phone false positive",
+          "never use low confidence to report a stationary, stored, or merely glanced-at phone"
+          in prompt)
+
+
 def test_poll_schedule_is_cheap():
     print("Files-API polling stays off the request budget")
     # Requests, not tokens, are the binding free-tier limit, and polls are most
@@ -541,7 +555,7 @@ def main():
                test_failed_piece_records_its_range, test_notable_events_get_clips,
                test_server_errors_drop_fps, test_daily_quota_ends_the_run,
                test_poll_schedule_is_cheap, test_key_moment_clipping,
-               test_key_moment_validation):
+               test_key_moment_validation, test_phone_prompt_requires_active_use):
         fn()
     print()
     if FAILURES:

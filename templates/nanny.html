@@ -261,6 +261,77 @@ function renderTrend(trend) {
   contentEl.append(c);
 }
 
+// The care record is what a parent needs to understand first. Keep these
+// factual summaries together and ahead of every evidence clip.
+function renderCareOverview(report) {
+  // Every metric block is guarded on its key: a report JSON written before
+  // these existed must still render the rest of the page.
+  const att = report.attendance;
+  if (att) {
+    const c = el("div", "card");
+    c.append(el("h2", null, "Attendance"));
+    c.append(tileRow([
+      [fmtMin(att.unattended_minutes), "awake & alone", att.unattended_minutes > 0],
+      [fmtMin(att.longest_unattended_stretch_minutes), "longest alone", false],
+      [fmtMin(att.caregiver_present_minutes), "caregiver in view", false],
+      [fmtMin(att.unclear_minutes), "unclear", false],
+    ]));
+    c.append(el("div", "rule",
+      "Counts only an awake baby with no caregiver visible on any camera; a " +
+      "sleeping baby alone is not counted. " + fmtMin(att.uncovered_minutes) +
+      " of the window had no footage at all and is counted as unclear, never " +
+      "as time alone."));
+    for (const iv of att.unattended_intervals || []) {
+      c.append(kvRow(fmtTime(iv.start_iso) + " – " + fmtTime(iv.end_iso), "alone"));
+    }
+    contentEl.append(c);
+  }
+
+  const sl = report.sleep;
+  if (sl) {
+    const c = el("div", "card");
+    c.append(el("h2", null, "Sleep"));
+    c.append(tileRow([
+      [fmtMin(sl.total_sleep_minutes), "asleep", false],
+      [String(sl.nap_count), "naps", false],
+      [fmtMin(sl.longest_nap_minutes), "longest nap", false],
+      [fmtMin(sl.longest_awake_stretch_minutes), "longest awake", false],
+    ]));
+    for (const n of sl.naps || []) {
+      c.append(kvRow(fmtTime(n.start_iso) + " – " + fmtTime(n.end_iso),
+                     fmtMin(n.duration_minutes)));
+    }
+    // The two sources of "asleep" are independent, so a disagreement is a
+    // signal in itself: bedroom naps are invisible to the crib monitor, but
+    // crib-only minutes mean one of the two is wrong.
+    const cribOnly = sl.crib_only_minutes || 0, camOnly = sl.camera_only_minutes || 0;
+    if (cribOnly >= 10 || camOnly >= 10) {
+      const parts = [];
+      if (camOnly >= 10) parts.push("the cameras saw " + fmtMin(camOnly) +
+        " the crib monitor did not (expected for naps outside the nursery)");
+      if (cribOnly >= 10) parts.push("the crib monitor saw " + fmtMin(cribOnly) +
+        " the cameras did not");
+      c.append(el("div", "rule", "Sources disagree: " + parts.join("; ") + "."));
+    }
+    contentEl.append(c);
+  }
+
+  const care = report.care;
+  const careCats = Object.entries((care || {}).minutes_by_category || {})
+    .sort((a, b) => b[1] - a[1]);
+  if (careCats.length) {
+    const c = el("div", "card");
+    c.append(el("h2", null, "Care activities"));
+    for (const [cat, min] of careCats) {
+      const n = (care.event_counts || {})[cat] || 0;
+      c.append(kvRow(CATEGORY_LABELS[cat] || cat, fmtMin(min) + " · " + n + "×"));
+    }
+    c.append(el("div", "rule",
+      "Deduplicated across cameras — an activity two cameras both saw counts once."));
+    contentEl.append(c);
+  }
+}
+
 function render(report, status, trend) {
   contentEl.textContent = "";
   if (!report) {
@@ -298,8 +369,10 @@ function render(report, status, trend) {
     contentEl.append(c);
   }
 
-  // Highest-stakes finding, so it sits above routine activity rather than
-  // below the timeline where it used to render.
+  renderCareOverview(report);
+
+  // Evidence review follows the factual care overview, while notable events
+  // still lead the clip-heavy part of the report.
   if (report.notable_events && report.notable_events.length) {
     const c = el("div", "card alert");
     c.append(el("h2", null, "Notable events"));
@@ -406,73 +479,6 @@ function render(report, status, trend) {
       }
       c.append(box);
     }
-    contentEl.append(c);
-  }
-
-  // Every metric block is guarded on its key: a report JSON written before
-  // these existed must still render the rest of the page.
-  const att = report.attendance;
-  if (att) {
-    const c = el("div", "card");
-    c.append(el("h2", null, "Attendance"));
-    c.append(tileRow([
-      [fmtMin(att.unattended_minutes), "awake & alone", att.unattended_minutes > 0],
-      [fmtMin(att.longest_unattended_stretch_minutes), "longest alone", false],
-      [fmtMin(att.caregiver_present_minutes), "caregiver in view", false],
-      [fmtMin(att.unclear_minutes), "unclear", false],
-    ]));
-    c.append(el("div", "rule",
-      "Counts only an awake baby with no caregiver visible on any camera; a " +
-      "sleeping baby alone is not counted. " + fmtMin(att.uncovered_minutes) +
-      " of the window had no footage at all and is counted as unclear, never " +
-      "as time alone."));
-    for (const iv of att.unattended_intervals || []) {
-      c.append(kvRow(fmtTime(iv.start_iso) + " – " + fmtTime(iv.end_iso), "alone"));
-    }
-    contentEl.append(c);
-  }
-
-  const sl = report.sleep;
-  if (sl) {
-    const c = el("div", "card");
-    c.append(el("h2", null, "Sleep"));
-    c.append(tileRow([
-      [fmtMin(sl.total_sleep_minutes), "asleep", false],
-      [String(sl.nap_count), "naps", false],
-      [fmtMin(sl.longest_nap_minutes), "longest nap", false],
-      [fmtMin(sl.longest_awake_stretch_minutes), "longest awake", false],
-    ]));
-    for (const n of sl.naps || []) {
-      c.append(kvRow(fmtTime(n.start_iso) + " – " + fmtTime(n.end_iso),
-                     fmtMin(n.duration_minutes)));
-    }
-    // The two sources of "asleep" are independent, so a disagreement is a
-    // signal in itself: bedroom naps are invisible to the crib monitor, but
-    // crib-only minutes mean one of the two is wrong.
-    const cribOnly = sl.crib_only_minutes || 0, camOnly = sl.camera_only_minutes || 0;
-    if (cribOnly >= 10 || camOnly >= 10) {
-      const parts = [];
-      if (camOnly >= 10) parts.push("the cameras saw " + fmtMin(camOnly) +
-        " the crib monitor did not (expected for naps outside the nursery)");
-      if (cribOnly >= 10) parts.push("the crib monitor saw " + fmtMin(cribOnly) +
-        " the cameras did not");
-      c.append(el("div", "rule", "Sources disagree: " + parts.join("; ") + "."));
-    }
-    contentEl.append(c);
-  }
-
-  const care = report.care;
-  const careCats = Object.entries((care || {}).minutes_by_category || {})
-    .sort((a, b) => b[1] - a[1]);
-  if (careCats.length) {
-    const c = el("div", "card");
-    c.append(el("h2", null, "Care activities"));
-    for (const [cat, min] of careCats) {
-      const n = (care.event_counts || {})[cat] || 0;
-      c.append(kvRow(CATEGORY_LABELS[cat] || cat, fmtMin(min) + " · " + n + "×"));
-    }
-    c.append(el("div", "rule",
-      "Deduplicated across cameras — an activity two cameras both saw counts once."));
     contentEl.append(c);
   }
 
