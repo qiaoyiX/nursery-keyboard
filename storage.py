@@ -240,25 +240,28 @@ def update_setting(key, value):
 
 # ── Sleep sessions — Postgres path ────────────────────────────────────────────
 
-def _pg_start_sleep(start_time):
+def _pg_start_sleep(start_time, detected_at=None):
     with db() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "INSERT INTO sleep_sessions (start_time) VALUES (%s) RETURNING id",
-                (start_time,)
+                """INSERT INTO sleep_sessions (start_time, start_detected_at)
+                   VALUES (%s, %s) RETURNING id""",
+                (start_time, detected_at)
             )
             return cur.fetchone()[0]
 
 
-def _pg_end_sleep(session_id, end_time):
+def _pg_end_sleep(session_id, end_time, detected_at=None, reason=None):
     with db() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """UPDATE sleep_sessions
                    SET end_time = %s,
-                       duration_minutes = EXTRACT(EPOCH FROM (%s - start_time)) / 60
+                       duration_minutes = EXTRACT(EPOCH FROM (%s - start_time)) / 60,
+                       end_detected_at = %s,
+                       end_reason = %s
                    WHERE id = %s""",
-                (end_time, end_time, session_id)
+                (end_time, end_time, detected_at, reason, session_id)
             )
 
 
@@ -324,7 +327,7 @@ def _json_save_sleep_atomic(sessions):
     os.replace(tmp, SLEEP_FILE)
 
 
-def _json_start_sleep(start_time):
+def _json_start_sleep(start_time, detected_at=None):
     with sleep_lock:
         sessions = _json_load_sleep()
         new_id = max((s["id"] for s in sessions), default=-1) + 1
@@ -333,12 +336,15 @@ def _json_start_sleep(start_time):
             "start_time": start_time.isoformat(),
             "end_time": None,
             "duration_minutes": None,
+            "start_detected_at": detected_at.isoformat() if detected_at else None,
+            "end_detected_at": None,
+            "end_reason": None,
         })
         _json_save_sleep_atomic(sessions)
     return new_id
 
 
-def _json_end_sleep(session_id, end_time):
+def _json_end_sleep(session_id, end_time, detected_at=None, reason=None):
     with sleep_lock:
         sessions = _json_load_sleep()
         for s in sessions:
@@ -346,6 +352,8 @@ def _json_end_sleep(session_id, end_time):
                 s["end_time"] = end_time.isoformat()
                 start = datetime.fromisoformat(s["start_time"])
                 s["duration_minutes"] = round((end_time - start).total_seconds() / 60, 1)
+                s["end_detected_at"] = detected_at.isoformat() if detected_at else None
+                s["end_reason"] = reason
                 break
         _json_save_sleep_atomic(sessions)
 
@@ -396,15 +404,20 @@ def _json_get_open_sleep_session():
 
 # ── Public sleep API ──────────────────────────────────────────────────────────
 
-def start_sleep_session(start_time):
-    return _pg_start_sleep(start_time) if USE_DB else _json_start_sleep(start_time)
+def start_sleep_session(start_time, detected_at=None):
+    """start_time is backdated to when stillness began; detected_at is when the
+    monitor confirmed it. The gap between them is the detector's onset lag."""
+    return (_pg_start_sleep(start_time, detected_at) if USE_DB
+            else _json_start_sleep(start_time, detected_at))
 
 
-def end_sleep_session(session_id, end_time):
+def end_sleep_session(session_id, end_time, detected_at=None, reason=None):
+    """reason is one of sleep_monitor's END_* codes — see there for why each matters.
+    Only 'sustained_wake' means she woke up; the rest are the detector self-correcting."""
     if USE_DB:
-        _pg_end_sleep(session_id, end_time)
+        _pg_end_sleep(session_id, end_time, detected_at, reason)
     else:
-        _json_end_sleep(session_id, end_time)
+        _json_end_sleep(session_id, end_time, detected_at, reason)
 
 
 def get_sleep_sessions_today():

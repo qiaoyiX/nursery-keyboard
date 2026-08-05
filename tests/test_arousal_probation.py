@@ -57,6 +57,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from sleep_monitor import (  # noqa: E402
     DISTURBANCE_SOLO_FRACTION,
+    END_LIVENESS_TIMEOUT,
+    END_PROBATION_EMPTY_MATCH,
+    END_PROBATION_EXPIRED,
+    END_SETTLED_EMPTY,
+    END_SILENT_DEPARTURE,
     EVIDENCE_PRESENCE_DELTA,
     LATCHED_EMPTY_MATCH_SECONDS,
     LIGHTING_CEILING,
@@ -176,6 +181,19 @@ def check_magnitudes(cfg):
     assert entry < cfg["disturbance_fraction"], f"parent-bit entry {entry:.2f} would disturb"
 
 
+def assert_closed_by(s, expected):
+    """The close path each scenario is *about*, asserted on the persisted reason.
+
+    These scenarios are the only coverage of which path closes a session, and the
+    reason is now stored — so a refactor that closes a nap the right distance from
+    the pickup by the wrong mechanism (a liveness timeout standing in for a settle,
+    say) has to fail here rather than pass on the timestamp alone.
+    """
+    assert s["reason"] == expected, f"closed by {s['reason']!r}, want {expected!r}"
+    assert s["end_detected"] is not None, "end_detected_at not recorded"
+    assert s["end_detected"] >= s["end"], "detected_at precedes the backdated end"
+
+
 class Driver:
     def __init__(self, cfg):
         self.sessions = []
@@ -187,13 +205,16 @@ class Driver:
         self.m.prev = EMPTY.copy()
         self.t = datetime(2026, 7, 7, 12, 0, 0)
 
-    def _start(self, t):
-        self.sessions.append({"start": t, "end": None})
+    def _start(self, t, detected_at):
+        self.sessions.append({"start": t, "end": None, "detected": detected_at,
+                              "end_detected": None, "reason": None})
         return len(self.sessions) - 1
 
-    def _end(self, sid, t):
+    def _end(self, sid, t, detected_at, reason):
         if sid is not None and self.sessions[sid]["end"] is None:
             self.sessions[sid]["end"] = t
+            self.sessions[sid]["end_detected"] = detected_at
+            self.sessions[sid]["reason"] = reason
 
     def still(self, frame, seconds):
         for _ in range(int(seconds)):
@@ -240,6 +261,7 @@ def scenario_a(cfg):
     assert err <= cfg["settle_seconds"] + 5, f"end not backdated to pickup (off by {err:.0f}s)"
     assert d.m.state == STATE_AWAY, f"state={d.m.state}, want away"
     assert active_fraction(d.m.reference, BEDDING) == 0.0, "reference not self-healed"
+    assert_closed_by(s, END_PROBATION_EXPIRED)
     print(f"  A missed pickup: session closed {err:.0f}s from pickup, state=away, "
           f"reference healed  ✓")
 
@@ -271,6 +293,7 @@ def scenario_c(cfg):
     assert s["end"] is not None and d.m.state == STATE_AWAY
     err = abs((s["end"] - pickup_at).total_seconds())
     assert err <= cfg["settle_seconds"] + 5, f"end not backdated to pickup (off by {err:.0f}s)"
+    assert_closed_by(s, END_SETTLED_EMPTY)
     print(f"  C clean pickup: session closed {err:.0f}s from pickup (path unchanged)  ✓")
 
 
@@ -292,6 +315,7 @@ def scenario_d(cfg):
     assert err <= 5, f"end not backdated to parent arrival (off by {err:.0f}s)"
     assert d.m.state == STATE_AWAY, f"state={d.m.state}, want away"
     assert active_fraction(d.m.reference, EMPTY) == 0.0, "reference not refreshed"
+    assert_closed_by(s, END_SETTLED_EMPTY)
     print(f"  D blocked settle + guard-scale departure: closed {err:.0f}s from pickup  ✓")
 
 
@@ -318,6 +342,7 @@ def scenario_e(cfg):
     err = abs((s["end"] - pickup_at).total_seconds())
     assert err <= cfg["settle_seconds"] + 5, f"end not backdated to pickup (off by {err:.0f}s)"
     assert d.m.state == STATE_AWAY, f"state={d.m.state}, want away"
+    assert_closed_by(s, END_PROBATION_EXPIRED)
     print(f"  E parent visits during probation: not evidence, closed {err:.0f}s from pickup  ✓")
 
 
@@ -344,6 +369,7 @@ def scenario_f(cfg):
     assert err <= cfg["settle_seconds"] + 5, f"end not backdated to pickup (off by {err:.0f}s)"
     assert d.m.state == STATE_AWAY, f"state={d.m.state}, want away"
     assert active_fraction(d.m.reference, EMPTY) == 0.0, "reference not refreshed"
+    assert_closed_by(s, END_PROBATION_EMPTY_MATCH)
     print(f"  F empty-match fast path: closed within probation, backdated {err:.0f}s  ✓")
 
 
@@ -414,6 +440,7 @@ def scenario_h(cfg):
     d2.still(EMPTY, LATCHED_EMPTY_MATCH_SECONDS + 60)
     assert d2.sessions[0]["end"] is None, \
         "silent-departure close fired against an UNTRUSTED reference"
+    assert_closed_by(s, END_SILENT_DEPARTURE)
     print(f"  H silent pickup: closed {err:.0f}s from empty-match start via trusted "
           f"reference; untrusted reference correctly holds  ✓")
 
@@ -433,6 +460,7 @@ def scenario_i(cfg):
     err = abs((s["end"] - last_life).total_seconds())
     assert err <= 5, f"end not backdated to the last life sign (off by {err:.0f}s)"
     assert d.m.state == STATE_AWAY, f"state={d.m.state}, want away"
+    assert_closed_by(s, END_LIVENESS_TIMEOUT)
     print(f"  I liveness backstop: ghost phantom closed at {cfg['liveness_seconds'] // 60}m, "
           f"backdated {err:.0f}s from last life sign  ✓")
 
@@ -460,6 +488,7 @@ def scenario_j(cfg):
     err = abs((s["end"] - pickup_at).total_seconds())
     assert err <= cfg["settle_seconds"] + 5, f"end not backdated to pickup (off by {err:.0f}s)"
     assert d.m.state == STATE_AWAY, f"state={d.m.state}, want away"
+    assert_closed_by(s, END_PROBATION_EXPIRED)
     print(f"  J presence-jump evidence: parent hover not evidence, closed {err:.0f}s "
           f"from pickup  ✓")
 

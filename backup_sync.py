@@ -125,18 +125,23 @@ def main():
         return
 
     events   = load_local(DATA_FILE, required=True)
-    sessions = load_local(SLEEP_FILE, required=False)
+    # required: an absent sleep file used to read as "zero sessions" and, under the
+    # old DELETE+reinsert, wiped the table — guard_shrinkage could not catch it
+    # because floor=10 exempts a small table. The upsert above removes the danger;
+    # refusing to run on a missing file removes the ambiguity too.
+    sessions = load_local(SLEEP_FILE, required=True)
     reports  = load_nanny_reports()
 
     with db() as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT count(*) FROM events")
             remote_events = cur.fetchone()[0]
-            cur.execute("SELECT count(*) FROM sleep_sessions")
-            remote_sessions = cur.fetchone()[0]
 
+            # Only events still need the guard: they are DELETE+reinserted, so a
+            # collapsed local file would replicate as deletion. Sleep sessions upsert
+            # and can no longer shrink the remote, and keeping the guard here would
+            # let a sleep anomaly abort the events backup for no protective gain.
             guard_shrinkage("event", len(events), remote_events, floor=20)
-            guard_shrinkage("sleep-session", len(sessions), remote_sessions, floor=10)
 
             # One transaction: db() commits on clean exit, rolls back on exception,
             # so Neon always holds a complete snapshot — old or new, never partial.
@@ -145,11 +150,24 @@ def main():
                 "INSERT INTO events (type, time) VALUES (%s, %s)",
                 [(e["type"], e["time"]) for e in events],
             )
-            cur.execute("DELETE FROM sleep_sessions")
+            # Upsert, not DELETE+reinsert: Neon is the durable record of sleep, so a
+            # stale or truncated local file must never be able to erase it. start_time
+            # is the natural key — microsecond precision, one per session, and unlike
+            # `id` it survives an export_db restore's renumbering.
             cur.executemany(
-                """INSERT INTO sleep_sessions (start_time, end_time, duration_minutes)
-                   VALUES (%s, %s, %s)""",
-                [(s["start_time"], s["end_time"], s["duration_minutes"]) for s in sessions],
+                """INSERT INTO sleep_sessions
+                       (start_time, end_time, duration_minutes,
+                        start_detected_at, end_detected_at, end_reason)
+                   VALUES (%s, %s, %s, %s, %s, %s)
+                   ON CONFLICT (start_time) DO UPDATE SET
+                       end_time          = EXCLUDED.end_time,
+                       duration_minutes  = EXCLUDED.duration_minutes,
+                       start_detected_at = EXCLUDED.start_detected_at,
+                       end_detected_at   = EXCLUDED.end_detected_at,
+                       end_reason        = EXCLUDED.end_reason""",
+                [(s["start_time"], s["end_time"], s["duration_minutes"],
+                  s.get("start_detected_at"), s.get("end_detected_at"),
+                  s.get("end_reason")) for s in sessions],
             )
             # Archive, not mirror — see sync_nanny_reports(). No DELETE, and no
             # shrinkage guard: this table is expected to outgrow the local dir.

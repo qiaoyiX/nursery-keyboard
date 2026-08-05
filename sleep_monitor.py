@@ -119,6 +119,20 @@ STATE_AWAY   = "away"
 STATE_AWAKE  = "awake"
 STATE_ASLEEP = "asleep"
 
+# Why a session closed, persisted with the session. Stable machine-readable codes:
+# the log strings alongside them carry run-specific numbers (epoch counts, minutes)
+# and are not safe to group by. Only SUSTAINED_WAKE means "she actually woke up";
+# the rest are the detector correcting itself, and a scorer must be able to tell
+# them apart to attribute a bad interval to a failure mode.
+END_SUSTAINED_WAKE        = "sustained_wake"
+END_SETTLED_EMPTY         = "settled_empty"          # pickup seen directly (disturbance settled to empty)
+END_SILENT_DEPARTURE      = "silent_departure"       # pickup inferred from a trusted-empty match
+END_PROBATION_EXPIRED     = "probation_expired"      # occupancy never confirmed
+END_PROBATION_EMPTY_MATCH = "probation_empty_match"  # occupancy refuted mid-probation
+END_LIVENESS_TIMEOUT      = "liveness_timeout"       # no micro-motion — crib was empty
+END_MAX_SESSION_CAP       = "max_session_cap"        # detection loss; end_time is NOT backdated
+END_MANUAL_CALIBRATION    = "manual_calibration"
+
 LIGHTING_CEILING     = 0.80   # frame-diff fraction above which per-frame motion is meaningless:
                               # an IR day/night toggle, a corrupt decode, OR a pickup whose whole
                               # departure landed on one frame gap. Judgment is deferred one frame
@@ -356,8 +370,8 @@ class SleepStateMachine:
                  on_session_start=None, on_session_end=None, on_reference_save=None):
         self.cfg  = cfg
         self.log  = log
-        self.on_session_start  = on_session_start or (lambda t: None)
-        self.on_session_end    = on_session_end or (lambda sid, t: None)
+        self.on_session_start  = on_session_start or (lambda t, detected_at: None)
+        self.on_session_end    = on_session_end or (lambda sid, t, detected_at, reason: None)
         self.on_reference_save = on_reference_save or (lambda ref, trusted: None)
 
         self.reference = reference
@@ -411,7 +425,7 @@ class SleepStateMachine:
     def calibrate(self, curr_gray, now):
         """Manual 'Crib is empty': authoritative reference + forced AWAY."""
         self._set_reference(curr_gray, trusted=True)
-        self._close_session(now, "manual calibration")
+        self._close_session(now, END_MANUAL_CALIBRATION, now)
         self._to_away()
         # Cancel any in-flight disturbance episode: the button is often pressed right
         # after walking away from the crib, and a pending settle evaluation against the
@@ -433,11 +447,19 @@ class SleepStateMachine:
         self.reference_trusted = trusted
         self.on_reference_save(gray, trusted)
 
-    def _close_session(self, end_time, why):
+    def _close_session(self, end_time, reason, detected_at, detail=""):
+        """Close the open session, if any.
+
+        end_time is backdated to when the evidence says sleep ended; detected_at is
+        when this frame decided it. Everything except MAX_SESSION_CAP backdates, so
+        the gap between the two is the detector's lag and is worth keeping. reason is
+        one of the END_* codes — detail only decorates the log line.
+        """
         if self.session_id is not None:
-            self.on_session_end(self.session_id, end_time)
-            self.log.info("Sleep session %s ended at %s (%s)",
-                          self.session_id, end_time.isoformat(), why)
+            self.on_session_end(self.session_id, end_time, detected_at, reason)
+            self.log.info("Sleep session %s ended at %s (%s%s), detected at %s",
+                          self.session_id, end_time.isoformat(), reason,
+                          ": " + detail if detail else "", detected_at.isoformat())
         self.session_id  = None
         self.sleep_start = None
 
@@ -734,7 +756,8 @@ class SleepStateMachine:
                 elif ((now - self.empty_match_since).total_seconds()
                         >= PROBATION_EMPTY_MATCH_SECONDS):
                     self._close_session(self.probation_anchor or now,
-                                        "probation empty-match (crib matches empty reference)")
+                                        END_PROBATION_EMPTY_MATCH, now,
+                                        "crib matches empty reference")
                     self.log.warning("Probation: presence ≤ %.4f sustained %ds — crib is "
                                      "empty, ruling AWAY now, reference refreshed",
                                      cfg["presence_threshold"] * EMPTY_MATCH_MARGIN,
@@ -768,7 +791,8 @@ class SleepStateMachine:
                                   self.probation_deadline.isoformat())
                 else:
                     self._close_session(self.probation_anchor,
-                                        "probation expired — no micro-motion")
+                                        END_PROBATION_EXPIRED, now,
+                                        "no micro-motion")
                     self.log.warning("Probation expired with %d micro-motion episode(s) — "
                                      "ruling crib empty, reference refreshed", episodes)
                     self._to_away()
@@ -796,7 +820,8 @@ class SleepStateMachine:
                 end = self.latched_empty_since
                 if self.sleep_start is not None and end < self.sleep_start:
                     end = self.sleep_start
-                self._close_session(end, "silent departure (sustained trusted-empty match)")
+                self._close_session(end, END_SILENT_DEPARTURE, now,
+                                    "sustained trusted-empty match")
                 self.log.warning("Silent departure: presence ≤ %.3f with zero micro-motion "
                                  "for %ds against the trusted-empty reference — a pickup "
                                  "below the disturbance threshold; AWAY",
@@ -848,11 +873,15 @@ class SleepStateMachine:
                 # probation so a confirmed baby's session start stays backdated to
                 # when stillness truly began; probation expiry wipes the timer.
                 self.sleep_start = self.still_since
-                self.session_id  = self.on_session_start(self.still_since)
+                # start_time backdates to when stillness began; `now` is when it was
+                # confirmed. The gap is sleep_min_minutes, longer if probation held the
+                # gate shut — which is the only signal distinguishing a clean onset from
+                # one that waited out an unconfirmed occupancy.
+                self.session_id  = self.on_session_start(self.still_since, now)
                 self.state       = STATE_ASLEEP
                 self.still_since = None
-                self.log.info("ASLEEP — session %s started at %s",
-                              self.session_id, self.sleep_start)
+                self.log.info("ASLEEP — session %s started at %s (detected at %s)",
+                              self.session_id, self.sleep_start, now.isoformat())
 
         elif self.state == STATE_ASLEEP:
             # Path 4: sanity cap — a session this old is detection loss, not sleep.
@@ -860,7 +889,9 @@ class SleepStateMachine:
                     and (now - self.sleep_start).total_seconds() >= cfg["max_session_seconds"]):
                 self.log.warning("Session exceeded %.1fh cap — force-ending",
                                  cfg["max_session_seconds"] / 3600)
-                self._close_session(now, "max-session cap")
+                # end_time is `now`, NOT backdated — the real end is unknown. Consumers
+                # must treat cap-ended sessions as detection loss, not as sleep.
+                self._close_session(now, END_MAX_SESSION_CAP, now)
                 self.state = STATE_AWAKE
                 self.still_since = None
                 self._reset_wake_epochs()
@@ -874,7 +905,8 @@ class SleepStateMachine:
                 end = self.last_life_sign
                 if self.sleep_start is not None and end < self.sleep_start:
                     end = self.sleep_start
-                self._close_session(end, "liveness timeout (no micro-motion for %dm)"
+                self._close_session(end, END_LIVENESS_TIMEOUT, now,
+                                    "no micro-motion for %dm"
                                     % (cfg["liveness_seconds"] // 60))
                 self.log.warning("Liveness: zero micro-motion for %dm while ASLEEP — an "
                                  "occupied crib is never this still, ruling empty; AWAY",
@@ -889,8 +921,8 @@ class SleepStateMachine:
                 # at most and are absorbed back into the nap (actigraphy rescoring).
                 wake_confirmed, bout_start = self._update_wake_epochs(now, is_motion)
                 if wake_confirmed:
-                    self._close_session(bout_start, "sustained wake (%d epochs)"
-                                        % len(self.wake_epochs))
+                    self._close_session(bout_start, END_SUSTAINED_WAKE, now,
+                                        "%d epochs" % len(self.wake_epochs))
                     self.state = STATE_AWAKE
                     self.still_since = None
                     self._reset_wake_epochs()
@@ -916,7 +948,7 @@ class SleepStateMachine:
             end = self.disturbance_start or now
             if self.interrupted_probation_anchor is not None:
                 end = min(end, self.interrupted_probation_anchor)
-            self._close_session(end, "settled empty (departure)")
+            self._close_session(end, END_SETTLED_EMPTY, now, "departure")
             self._to_away()
             # Direct evidence of emptiness (the settled scene matches) — grants trust.
             self._set_reference(curr_gray, trusted=True)
@@ -989,8 +1021,8 @@ def run_state_machine(rtsp_url, cfg):
                      "trusted-empty" if ref_trusted else "untrusted — silent-departure "
                      "close disarmed until a confirmed-empty settle or calibration")
 
-    def on_session_end(sid, end_time):
-        end_sleep_session(sid, end_time)
+    def on_session_end(sid, end_time, detected_at, reason):
+        end_sleep_session(sid, end_time, detected_at=detected_at, reason=reason)
         if HUCKLEBERRY_AVAILABLE and machine.sleep_start:
             push_sleep(machine.sleep_start, end_time)
 

@@ -152,13 +152,16 @@ def run_simulation(videos, roi, interval, verbose, cfg):
 
     sessions = []
 
-    def on_start(t):
-        sessions.append({"start": t, "end": None})
+    def on_start(t, detected_at):
+        sessions.append({"start": t, "end": None, "detected": detected_at,
+                         "end_detected": None, "reason": None})
         return len(sessions) - 1
 
-    def on_end(sid, t):
+    def on_end(sid, t, detected_at, reason):
         if sid is not None and sessions[sid]["end"] is None:
             sessions[sid]["end"] = t
+            sessions[sid]["end_detected"] = detected_at
+            sessions[sid]["reason"] = reason
 
     machine = SleepStateMachine(cfg, reference=None, log=log,
                                 on_session_start=on_start, on_session_end=on_end)

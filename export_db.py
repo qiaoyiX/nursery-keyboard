@@ -67,14 +67,18 @@ def main():
             cur.execute("SELECT type, time FROM events ORDER BY time")
             events = [{"type": t, "time": ts.isoformat()} for t, ts in cur.fetchall()]
 
-            cur.execute("""SELECT start_time, end_time, duration_minutes
+            cur.execute("""SELECT start_time, end_time, duration_minutes,
+                                  start_detected_at, end_detected_at, end_reason
                            FROM sleep_sessions ORDER BY start_time""")
             sessions = [{
-                "id":               i,
-                "start_time":       start.isoformat(),
-                "end_time":         end.isoformat() if end is not None else None,
-                "duration_minutes": float(dur) if dur is not None else None,
-            } for i, (start, end, dur) in enumerate(cur.fetchall())]
+                "id":                i,
+                "start_time":        start.isoformat(),
+                "end_time":          end.isoformat() if end is not None else None,
+                "duration_minutes":  float(dur) if dur is not None else None,
+                "start_detected_at": sdet.isoformat() if sdet is not None else None,
+                "end_detected_at":   edet.isoformat() if edet is not None else None,
+                "end_reason":        reason,
+            } for i, (start, end, dur, sdet, edet, reason) in enumerate(cur.fetchall())]
 
             reports = []
             try:
