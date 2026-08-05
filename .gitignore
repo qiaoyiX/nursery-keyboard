@@ -8,6 +8,8 @@ sleep_state.json
 reference_frame.npy
 reference_frame_meta.json
 recordings/
+crib_footage/
+nanny/sleep_scores/
 2026*_*/
 roi_frame.jpg
 roi_picker.html

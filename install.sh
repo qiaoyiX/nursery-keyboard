@@ -278,6 +278,58 @@ sudo systemctl enable --now nursery-nanny-record.service
 sudo systemctl enable --now nursery-nanny-analyze.timer
 sudo systemctl enable --now nursery-nanny-report.timer
 
+echo "==> Installing sleep-detector scoring (runs only if the nanny feature is configured)..."
+
+# Scores the crib monitor against the cameras once the day's report exists, and
+# persists the result so the error trend outlives chunk retention. Read-only with
+# respect to the detector: it never changes a threshold, it only measures.
+sudo tee /etc/systemd/system/nursery-sleep-score.service > /dev/null <<EOF
+[Unit]
+Description=Nursery - score the crib monitor against the cameras
+# Camera truth comes from the nanny chunks; without them there is nothing to score.
+ConditionPathExists=$NANNY_ENV_FILE
+
+[Service]
+Type=oneshot
+User=$USER_NAME
+WorkingDirectory=$WORK_DIR
+EnvironmentFile=$NANNY_ENV_FILE
+ExecStart=$PYTHON_BIN sleep_score.py --days 1 --save
+ExecStartPost=-$PYTHON_BIN crib_retention.py --prune
+EOF
+
+sudo tee /etc/systemd/system/nursery-sleep-score.timer > /dev/null <<EOF
+[Unit]
+Description=Nursery sleep-detector scoring, after the nightly report
+
+[Timer]
+OnCalendar=*-*-* 19:30:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+
+# Rolling crib-camera buffer, so a flagged day can still be replayed. Off by
+# default: it is the one part of this that costs real disk, and the operator
+# should opt in after checking headroom (crib_retention.py --status).
+sudo tee /etc/systemd/system/nursery-crib-record.service > /dev/null <<EOF
+[Unit]
+Description=Nursery - rolling crib-camera buffer for detector replay
+After=network-online.target
+
+[Service]
+Type=simple
+User=$USER_NAME
+WorkingDirectory=$WORK_DIR
+ExecStart=$WORK_DIR/record_crib_rolling.sh
+Restart=always
+RestartSec=30
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now nursery-sleep-score.timer
+
 echo ""
 echo "==> Done!"
 echo ""
@@ -295,3 +347,7 @@ echo "  6. Run: sudo systemctl start nursery-sleep-monitor"
 echo "  7. Nanny report (optional): create Camera Accounts on the nanny cams, then"
 echo "     sudo nano /etc/nursery-tracker/nanny.env  (uncomment + fill in keys/cameras)"
 echo "     sudo systemctl restart nursery-nanny-record"
+echo "  8. Detector scoring: python3 sleep_score.py --days 14   (needs nanny chunks)"
+echo "     To enable replay-based tuning, check headroom then start the crib buffer:"
+echo "     python3 crib_retention.py --status"
+echo "     sudo systemctl enable --now nursery-crib-record"

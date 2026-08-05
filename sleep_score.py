@@ -183,6 +183,25 @@ def verify_against_report(day, chunks, rooms, window):
             for k in keys}
 
 
+SCORES_DIR = os.path.join(os.path.dirname(__file__), "nanny", "sleep_scores")
+
+
+def save_score(row):
+    """Persist one day's score so the error trend outlives chunk retention.
+
+    Chunks are pruned on the nanny pipeline's schedule, so a day becomes unscoreable
+    a couple of weeks after the fact. The scores are tiny and are what a sweep needs
+    as its baseline, so they are kept independently of the footage that produced them.
+    """
+    os.makedirs(SCORES_DIR, exist_ok=True)
+    path = os.path.join(SCORES_DIR, f"{row['date']}.json")
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(row, f, indent=1)
+    os.replace(tmp, path)
+    return path
+
+
 def load_day(day):
     day_dir = os.path.join(CHUNKS_DIR, day.isoformat())
     if not os.path.isdir(day_dir):
@@ -198,6 +217,8 @@ def main():
     ap.add_argument("--json", action="store_true", help="emit JSON instead of a table")
     ap.add_argument("--verify", action="store_true",
                     help="also recompute the report's own numbers and compare")
+    ap.add_argument("--save", action="store_true",
+                    help="also write each day's score to nanny/sleep_scores/<date>.json")
     args = ap.parse_args()
 
     if args.days:
@@ -225,6 +246,8 @@ def main():
         row = score_day(day, chunks, rooms, window)
         if args.verify:
             row["verify"] = verify_against_report(day, chunks, rooms, window)
+        if args.save:
+            save_score(row)
         results.append(row)
 
     if args.json:
