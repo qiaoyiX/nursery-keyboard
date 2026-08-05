@@ -18,6 +18,7 @@ USE_DB = bool(DATABASE_URL and PSYCOPG2_AVAILABLE)
 DATA_FILE        = os.path.join(os.path.dirname(__file__), "log.json")
 SETTINGS_FILE    = os.path.join(os.path.dirname(__file__), "settings.json")
 SLEEP_FILE       = os.path.join(os.path.dirname(__file__), "sleep_sessions.json")
+SLEEP_EVENTS_FILE = os.path.join(os.path.dirname(__file__), "sleep_events.json")
 SLEEP_STATE_FILE = os.path.join(os.path.dirname(__file__), "sleep_state.json")
 CALIBRATE_FLAG   = os.path.join(os.path.dirname(__file__), "calibrate.flag")
 
@@ -50,6 +51,7 @@ DEFAULT_SETTINGS = {
 
 log_lock      = threading.Lock()
 sleep_lock    = threading.Lock()
+sleep_events_lock = threading.Lock()
 settings_lock = threading.Lock()
 
 
@@ -325,6 +327,73 @@ def _json_save_sleep_atomic(sessions):
     with open(tmp, "w") as f:
         json.dump(sessions, f)
     os.replace(tmp, SLEEP_FILE)
+
+
+# ── Sleep events (what happened *inside* a nap) ───────────────────────────────
+#
+# Append-only, keyed to a session by its start_time rather than its id: the id is
+# local-only and export_db renumbers it on restore, while start_time survives.
+# Kinds: "arousal"      — a disturbance mid-nap that settled back into the same nap
+#        "wake_attempt" — a run of active wake epochs that decayed before confirming
+# Deliberately NOT per-stir: micro-motion fires every ~3 min and would bury the two
+# events that carry information.
+
+def append_sleep_event(session_start, at, kind, duration_s=None, settled_back=None):
+    rec = {
+        "session_start": session_start.isoformat() if session_start else None,
+        "at": at.isoformat(),
+        "kind": kind,
+        "duration_s": round(duration_s, 1) if duration_s is not None else None,
+        "settled_back": settled_back,
+    }
+    if USE_DB:
+        with db() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO sleep_events
+                           (session_start, at, kind, duration_s, settled_back)
+                       VALUES (%s, %s, %s, %s, %s)
+                       ON CONFLICT (session_start, at, kind) DO NOTHING""",
+                    (rec["session_start"], rec["at"], kind, rec["duration_s"], settled_back))
+        return
+    with sleep_events_lock:
+        events = []
+        if os.path.exists(SLEEP_EVENTS_FILE):
+            try:
+                with open(SLEEP_EVENTS_FILE) as f:
+                    events = json.load(f)
+            except json.JSONDecodeError:
+                # A corrupt event log must never take the monitor down with it —
+                # these are diagnostics, not the sleep record itself.
+                logging.warning("sleep_events.json is corrupt — starting a new one")
+                events = []
+        events.append(rec)
+        tmp = SLEEP_EVENTS_FILE + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(events, f)
+        os.replace(tmp, SLEEP_EVENTS_FILE)
+
+
+def get_sleep_events(days=7):
+    """Events whose `at` falls in the last `days` days, oldest first."""
+    cutoff = datetime.combine(
+        datetime.now().date() - timedelta(days=days - 1), datetime.min.time()).isoformat()
+    if USE_DB:
+        with db() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("""SELECT session_start, at, kind, duration_s, settled_back
+                               FROM sleep_events WHERE at >= %s ORDER BY at""", (cutoff,))
+                return [dict(r) for r in cur.fetchall()]
+    with sleep_events_lock:
+        if not os.path.exists(SLEEP_EVENTS_FILE):
+            return []
+        try:
+            with open(SLEEP_EVENTS_FILE) as f:
+                events = json.load(f)
+        except json.JSONDecodeError:
+            return []
+    return sorted((e for e in events if str(e.get("at", "")) >= cutoff),
+                  key=lambda e: e["at"])
 
 
 def _json_start_sleep(start_time, detected_at=None):

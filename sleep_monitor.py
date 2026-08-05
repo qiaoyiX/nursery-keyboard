@@ -97,6 +97,7 @@ import numpy as np
 from storage import (
     CALIBRATE_FLAG,
     DEFAULT_SETTINGS,
+    append_sleep_event,
     end_sleep_session,
     get_open_sleep_session,
     load_settings,
@@ -367,12 +368,17 @@ class SleepStateMachine:
     """
 
     def __init__(self, cfg, reference=None, reference_trusted=False, log=logging,
-                 on_session_start=None, on_session_end=None, on_reference_save=None):
+                 on_session_start=None, on_session_end=None, on_reference_save=None,
+                 on_sleep_event=None):
         self.cfg  = cfg
         self.log  = log
         self.on_session_start  = on_session_start or (lambda t, detected_at: None)
         self.on_session_end    = on_session_end or (lambda sid, t, detected_at, reason: None)
         self.on_reference_save = on_reference_save or (lambda ref, trusted: None)
+        # Within-nap detail (arousals, wake attempts). Kept as a callback so the state
+        # machine stays I/O-free and the synthetic tests can capture it.
+        self.on_sleep_event = on_sleep_event or (
+            lambda session_start, at, kind, duration_s, settled_back: None)
 
         self.reference = reference
         # trusted = the reference is KNOWN empty (settle-empty verdict / calibrate), not
@@ -406,6 +412,7 @@ class SleepStateMachine:
         self._epoch_start       = None        # start time of the epoch being accumulated
         self._epoch_frames      = 0
         self._epoch_motion      = 0
+        self._active_run_start  = None        # first epoch of the current active run, if any
         # True when a disturbance interrupted an ASLEEP nap: on settle-to-occupied the nap
         # resumes (arousal rescored as sleep) instead of the session ending.
         self.arousal_from_sleep = False
@@ -555,6 +562,7 @@ class SleepStateMachine:
         self._epoch_start  = None
         self._epoch_frames = 0
         self._epoch_motion = 0
+        self._active_run_start = None
 
     def _update_wake_epochs(self, now, is_motion):
         """
@@ -576,14 +584,29 @@ class SleepStateMachine:
         active = (self._epoch_frames > 0
                   and self._epoch_motion / self._epoch_frames >= WAKE_EPOCH_ACTIVE_FRAC)
         self.wake_epochs.append((self._epoch_start, active))
+        epoch_start = self._epoch_start
         self._epoch_start  = now
         self._epoch_frames = 0
         self._epoch_motion = 0
+
+        # A run of active epochs that decays before confirming is a wake attempt: she
+        # stirred toward waking and went back down. It leaves no trace in the session
+        # record, and it is the signal that separates "sleeping through" from "nearly
+        # woke four times" on two nights with identical totals.
+        if active:
+            if self._active_run_start is None:
+                self._active_run_start = epoch_start
+        elif self._active_run_start is not None:
+            self.on_sleep_event(self.sleep_start, self._active_run_start, "wake_attempt",
+                                (epoch_start - self._active_run_start).total_seconds(), True)
+            self._active_run_start = None
 
         need = max(2, round(self.cfg["wake_minutes"] * 60 / WAKE_EPOCH_SECONDS))
         while len(self.wake_epochs) > need:
             self.wake_epochs.popleft()
         if len(self.wake_epochs) == need and all(a for _, a in self.wake_epochs):
+            # Confirmed wake — the run became a real wake, not an attempt.
+            self._active_run_start = None
             return True, self.wake_epochs[0][0]
         return False, None
 
@@ -981,6 +1004,11 @@ class SleepStateMachine:
                           "confirm, else scored as a missed pickup)",
                           presence_frac, self.session_id,
                           self.probation_deadline.isoformat())
+            # The nap survived, so nothing in the session record will ever show this
+            # happened — a 3-arousal nap and an undisturbed one are otherwise identical.
+            start = self.disturbance_start or now
+            self.on_sleep_event(self.sleep_start, start, "arousal",
+                                (now - start).total_seconds(), True)
         else:
             self.state = STATE_AWAKE
             self.still_since = None
@@ -1031,6 +1059,7 @@ def run_state_machine(rtsp_url, cfg):
         on_session_start=start_sleep_session,
         on_session_end=on_session_end,
         on_reference_save=save_reference_frame,
+        on_sleep_event=append_sleep_event,
     )
     machine.prev = first_gray
 

@@ -41,6 +41,19 @@ def main():
                 cur.execute(ddl)
                 print(f"column {name}: ok")
 
+            # Within-nap detail. session_start references sleep_sessions.start_time
+            # by value rather than by FK: backup_sync upserts the two tables
+            # independently and an FK would make ordering matter.
+            cur.execute("""CREATE TABLE IF NOT EXISTS sleep_events (
+                               id            BIGSERIAL PRIMARY KEY,
+                               session_start TIMESTAMP,
+                               at            TIMESTAMP NOT NULL,
+                               kind          TEXT NOT NULL,
+                               duration_s    NUMERIC(10,1),
+                               settled_back  BOOLEAN,
+                               UNIQUE (session_start, at, kind))""")
+            print("table sleep_events: ok")
+
             cur.execute("""SELECT start_time, count(*) FROM sleep_sessions
                            GROUP BY start_time HAVING count(*) > 1
                            ORDER BY start_time""")

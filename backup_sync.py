@@ -38,7 +38,7 @@ import os
 import sys
 from datetime import datetime
 
-from storage import DATA_FILE, SLEEP_FILE, USE_DB, db
+from storage import DATA_FILE, SLEEP_EVENTS_FILE, SLEEP_FILE, USE_DB, db
 
 LAST_SYNC_FILE = os.path.join(os.path.dirname(__file__), "last_sync.json")
 REPORTS_DIR = os.path.join(os.path.dirname(__file__), "nanny", "reports")
@@ -130,6 +130,8 @@ def main():
     # because floor=10 exempts a small table. The upsert above removes the danger;
     # refusing to run on a missing file removes the ambiguity too.
     sessions = load_local(SLEEP_FILE, required=True)
+    # Diagnostics, not the record: absent until the first arousal is observed.
+    events_in_nap = load_local(SLEEP_EVENTS_FILE, required=False)
     reports  = load_nanny_reports()
 
     with db() as conn:
@@ -169,13 +171,33 @@ def main():
                   s.get("start_detected_at"), s.get("end_detected_at"),
                   s.get("end_reason")) for s in sessions],
             )
+            # Within-nap events: append-only by nature, so upsert-or-skip. A missing
+            # table means the migration has not run yet; that must not fail the
+            # events/sessions backup, which is the part that matters.
+            if events_in_nap:
+                try:
+                    cur.execute("SAVEPOINT sleep_events_sync")
+                    cur.executemany(
+                        """INSERT INTO sleep_events
+                               (session_start, at, kind, duration_s, settled_back)
+                           VALUES (%s, %s, %s, %s, %s)
+                           ON CONFLICT (session_start, at, kind) DO NOTHING""",
+                        [(e.get("session_start"), e["at"], e["kind"],
+                          e.get("duration_s"), e.get("settled_back"))
+                         for e in events_in_nap])
+                    cur.execute("RELEASE SAVEPOINT sleep_events_sync")
+                except Exception as e:
+                    cur.execute("ROLLBACK TO SAVEPOINT sleep_events_sync")
+                    logging.warning("sleep_events not synced (%s) — run "
+                                    "migrate_sleep_schema.py on the Pi.", e)
+
             # Archive, not mirror — see sync_nanny_reports(). No DELETE, and no
             # shrinkage guard: this table is expected to outgrow the local dir.
             synced_reports = sync_nanny_reports(cur, reports)
 
     stamp = {"synced_at": datetime.now().isoformat(),
              "events": len(events), "sleep_sessions": len(sessions),
-             "nanny_reports": synced_reports}
+             "sleep_events": len(events_in_nap), "nanny_reports": synced_reports}
     tmp = LAST_SYNC_FILE + ".tmp"
     with open(tmp, "w") as f:
         json.dump(stamp, f)

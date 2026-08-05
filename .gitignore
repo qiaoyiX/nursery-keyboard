@@ -3,6 +3,7 @@ __pycache__/
 *.pyc
 log.json
 sleep_sessions.json
+sleep_events.json
 sleep_state.json
 reference_frame.npy
 reference_frame_meta.json

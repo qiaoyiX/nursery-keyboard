@@ -163,8 +163,15 @@ def run_simulation(videos, roi, interval, verbose, cfg):
             sessions[sid]["end_detected"] = detected_at
             sessions[sid]["reason"] = reason
 
+    nap_events = []
+
+    def on_replay_event(session_start, at, kind, duration_s, settled_back):
+        nap_events.append({"session_start": session_start, "at": at, "kind": kind,
+                           "duration_s": duration_s, "settled_back": settled_back})
+
     machine = SleepStateMachine(cfg, reference=None, log=log,
-                                on_session_start=on_start, on_session_end=on_end)
+                                on_session_start=on_start, on_session_end=on_end,
+                                on_sleep_event=on_replay_event)
 
     transitions = []
     offset = 0.0
@@ -204,7 +211,15 @@ def run_simulation(videos, roi, interval, verbose, cfg):
     for s in sessions:
         end = s["end"].strftime("%H:%M:%S") if s["end"] else "OPEN"
         dur = ((s["end"] or base + timedelta(seconds=offset)) - s["start"]).total_seconds() / 60
-        print(f"  {s['start'].strftime('%H:%M:%S')} → {end}  ({dur:.1f} min)")
+        why = f"  [{s['reason']}]" if s["reason"] else ""
+        print(f"  {s['start'].strftime('%H:%M:%S')} → {end}  ({dur:.1f} min){why}")
+
+    print("\n── Within-nap events ──")
+    if not nap_events:
+        print("  (none)")
+    for e in nap_events:
+        secs = f"{e['duration_s']:.0f}s" if e["duration_s"] is not None else "—"
+        print(f"  {e['at'].strftime('%H:%M:%S')}  {e['kind']:<13} {secs}")
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────

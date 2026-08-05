@@ -197,11 +197,13 @@ def assert_closed_by(s, expected):
 class Driver:
     def __init__(self, cfg):
         self.sessions = []
+        self.events = []
         log = logging.getLogger("test")
         log.setLevel(logging.WARNING)
         self.m = SleepStateMachine(
             cfg, reference=EMPTY.copy(), log=log,
-            on_session_start=self._start, on_session_end=self._end)
+            on_session_start=self._start, on_session_end=self._end,
+            on_sleep_event=self._event)
         self.m.prev = EMPTY.copy()
         self.t = datetime(2026, 7, 7, 12, 0, 0)
 
@@ -209,6 +211,10 @@ class Driver:
         self.sessions.append({"start": t, "end": None, "detected": detected_at,
                               "end_detected": None, "reason": None})
         return len(self.sessions) - 1
+
+    def _event(self, session_start, at, kind, duration_s, settled_back):
+        self.events.append({"session_start": session_start, "at": at, "kind": kind,
+                            "duration_s": duration_s, "settled_back": settled_back})
 
     def _end(self, sid, t, detected_at, reason):
         if sid is not None and self.sessions[sid]["end"] is None:
@@ -279,7 +285,15 @@ def scenario_b(cfg):
     assert d.sessions[0]["end"] is None, "nap wrongly ended after a survivable startle"
     assert d.m.state == STATE_ASLEEP, f"state={d.m.state}, want asleep"
     assert d.m.probation_deadline is None, "probation not cleared by micro-motion"
-    print("  B true startle: same nap continues, probation cleared, no fragmentation  ✓")
+    # The nap surviving is exactly why the session record cannot show this happened —
+    # the arousal event is the only trace that she was disturbed at all.
+    arousals = [e for e in d.events if e["kind"] == "arousal"]
+    assert len(arousals) == 1, f"expected 1 arousal event, got {len(arousals)}"
+    assert arousals[0]["settled_back"] is True
+    assert arousals[0]["session_start"] == d.sessions[0]["start"], \
+        "arousal not keyed to the nap it interrupted"
+    print("  B true startle: same nap continues, probation cleared, no fragmentation, "
+          "arousal recorded  ✓")
 
 
 def scenario_c(cfg):
