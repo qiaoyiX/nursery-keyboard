@@ -156,24 +156,41 @@ def main():
             # stale or truncated local file must never be able to erase it. start_time
             # is the natural key — microsecond precision, one per session, and unlike
             # `id` it survives an export_db restore's renumbering.
-            cur.executemany(
-                """INSERT INTO sleep_sessions
-                       (start_time, end_time, duration_minutes,
-                        start_detected_at, end_detected_at, end_reason)
-                   VALUES (%s, %s, %s, %s, %s, %s)
-                   ON CONFLICT (start_time) DO UPDATE SET
-                       end_time          = EXCLUDED.end_time,
-                       duration_minutes  = EXCLUDED.duration_minutes,
-                       start_detected_at = EXCLUDED.start_detected_at,
-                       end_detected_at   = EXCLUDED.end_detected_at,
-                       end_reason        = EXCLUDED.end_reason""",
-                [(s["start_time"], s["end_time"], s["duration_minutes"],
-                  s.get("start_detected_at"), s.get("end_detected_at"),
-                  s.get("end_reason")) for s in sessions],
-            )
+            # Savepointed: until migrate_sleep_schema.py has run there is no
+            # UNIQUE(start_time) for ON CONFLICT to match, and the error would abort the
+            # whole transaction — taking the events backup down with it for as long as
+            # nobody notices. Sleep failing must cost only sleep.
+            sleep_error = None
+            try:
+                cur.execute("SAVEPOINT sleep_sessions_sync")
+                cur.executemany(
+                    """INSERT INTO sleep_sessions
+                           (start_time, end_time, duration_minutes,
+                            start_detected_at, end_detected_at, end_reason)
+                       VALUES (%s, %s, %s, %s, %s, %s)
+                       ON CONFLICT (start_time) DO UPDATE SET
+                           end_time          = EXCLUDED.end_time,
+                           duration_minutes  = EXCLUDED.duration_minutes,
+                           start_detected_at = EXCLUDED.start_detected_at,
+                           end_detected_at   = EXCLUDED.end_detected_at,
+                           end_reason        = EXCLUDED.end_reason""",
+                    [(s["start_time"], s["end_time"], s["duration_minutes"],
+                      s.get("start_detected_at"), s.get("end_detected_at"),
+                      s.get("end_reason")) for s in sessions],
+                )
+                cur.execute("RELEASE SAVEPOINT sleep_sessions_sync")
+            except Exception as e:
+                cur.execute("ROLLBACK TO SAVEPOINT sleep_sessions_sync")
+                sleep_error = str(e).strip().split("\n")[0]
+                # ERROR, not warning: sleep is no longer reaching the off-site backup,
+                # and the stamp below records it so the failure is visible without
+                # reading journald.
+                logging.error("sleep_sessions NOT backed up (%s) — run "
+                              "migrate_sleep_schema.py on the Pi.", sleep_error)
             # Within-nap events: append-only by nature, so upsert-or-skip. A missing
             # table means the migration has not run yet; that must not fail the
             # events/sessions backup, which is the part that matters.
+            synced_nap_events = len(events_in_nap)
             if events_in_nap:
                 try:
                     cur.execute("SAVEPOINT sleep_events_sync")
@@ -188,6 +205,7 @@ def main():
                     cur.execute("RELEASE SAVEPOINT sleep_events_sync")
                 except Exception as e:
                     cur.execute("ROLLBACK TO SAVEPOINT sleep_events_sync")
+                    synced_nap_events = 0
                     logging.warning("sleep_events not synced (%s) — run "
                                     "migrate_sleep_schema.py on the Pi.", e)
 
@@ -196,15 +214,19 @@ def main():
             synced_reports = sync_nanny_reports(cur, reports)
 
     stamp = {"synced_at": datetime.now().isoformat(),
-             "events": len(events), "sleep_sessions": len(sessions),
-             "sleep_events": len(events_in_nap), "nanny_reports": synced_reports}
+             "events": len(events),
+             "sleep_sessions": 0 if sleep_error else len(sessions),
+             "sleep_events": synced_nap_events, "nanny_reports": synced_reports}
+    if sleep_error:
+        stamp["sleep_sessions_error"] = sleep_error
     tmp = LAST_SYNC_FILE + ".tmp"
     with open(tmp, "w") as f:
         json.dump(stamp, f)
     os.replace(tmp, LAST_SYNC_FILE)
 
-    logging.info("Backup snapshot complete: %d events, %d sleep sessions, "
-                 "%d nanny reports -> Neon", len(events), len(sessions), synced_reports)
+    logging.info("Backup snapshot complete: %d events, %s sleep sessions, "
+                 "%d nanny reports -> Neon", len(events),
+                 "0 (FAILED)" if sleep_error else len(sessions), synced_reports)
 
 
 if __name__ == "__main__":
