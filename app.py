@@ -427,6 +427,14 @@ def log_event():
 
 @app.route("/data")
 def get_data():
+    # ?days=N widens the weekly pattern window for ad-hoc analysis. Default stays 7:
+    # the dashboard grid is a fixed 7 columns and calls this with no param.
+    try:
+        days = int(request.args.get("days", 7))
+    except (TypeError, ValueError):
+        days = 7
+    days = max(1, min(days, 90))
+
     entries = get_entries()
     with settings_lock:
         settings = load_settings()
@@ -462,8 +470,8 @@ def get_data():
             "nap_count":           sleep_summary["nap_count"],
             "sessions_today":      sleep_summary["sessions"],
         },
-        "week": weekly_pattern_stats(entries, get_sleep_sessions_range(7),
-                                     max_open_minutes=max_open_min),
+        "week": weekly_pattern_stats(entries, get_sleep_sessions_range(days),
+                                     days=days, max_open_minutes=max_open_min),
     })
 
 
