@@ -4,7 +4,7 @@ import logging
 import os
 import errno
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time as dtime
 from flask import Flask, render_template, jsonify, request
 
 from storage import (
@@ -241,6 +241,133 @@ def next_feed_iso(entries, interval_minutes):
     return (last_dt + timedelta(minutes=interval_minutes)).isoformat()
 
 
+# ── Today's plan ──────────────────────────────────────────────────────────────
+#
+# Projection constants, measured over the 14 days to 2026-08-10 (n=49 feed gaps,
+# n=44 daytime awake stretches). They are observations, not preferences — re-measure
+# with the same window before changing them.
+
+MORNING_CUTOFF_HOUR = 4      # a feed before this is a night feed, not the morning anchor.
+                             # Load-bearing: 2026-08-03 and 08-08 both logged feeds at
+                             # 00:30/00:42, and anchoring the chain on those would shift
+                             # every projected time that follows by ~5h.
+WAKE_WINDOW_MINUTES = 150    # median daytime awake stretch (p25 112, p75 176)
+NAP_MINUTES_BY_HOUR = [      # (start_hour_inclusive, end_hour_exclusive, median_minutes)
+    (10, 12, 72),
+    (12, 14, 45),
+    (14, 16, 72),
+    (16, 18, 49),
+]
+NAP_MINUTES_DEFAULT = 60
+FEED_DRIFT_TOLERANCE_MINUTES = 75   # how far a logged feed can sit from a projected one and
+                                    # still be "that feed, late" rather than an extra feed
+
+
+def _nap_minutes_for(dt):
+    for lo, hi, minutes in NAP_MINUTES_BY_HOUR:
+        if lo <= dt.hour < hi:
+            return minutes
+    return NAP_MINUTES_DEFAULT
+
+
+def _parse_shift(shift):
+    """'HH:MM-HH:MM' → (start_time, end_time). Falls back to 10:00-18:00 on junk."""
+    try:
+        start_s, end_s = str(shift).split("-")
+        return (dtime.fromisoformat(start_s.strip()), dtime.fromisoformat(end_s.strip()))
+    except (ValueError, AttributeError):
+        return (dtime(10, 0), dtime(18, 0))
+
+
+def day_schedule(entries, sessions, interval_minutes, shift="10:00-18:00", now=None):
+    """Today's projected feeds and naps, re-anchored on what has actually happened.
+
+    Deliberately NOT a plan frozen at breakfast. The dashboard polls this every 8s, so
+    the nap projection walks forward from the most recent *real* wake — if she wakes 40
+    minutes early the whole afternoon shifts with her. A morning projection left to run
+    would be wrong by mid-afternoon, and a schedule you've caught being wrong is one you
+    stop reading.
+
+    Feeds are the opposite: the chain stays pinned to the morning anchor so the interval
+    doesn't drift later with every late feed, and each projected feed carries the actual
+    logged one (`actual_iso`, `drift_minutes`) so reality is visible against the plan.
+    """
+    now = now or datetime.now()
+    today = now.date()
+    day_start = datetime.combine(today, datetime.min.time())
+    day_end = day_start + timedelta(days=1)
+    shift_start_t, shift_end_t = _parse_shift(shift)
+
+    # ── Anchor: first feed today at or after the night cutoff ──
+    todays_feeds = sorted(
+        datetime.fromisoformat(e["time"]) for e in entries
+        if e["type"] == "Feed" and str(e["time"])[:10] == today.isoformat())
+    morning = next((t for t in todays_feeds if t.hour >= MORNING_CUTOFF_HOUR), None)
+
+    items = []
+    if morning is not None:
+        unmatched = list(todays_feeds)
+        planned = morning
+        while planned < day_end:
+            # Nearest logged feed within tolerance is this feed, late or early — not a new one.
+            match = min((t for t in unmatched
+                         if abs((t - planned).total_seconds()) / 60 <= FEED_DRIFT_TOLERANCE_MINUTES),
+                        key=lambda t: abs(t - planned), default=None)
+            if match is not None:
+                unmatched.remove(match)
+            items.append({
+                "kind": "feed",
+                "iso": planned.isoformat(),
+                "actual_iso": match.isoformat() if match else None,
+                "drift_minutes": round((match - planned).total_seconds() / 60) if match else None,
+            })
+            planned += timedelta(minutes=interval_minutes)
+
+    # ── Naps: walk forward from the last real wake ──
+    parsed = []
+    for s in sessions:
+        st = s["start_time"]
+        st = st if isinstance(st, datetime) else datetime.fromisoformat(str(st))
+        en = s.get("end_time")
+        if en is not None:
+            en = en if isinstance(en, datetime) else datetime.fromisoformat(str(en))
+        parsed.append((st, en))
+    parsed.sort()
+
+    open_nap = next((st for st, en in parsed if en is None), None)
+    if open_nap is not None:
+        # Asleep right now: project this nap's end rather than inventing a start.
+        cursor = open_nap + timedelta(minutes=_nap_minutes_for(open_nap))
+        items.append({"kind": "nap", "iso": open_nap.isoformat(),
+                      "end_iso": cursor.isoformat(), "in_progress": True})
+    elif parsed:
+        cursor = max(en for _, en in parsed if en is not None)
+    else:
+        cursor = morning or day_start
+
+    # Only project forward; past naps are already in the history list. If the window
+    # closed while she was still up (cursor + wake window is behind us) she is overdue,
+    # so the next window opens now rather than at a time that has already passed.
+    while True:
+        nap_start = max(cursor + timedelta(minutes=WAKE_WINDOW_MINUTES), now)
+        if nap_start >= day_end or nap_start.hour >= 20:
+            break
+        nap_end = nap_start + timedelta(minutes=_nap_minutes_for(nap_start))
+        items.append({"kind": "nap", "iso": nap_start.isoformat(),
+                      "end_iso": nap_end.isoformat(), "in_progress": False})
+        cursor = nap_end
+
+    items.sort(key=lambda i: i["iso"])
+    return {
+        "morning_feed_iso": morning.isoformat() if morning else None,
+        "interval_minutes": interval_minutes,
+        "shift_start_iso": datetime.combine(today, shift_start_t).isoformat(),
+        "shift_end_iso": datetime.combine(today, shift_end_t).isoformat(),
+        "wake_window_minutes": WAKE_WINDOW_MINUTES,
+        "items": items,
+    }
+
+
 def today_sleep_stats(sessions, max_open_minutes=None):
     """Summarise today's sleep sessions for the /data endpoint.
 
@@ -472,6 +599,8 @@ def get_data():
         },
         "week": weekly_pattern_stats(entries, get_sleep_sessions_range(days),
                                      days=days, max_open_minutes=max_open_min),
+        "schedule": day_schedule(entries, sessions_today, interval,
+                                 shift=settings.get("care_shift", "10:00-18:00")),
     })
 
 

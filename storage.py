@@ -24,6 +24,11 @@ CALIBRATE_FLAG   = os.path.join(os.path.dirname(__file__), "calibrate.flag")
 
 DEFAULT_SETTINGS = {
     "feed_interval_minutes":    180,
+    "care_shift":               "10:00-18:00",  # the hours you're on, for the dashboard's
+                                                # Today's Plan card. Kept separate from the
+                                                # nanny pipeline's NANNY_WINDOW: same hours
+                                                # today, but coupling them breaks whenever
+                                                # either one moves.
     "camera_rtsp_url":          "",
     "sleep_motion_fraction":    0.01,  # fraction of pixels changed vs previous frame = "moving"
     "sleep_min_minutes":        10,

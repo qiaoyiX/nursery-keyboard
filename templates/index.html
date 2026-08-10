@@ -138,6 +138,51 @@
     }
     .nf-interval select:focus-visible { outline: 2px solid var(--feed); outline-offset: 2px; }
 
+    /* ── Today's Plan (projected feeds + naps, re-anchored on real events) ── */
+    .plan-card {
+      border-radius: var(--r);
+      padding: 16px 16px 12px;
+      box-shadow: var(--shadow-card);
+      margin-bottom: 14px;
+      background: var(--surface);
+    }
+    .plan-empty { font-size: 0.85rem; color: var(--text-muted); padding: 4px 0 6px; }
+    .plan-row {
+      display: flex; align-items: baseline; gap: 10px;
+      padding: 7px 0;
+      border-top: 1px solid var(--cream-2);
+    }
+    .plan-row:first-of-type { border-top: none; }
+    .plan-time {
+      font-variant-numeric: tabular-nums;
+      font-size: 0.95rem; font-weight: 600; color: var(--brown-deep);
+      min-width: 4.2em;
+    }
+    .plan-label { font-size: 0.88rem; color: var(--brown-mid); flex: 1; }
+    .plan-note  { font-size: 0.74rem; color: var(--text-muted); }
+    /* Done rows stay readable but recede — the eye should land on "now" first. */
+    .plan-row.is-done .plan-time,
+    .plan-row.is-done .plan-label { opacity: 0.45; }
+    .plan-row.is-now {
+      background: var(--sleep-a);
+      border-radius: 8px;
+      padding-left: 8px; padding-right: 8px;
+      margin: 2px -8px;
+      border-top-color: transparent;
+    }
+    .plan-row.is-now .plan-time { color: var(--sleep); }
+    .plan-drift { color: var(--danger); font-weight: 600; }
+    /* The shift band: a rule across the card, not a row, so it reads as a boundary. */
+    .plan-shift {
+      display: flex; align-items: center; gap: 8px;
+      margin: 6px 0 2px;
+      font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.08em;
+      color: var(--text-muted);
+    }
+    .plan-shift::before, .plan-shift::after {
+      content: ""; flex: 1; height: 1px; background: var(--cream-2);
+    }
+
     /* ── Sleep card (status + timeline + nap list merged) ── */
     .sleep-card-title {
       font-size: 0.68rem;
@@ -723,6 +768,13 @@
     <div class="stale-note" id="staleNote" hidden></div>
   </div>
 
+  <!-- Today's Plan sits between "what is happening now" and the log buttons, which is
+       the order these get read in: state, then what's coming, then act. -->
+  <div class="plan-card stale-dim" id="planCard">
+    <div class="sleep-card-title">🗓 Today's Plan</div>
+    <div id="planBody"></div>
+  </div>
+
   <div class="buttons">
     <button class="action-btn btn-wet"   onclick="logEvent('Wet')">💧 Wet<span class="btn-ago" data-ago="Wet"></span></button>
     <button class="action-btn btn-dirty" onclick="logEvent('Dirty')">💩 Dirty<span class="btn-ago" data-ago="Dirty"></span></button>
@@ -851,6 +903,93 @@
         sel.appendChild(opt);
       }
     })();
+
+    function updateSchedule(plan) {
+      const body = document.getElementById("planBody");
+      if (!plan) return;
+      body.replaceChildren();
+
+      if (!plan.morning_feed_iso) {
+        const p = document.createElement("div");
+        p.className = "plan-empty";
+        // No anchor is a real state, not an error: the chain is built from the morning
+        // feed, so before it is logged there is nothing honest to show.
+        p.textContent = "Log the morning feed to build today's plan.";
+        body.appendChild(p);
+        return;
+      }
+
+      const clock = iso => new Date(iso).toLocaleTimeString("en-US",
+        { hour: "numeric", minute: "2-digit" });
+      const now = Date.now();
+      const shiftStart = new Date(plan.shift_start_iso).getTime();
+      const shiftEnd   = new Date(plan.shift_end_iso).getTime();
+
+      // The one row to look at. A nap in progress wins outright: its projected end may
+      // already have passed (she is sleeping longer than the median) and picking by time
+      // alone would dim the row while she is still asleep, then point "now" at a feed
+      // that cannot happen until she wakes.
+      const liveIdx = plan.items.findIndex(it => it.in_progress);
+      const nextIdx = liveIdx >= 0 ? liveIdx
+        : plan.items.findIndex(it => new Date(it.end_iso || it.iso).getTime() >= now);
+
+      let shiftOpened = false, shiftClosed = false;
+      plan.items.forEach((it, i) => {
+        const t = new Date(it.iso).getTime();
+        if (!shiftOpened && t >= shiftStart) { body.appendChild(shiftRule("on duty")); shiftOpened = true; }
+        if (!shiftClosed && t >= shiftEnd)   { body.appendChild(shiftRule("off"));     shiftClosed = true; }
+
+        const row = document.createElement("div");
+        const done = !it.in_progress && new Date(it.end_iso || it.iso).getTime() < now;
+        row.className = "plan-row" + (i === nextIdx ? " is-now" : done ? " is-done" : "");
+
+        const time = document.createElement("span");
+        time.className = "plan-time";
+        time.textContent = clock(it.iso);
+        row.appendChild(time);
+
+        const label = document.createElement("span");
+        label.className = "plan-label";
+        const napEnd = it.end_iso ? new Date(it.end_iso).getTime() : 0;
+        if (it.kind === "feed") {
+          label.textContent = "🍼 Feed";
+        } else if (it.in_progress) {
+          // Don't assert a projected end that has already gone by — say she is running
+          // long instead, which is the true and more useful statement.
+          label.textContent = napEnd >= now
+            ? `😴 Asleep now · likely until ${clock(it.end_iso)}`
+            : "😴 Asleep now · longer than her usual";
+        } else {
+          label.textContent = `😴 Nap window · until ${clock(it.end_iso)}`;
+        }
+        row.appendChild(label);
+
+        const note = document.createElement("span");
+        note.className = "plan-note";
+        if (it.kind === "feed" && it.actual_iso) {
+          const d = it.drift_minutes;
+          note.append(`logged ${clock(it.actual_iso)}`);
+          // Only call out drift worth noticing; a few minutes either way is just life.
+          if (Math.abs(d) >= 10) {
+            const span = document.createElement("span");
+            span.className = "plan-drift";
+            span.textContent = ` ${d > 0 ? "+" : ""}${d}m`;
+            note.appendChild(span);
+          }
+        }
+        row.appendChild(note);
+        body.appendChild(row);
+      });
+
+      if (!shiftClosed) body.appendChild(shiftRule("off"));
+    }
+
+    function shiftRule(text) {
+      const d = document.createElement("div");
+      d.className = "plan-shift";
+      d.textContent = text;
+      return d;
+    }
 
     function updateNextFeed(data) {
       const sel = document.getElementById("feedIntervalSel");
@@ -1595,6 +1734,7 @@
           updateNapList(data.sleep.sessions_today || []);
         }
         if (data.week) updateWeeklyPattern(data.week);
+        updateSchedule(data.schedule);
       } catch (_) {
         notifyOffline();
       }
