@@ -450,7 +450,13 @@ function render(report, status, trend) {
     c.append(rule);
     for (const ev of pu.events) {
       const box = el("div", "phone-event" + (ev.authorization === "unauthorized" ? " flagged" : ""));
-      const when = el("div", "when", fmtTime(ev.start_iso) + " – " + fmtTime(ev.end_iso));
+      // Sub-minute events rendered as "5:00 PM – 5:00 PM", which reads as a bug in
+      // the data rather than a very short event, and hid a run of 4-16s false
+      // positives for weeks. Show the duration instead when both ends collapse.
+      const evSecs = (new Date(ev.end_iso) - new Date(ev.start_iso)) / 1000;
+      const when = el("div", "when", evSecs < 60
+        ? fmtTime(ev.start_iso) + " · " + Math.round(evSecs) + "s"
+        : fmtTime(ev.start_iso) + " – " + fmtTime(ev.end_iso));
       const [albl, akind] = AUTH_LABELS[ev.authorization] || [];
       if (albl) when.append(el("span", "badge " + akind, albl));
       const [lbl, kind] = CONTEXT_LABELS[ev.context] || [ev.context, ""];

@@ -93,6 +93,15 @@ CLIP_MAX_S        = 300     # cap a single evidence clip at 5 minutes
 # usable key moment.
 KEY_MOMENT_PAD_S  = 20      # seconds either side of the model's key moment
 
+# Floor on a phone-use interval. The prompt defines use as tapping, swiping, typing
+# or taking a call — none of which happens in 8 seconds, and the same prompt says a
+# glance is not use. Without a floor the model emitted 4-16s detections that were
+# still scored as unauthorized: on 2026-08-05, 26 of 42 unauthorized events were
+# sub-minute. These barely moved the total minutes (they are seconds each) but they
+# dominated the FLAG counts, which is what made the report read as wrong.
+# Belt and braces with the prompt's own 15s rule — the model is not obliged to obey it.
+MIN_PHONE_SECONDS = 15
+
 # Raw shorter than this is not footage, it is an artefact of how the recording
 # was cut (see nanny_record.WINDOW_END_GUARD_S). Uploading it costs a request
 # and returns nothing; retrying it costs one every half hour until it ages out.
@@ -227,8 +236,13 @@ CHUNK_SCHEMA = {
                     "person":      {"type": "STRING", "enum": PHONE_PERSONS},
                     "key_moment":  {"type": "STRING"},
                 },
+                # description is required: an undescribed detection can still be
+                # scored as unauthorized, and 2026-08-11 produced exactly that —
+                # an 8-second "high confidence" flag with no stated evidence.
+                # Making the model justify each one is a cheaper filter than
+                # discarding undescribed events after the fact.
                 "required": ["start", "end", "context", "confidence", "person",
-                             "key_moment"],
+                             "key_moment", "description"],
             },
         },
         "notable_events": {
@@ -275,10 +289,15 @@ being held, fed, played with or attended to, "not_visible" when the baby is not 
 frame, "unclear" when in frame but you cannot tell.
 2. phone_use — EVERY interval where an adult is actively using a mobile phone: \
 holding it with the screen oriented toward them, tapping, swiping, typing, taking a \
-call, or otherwise clearly operating it. Looking or facing in a phone's direction by \
-itself is NOT phone use. Do not count a phone that is clipped to a back pocket or \
-waistband, worn or carried on the person's back, resting behind them, or merely visible \
-nearby unless the adult reaches for or operates it. Classify the baby's situation \
+call, or otherwise clearly operating it. Sustained operation is the whole test. \
+Looking or facing in a phone's direction, glancing at a screen, reaching toward a \
+phone, picking one up and putting it down, or moving one out of the way are NOT phone \
+use, and neither is a phone that is clipped to a back pocket or waistband, worn or \
+carried on the person's back, resting behind them, or merely visible nearby. Report an \
+interval ONLY when you can see active operation continuing for at least 15 seconds; if \
+active use is briefer than that, or you would have to describe it as a glance or a \
+reach, omit it entirely rather than reporting a short interval. Classify the baby's \
+situation \
 during confirmed use with the \
 context enum: while_holding_baby, baby_nearby_awake (baby awake in the same room), \
 baby_unattended (baby awake and needing attention while the caregiver is on the phone), \
@@ -749,6 +768,10 @@ def build_chunk(parsed, camera, seg_start, minutes, model, usage, room=None):
     Tolerant: malformed events are dropped and counted, never fatal."""
     seg_end = seg_start + timedelta(minutes=minutes)
     dropped = 0
+    # Counted separately from `dropped`: these are well-formed events rejected by
+    # policy, not malformed ones. Worth watching — if it stays high after the prompt
+    # change, the model is ignoring the 15s rule and the floor is doing all the work.
+    dropped_short = 0
 
     def wall(o):
         dt = offset_to_wallclock(seg_start, o)
@@ -773,8 +796,16 @@ def build_chunk(parsed, camera, seg_start, minutes, model, usage, room=None):
                            "baby_state": state})
     for p in parsed.get("phone_use") or []:
         s, e = wall(p.get("start")), wall(p.get("end"))
-        if s is None or e is None or e < s:
+        # e <= s, not e < s: a zero-length interval is not an observation of
+        # anything, and it used to pass straight through to the report.
+        if s is None or e is None or e <= s:
             dropped += 1
+            continue
+        if (e - s).total_seconds() < MIN_PHONE_SECONDS:
+            logging.debug("dropped %.0fs phone event at %s (floor %ds): %s",
+                          (e - s).total_seconds(), s.isoformat(), MIN_PHONE_SECONDS,
+                          (p.get("description") or "")[:80])
+            dropped_short += 1
             continue
         ctx, who = p.get("context"), p.get("person")
         # The evidence clip is cut around this. A model that names a moment
@@ -807,6 +838,7 @@ def build_chunk(parsed, camera, seg_start, minutes, model, usage, room=None):
         "model": model,
         "usage": usage,
         "dropped_events": dropped,
+        "dropped_short_phone": dropped_short,
         "activities": activities,
         "phone_use": phone_use,
         "notable_events": notable,
@@ -830,6 +862,7 @@ def merge_pieces(piece_chunks, camera, room, seg_start, minutes, model):
         "model": model,
         "usage": {"input_tokens": 0, "output_tokens": 0},
         "dropped_events": 0,
+        "dropped_short_phone": 0,
         "activities": [],
         "phone_use": [],
         "notable_events": [],
@@ -841,6 +874,7 @@ def merge_pieces(piece_chunks, camera, room, seg_start, minutes, model):
         merged["usage"]["input_tokens"] += usage.get("input_tokens") or 0
         merged["usage"]["output_tokens"] += usage.get("output_tokens") or 0
         merged["dropped_events"] += piece.get("dropped_events", 0)
+        merged["dropped_short_phone"] += piece.get("dropped_short_phone", 0)
         for key in ("activities", "phone_use", "notable_events"):
             merged[key].extend(piece.get(key) or [])
         if piece.get("parse_error"):

@@ -522,15 +522,58 @@ def test_key_moment_validation():
 def test_phone_prompt_requires_active_use():
     print("phone detection requires visible interaction")
     prompt = nanny_analyze.PROMPT.lower()
-    check("looking alone is excluded",
-          "looking or facing in a phone's direction by itself is not phone use" in prompt)
+    check("looking and glancing are excluded",
+          "looking or facing in a phone's direction, glancing at a screen" in prompt)
+    check("reaching toward a phone is excluded",
+          "reaching toward a \nphone" in prompt or "reaching toward a phone" in prompt)
     check("a phone carried on the back is excluded",
           "worn or carried on the person's back" in prompt)
-    check("active operation is required",
-          "unless the adult reaches for or operates it" in prompt)
+    check("sustained operation is the test",
+          "sustained operation is the whole test" in prompt)
+    check("a duration floor is stated to the model",
+          "at least 15 seconds" in prompt)
+    # The clause this replaces admitted a bare reach as phone use, directly
+    # contradicting the "looking is not phone use" rule two lines above it. On
+    # 2026-08-11 the model cited exactly that: "glances and reaches for her phone"
+    # scored as 24 seconds of unauthorized use. It must not come back.
+    check("the reach-for loophole is gone",
+          "unless the adult reaches for or operates it" not in prompt)
     check("low confidence cannot revive a stored phone false positive",
           "never use low confidence to report a stationary, stored, or merely glanced-at phone"
           in prompt)
+
+
+def test_phone_events_have_a_duration_floor():
+    print("sub-minute phone blips never reach the report")
+    seg = datetime(2026, 8, 11, 17, 0, 0)
+
+    def ev(start, end, desc="x"):
+        return {"start": start, "end": end, "context": "baby_nearby_awake",
+                "confidence": "high", "person": "caregiver", "key_moment": start,
+                "description": desc}
+
+    # Shapes taken from the 2026-08-11 report, which scored 8s and 10s blips as
+    # unauthorized phone use — nothing in the prompt's own definition (tapping,
+    # swiping, typing, taking a call) happens in 8 seconds.
+    chunk = nanny_analyze.build_chunk(
+        {"activities": [], "notable_events": [], "summary": "",
+         "phone_use": [ev("00:20", "00:28"), ev("05:04", "05:14"),
+                       ev("07:25", "07:47"), ev("08:25", "08:59"),
+                       ev("10:00", "10:00")]},
+        "nurserycam2", seg, 60, "m", {})
+
+    kept = [(datetime.fromisoformat(p["end_iso"])
+             - datetime.fromisoformat(p["start_iso"])).total_seconds()
+            for p in chunk["phone_use"]]
+    check("8s and 10s blips dropped", kept == [22, 34], f"kept {kept}")
+    check("drops counted separately from malformed events",
+          chunk["dropped_short_phone"] == 2, str(chunk.get("dropped_short_phone")))
+    # e <= s, not e < s: a zero-length interval observes nothing and used to pass
+    # straight through the parser into the report.
+    check("zero-length interval rejected as malformed",
+          chunk["dropped_events"] == 1, str(chunk.get("dropped_events")))
+    check("floor matches the number stated in the prompt",
+          nanny_analyze.MIN_PHONE_SECONDS == 15)
 
 
 def test_poll_schedule_is_cheap():
@@ -555,7 +598,8 @@ def main():
                test_failed_piece_records_its_range, test_notable_events_get_clips,
                test_server_errors_drop_fps, test_daily_quota_ends_the_run,
                test_poll_schedule_is_cheap, test_key_moment_clipping,
-               test_key_moment_validation, test_phone_prompt_requires_active_use):
+               test_key_moment_validation, test_phone_prompt_requires_active_use,
+               test_phone_events_have_a_duration_floor):
         fn()
     print()
     if FAILURES:
