@@ -344,8 +344,9 @@ def asleep_intervals(naps, asleep_by_room):
 
 
 def classify_phone_use(phone_events, chunks, rooms, naps):
-    """Split phone time into asleep-OK / unauthorized / unclear and annotate each
-    event in place with `room`, `authorization` and `unauthorized_minutes`.
+    """Split phone time into asleep-OK / baby-absent / unauthorized / unclear and
+    annotate each event in place with `room`, `authorization` and
+    `unauthorized_minutes`.
 
     Returns (stats_dict, unauthorized_intervals)."""
     awake_by_room, asleep_by_room = baby_state_by_room(chunks, rooms)
@@ -412,10 +413,31 @@ def classify_phone_use(phone_events, chunks, rooms, naps):
             ev["authorization"] = "unauthorized"
         elif total_minutes(intersect_intervals(span, asleep_all)) > 0:
             ev["authorization"] = "allowed_baby_asleep"
+        elif ev.get("context") == "baby_not_in_frame":
+            # Phone use with the baby elsewhere is fine. This sits BELOW the
+            # flagged branch on purpose: "not in frame" means not in THIS
+            # camera's crop, so cross-room evidence (the same room's other
+            # camera seeing an awake baby) still wins above and keeps both the
+            # flag and the clip. Without that ordering, stepping just outside
+            # one camera's view would hide phone use entirely.
+            ev["authorization"] = "allowed_baby_absent"
+            # No clip for a non-finding. The file is already cut by now — the
+            # analyzer cuts it while the raw segment still exists, long before
+            # cross-room fusion runs — so dropping the reference is what marks
+            # it collectable, and prune_superseded_clips() deletes it.
+            ev.pop("clip", None)
         elif total_minutes(intersect_intervals(span, unconfirmed)) > 0:
             ev["authorization"] = "unconfirmed"
         else:
             ev["authorization"] = "unclear"
+
+    # Allowed-absent time is accounted for, so it must come out of "unclear" —
+    # otherwise the summary reports minutes as unexplained while every event
+    # behind them is badged as fine.
+    absent = union_intervals([
+        (datetime.fromisoformat(e["start_iso"]), datetime.fromisoformat(e["end_iso"]))
+        for e in phone_events if e.get("authorization") == "allowed_baby_absent"])
+    absent_min = total_minutes(intersect_intervals(absent, total))
 
     total_min = total_minutes(total)
     asleep_min = total_minutes(asleep_overlap)
@@ -427,7 +449,9 @@ def classify_phone_use(phone_events, chunks, rooms, naps):
         "while_baby_awake_minutes": round(total_min - asleep_min, 1),
         "unauthorized_minutes": round(unauth_min, 1),
         "unauthorized_unconfirmed_minutes": round(total_minutes(unconfirmed), 1),
-        "unclear_minutes": round(max(total_min - asleep_min - unauth_min, 0), 1),
+        "while_baby_absent_minutes": round(absent_min, 1),
+        "unclear_minutes": round(
+            max(total_min - asleep_min - unauth_min - absent_min, 0), 1),
         "event_count": sum(1 for e in phone_events if e.get("person") != "other_adult"),
         "other_adult_event_count": sum(
             1 for e in phone_events if e.get("person") == "other_adult"),
@@ -1279,12 +1303,14 @@ def main(argv=None):
             os.makedirs(out_dir, exist_ok=True)
             atomic_write_json(os.path.join(out_dir, f"{day.isoformat()}.json"), report)
         logging.info("%s: report %s — %d timeline spans, %.0f phone min "
-                     "(%.0f while asleep / %.0f flagged / %.0f unclear), "
+                     "(%.0f while asleep / %.0f baby elsewhere / %.0f flagged "
+                     "/ %.0f unclear), "
                      "%.0f min sleep, %.0f min unattended, %d camera(s)",
                      day, "built (dry run)" if args.dry_run else "written",
                      len(report["timeline"]),
                      report["phone_use"]["total_minutes"],
                      report["phone_use"]["while_baby_asleep_minutes"],
+                     report["phone_use"]["while_baby_absent_minutes"],
                      report["phone_use"]["unauthorized_minutes"],
                      report["phone_use"]["unclear_minutes"],
                      report["sleep"]["total_sleep_minutes"],

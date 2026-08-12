@@ -379,8 +379,11 @@ def test_phone_policy():
                 "baby_state": state}
 
     def phone(cam, s, e, ctx, conf="high"):
+        # Every event carries a clip, as the analyzer cuts one for each
+        # medium/high detection — allowed-absent events must shed theirs.
         return {"camera": cam, "start_iso": iso(s), "end_iso": iso(e),
-                "context": ctx, "confidence": conf, "description": ""}
+                "context": ctx, "confidence": conf, "description": "",
+                "clip": f"2026-07-27/{cam}_{s.strftime('%H%M')}_phone_1.mp4"}
 
     chunks = [
         {"camera": "cribcam", "activities": [act(t(10), t(11), "awake")], "phone_use": []},
@@ -418,13 +421,26 @@ def test_phone_policy():
     check("crib-monitor naps still reported", stats["during_naps_minutes"] == 30)
     check("low confidence held back as unconfirmed",
           stats["unauthorized_unconfirmed_minutes"] == 20)
-    check("unclear is the remainder", stats["unclear_minutes"] == 40)
+    check("baby-elsewhere minutes accounted for",
+          stats["while_baby_absent_minutes"] == 20, str(stats["while_baby_absent_minutes"]))
+    # Was 40 before allowed_baby_absent existed: B's 20 minutes are explained
+    # now, and must not still be reported as unexplained.
+    check("unclear is the remainder", stats["unclear_minutes"] == 20,
+          str(stats["unclear_minutes"]))
     check("flagged event count", stats["unauthorized_event_count"] == 3)
 
     verdicts = [e["authorization"] for e in events]
     check("per-event verdicts", verdicts == [
-        "unauthorized", "unclear", "allowed_baby_asleep", "unconfirmed",
+        "unauthorized", "allowed_baby_absent", "allowed_baby_asleep", "unconfirmed",
         "allowed_baby_asleep", "unauthorized", "unauthorized"], str(verdicts))
+    # THE regression that matters: A is also baby_not_in_frame, but the room's
+    # other camera saw an awake baby. If allowing "not in frame" ever moves above
+    # the flagged branch, stepping just outside one camera's view hides phone use.
+    check("cross-room evidence still beats not-in-frame",
+          events[0]["authorization"] == "unauthorized")
+    check("a flagged not-in-frame event keeps its clip", "clip" in events[0])
+    check("an allowed-absent event drops its clip", "clip" not in events[1])
+    check("clips elsewhere untouched", "clip" in events[2] and "clip" in events[5])
     check("room attached to events", events[0]["room"] == "nursery")
     check("flagged event carries its minutes", events[0]["unauthorized_minutes"] == 10)
 
