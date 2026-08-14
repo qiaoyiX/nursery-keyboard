@@ -5,19 +5,35 @@ Creates `foods` only — no existing table is altered, and log.json keeps its cu
 shape (a Solid event is an ordinary event; the food name lives only in this table).
 
 Until this runs, backup_sync.py logs a warning and skips foods; everything else still
-backs up. Idempotent — safe to re-run. Use the backup-only credentials:
+backs up. Idempotent — safe to re-run:
 
-    sudo -E env $(sudo cat /etc/nursery-tracker/backup.env | xargs) \
-        python3 migrate_foods_schema.py
+    sudo python3 migrate_foods_schema.py
+
+It reads DATABASE_URL from /etc/nursery-tracker/backup.env itself (hence sudo — the
+file is chmod 600 root), or from the environment if you already have it set. Point it
+elsewhere with NURSERY_ENV_FILE=/path/to/file.
 """
+import os
 import sys
 
-from storage import USE_DB, db
+from envfile import load_env_file
+
+# Loaded before importing storage, which decides USE_DB from DATABASE_URL at import
+# time — doing it afterwards would have no effect. Hence the deferred import below.
+ENV_FILE = os.environ.get("NURSERY_ENV_FILE", "/etc/nursery-tracker/backup.env")
+load_env_file(ENV_FILE)
+
+from storage import DATABASE_URL, USE_DB, db  # noqa: E402
 
 
 def main():
     if not USE_DB:
-        sys.exit("DATABASE_URL is not set (or psycopg2 missing) — nothing to migrate.")
+        # Two very different causes, and guessing between them wastes real time
+        # when the fix is a one-liner either way.
+        if not DATABASE_URL:
+            sys.exit(f"No DATABASE_URL found in {ENV_FILE} or the environment.\n"
+                     "The file is chmod 600 root — run this with sudo.")
+        sys.exit("psycopg2 is not installed — pip install -r requirements.txt")
 
     with db() as conn:
         with conn.cursor() as cur:

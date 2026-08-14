@@ -6,19 +6,30 @@ UNIQUE(start_time) constraint that backup_sync.py's ON CONFLICT clause targets.
 Without the constraint the upsert raises; run this once before the first sync on
 the new code.
 
-Idempotent — safe to re-run. Run it with the backup-only credentials:
+Idempotent — safe to re-run:
 
-    sudo -E env $(sudo cat /etc/nursery-tracker/backup.env | xargs) \
-        python3 migrate_sleep_schema.py
+    sudo python3 migrate_sleep_schema.py
+
+It reads DATABASE_URL from /etc/nursery-tracker/backup.env itself (hence sudo — the
+file is chmod 600 root), or from the environment if you already have it set. Point it
+elsewhere with NURSERY_ENV_FILE=/path/to/file.
 
 Duplicate start_time values would block the UNIQUE constraint. They should not
 exist (the monitor opens one session at a time), but six-hourly DELETE+reinsert
 history means it is worth checking rather than assuming, so this reports them and
 stops instead of guessing which row to drop.
 """
+import os
 import sys
 
-from storage import USE_DB, db
+from envfile import load_env_file
+
+# Loaded before importing storage, which decides USE_DB from DATABASE_URL at import
+# time — doing it afterwards would have no effect. Hence the deferred import below.
+ENV_FILE = os.environ.get("NURSERY_ENV_FILE", "/etc/nursery-tracker/backup.env")
+load_env_file(ENV_FILE)
+
+from storage import DATABASE_URL, USE_DB, db  # noqa: E402
 
 
 DDL = [
@@ -33,7 +44,12 @@ DDL = [
 
 def main():
     if not USE_DB:
-        sys.exit("DATABASE_URL is not set (or psycopg2 missing) — nothing to migrate.")
+        # Two very different causes, and guessing between them wastes real time
+        # when the fix is a one-liner either way.
+        if not DATABASE_URL:
+            sys.exit(f"No DATABASE_URL found in {ENV_FILE} or the environment.\n"
+                     "The file is chmod 600 root — run this with sudo.")
+        sys.exit("psycopg2 is not installed — pip install -r requirements.txt")
 
     with db() as conn:
         with conn.cursor() as cur:
