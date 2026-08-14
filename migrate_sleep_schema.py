@@ -8,10 +8,12 @@ the new code.
 
 Idempotent — safe to re-run:
 
-    sudo python3 migrate_sleep_schema.py
+    sudo venv/bin/python migrate_sleep_schema.py
 
-It reads DATABASE_URL from /etc/nursery-tracker/backup.env itself (hence sudo — the
-file is chmod 600 root), or from the environment if you already have it set. Point it
+Use the project venv, not system python3: the services run venv/bin/python and
+that is where psycopg2 lives (Raspberry Pi OS refuses system-wide pip, PEP 668).
+DATABASE_URL is read from /etc/nursery-tracker/backup.env, which is chmod 600 root
+— hence sudo — or from the environment if you already have it set. Point it
 elsewhere with NURSERY_ENV_FILE=/path/to/file.
 
 Duplicate start_time values would block the UNIQUE constraint. They should not
@@ -49,7 +51,16 @@ def main():
         if not DATABASE_URL:
             sys.exit(f"No DATABASE_URL found in {ENV_FILE} or the environment.\n"
                      "The file is chmod 600 root — run this with sudo.")
-        sys.exit("psycopg2 is not installed — pip install -r requirements.txt")
+        # Debian/Raspberry Pi OS refuses system-wide pip (PEP 668), and the fix is
+        # not to install anything: install.sh builds a venv and every service runs
+        # venv/bin/python. Reaching here almost always means plain `python3`.
+        venv_py = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               "venv", "bin", "python")
+        hint = (f"    sudo {venv_py} {os.path.basename(__file__)}"
+                if os.path.exists(venv_py) else
+                "    (no venv found — re-run install.sh)")
+        sys.exit(f"psycopg2 is not installed for {sys.executable}.\n"
+                 "The services use the project venv, which already has it:\n" + hint)
 
     with db() as conn:
         with conn.cursor() as cur:
