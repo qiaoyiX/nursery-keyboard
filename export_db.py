@@ -21,7 +21,7 @@ import json
 import os
 import sys
 
-from storage import DATA_FILE, SLEEP_FILE, USE_DB, db
+from storage import DATA_FILE, FOODS_FILE, SLEEP_FILE, USE_DB, db
 
 REPORTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                            "nanny", "reports")
@@ -61,6 +61,7 @@ def main():
 
     _refuse_overwrite(DATA_FILE, args.force)
     _refuse_overwrite(SLEEP_FILE, args.force)
+    _refuse_overwrite(FOODS_FILE, args.force)
 
     with db() as conn:
         with conn.cursor() as cur:
@@ -80,6 +81,23 @@ def main():
                 "end_reason":        reason,
             } for i, (start, end, dur, sdet, edet, reason) in enumerate(cur.fetchall())]
 
+            foods = []
+            try:
+                cur.execute("""SELECT name, first_tried, last_offered, times_offered,
+                                      reaction FROM foods ORDER BY last_offered""")
+                foods = [{
+                    "name": n,
+                    "first_tried": ft.isoformat() if ft else None,
+                    "last_offered": lo.isoformat() if lo else None,
+                    "times_offered": int(times or 1),
+                    "reaction": rx,
+                } for n, ft, lo, times, rx in cur.fetchall()]
+            except Exception:
+                # Table only exists once migrate_foods_schema.py has run; its
+                # absence is not a failed restore.
+                conn.rollback()
+                print("No foods table in Neon — skipping the food list.")
+
             reports = []
             try:
                 cur.execute("SELECT report_date, report FROM nanny_reports "
@@ -93,6 +111,8 @@ def main():
 
     _atomic_write(DATA_FILE, events)
     _atomic_write(SLEEP_FILE, sessions)
+    if foods:
+        _atomic_write(FOODS_FILE, foods)
 
     written = 0
     if reports:
@@ -107,6 +127,8 @@ def main():
 
     print(f"Exported {len(events)} events -> {DATA_FILE}")
     print(f"Exported {len(sessions)} sleep sessions -> {SLEEP_FILE}")
+    if foods:
+        print(f"Exported {len(foods)} foods -> {FOODS_FILE}")
     if reports:
         print(f"Exported {written} of {len(reports)} nanny reports -> {REPORTS_DIR}")
     print("Verify these counts against Neon, then remove DATABASE_URL from both service units.")

@@ -38,7 +38,7 @@ import os
 import sys
 from datetime import datetime
 
-from storage import DATA_FILE, SLEEP_EVENTS_FILE, SLEEP_FILE, USE_DB, db
+from storage import DATA_FILE, FOODS_FILE, SLEEP_EVENTS_FILE, SLEEP_FILE, USE_DB, db
 
 LAST_SYNC_FILE = os.path.join(os.path.dirname(__file__), "last_sync.json")
 REPORTS_DIR = os.path.join(os.path.dirname(__file__), "nanny", "reports")
@@ -132,6 +132,8 @@ def main():
     sessions = load_local(SLEEP_FILE, required=True)
     # Diagnostics, not the record: absent until the first arousal is observed.
     events_in_nap = load_local(SLEEP_EVENTS_FILE, required=False)
+    # Absent until the first food is recorded; never rotated, so it only grows.
+    foods    = load_local(FOODS_FILE, required=False)
     reports  = load_nanny_reports()
 
     with db() as conn:
@@ -209,6 +211,31 @@ def main():
                     logging.warning("sleep_events not synced (%s) — run "
                                     "migrate_sleep_schema.py on the Pi.", e)
 
+            # Foods upsert on the name. Losing this list would mean losing which
+            # foods have ever been introduced and when — the allergy record — so it
+            # is never DELETEd, and a missing table degrades like sleep_events.
+            synced_foods = len(foods)
+            if foods:
+                try:
+                    cur.execute("SAVEPOINT foods_sync")
+                    cur.executemany(
+                        """INSERT INTO foods
+                               (name, first_tried, last_offered, times_offered, reaction)
+                           VALUES (%s, %s, %s, %s, %s)
+                           ON CONFLICT (name) DO UPDATE SET
+                               last_offered  = EXCLUDED.last_offered,
+                               times_offered = EXCLUDED.times_offered,
+                               reaction      = EXCLUDED.reaction""",
+                        [(f["name"], f.get("first_tried"), f.get("last_offered"),
+                          f.get("times_offered", 1), f.get("reaction"))
+                         for f in foods])
+                    cur.execute("RELEASE SAVEPOINT foods_sync")
+                except Exception as e:
+                    cur.execute("ROLLBACK TO SAVEPOINT foods_sync")
+                    synced_foods = 0
+                    logging.warning("foods not synced (%s) — run "
+                                    "migrate_foods_schema.py on the Pi.", e)
+
             # Archive, not mirror — see sync_nanny_reports(). No DELETE, and no
             # shrinkage guard: this table is expected to outgrow the local dir.
             synced_reports = sync_nanny_reports(cur, reports)
@@ -216,7 +243,8 @@ def main():
     stamp = {"synced_at": datetime.now().isoformat(),
              "events": len(events),
              "sleep_sessions": 0 if sleep_error else len(sessions),
-             "sleep_events": synced_nap_events, "nanny_reports": synced_reports}
+             "sleep_events": synced_nap_events, "foods": synced_foods,
+             "nanny_reports": synced_reports}
     if sleep_error:
         stamp["sleep_sessions_error"] = sleep_error
     tmp = LAST_SYNC_FILE + ".tmp"

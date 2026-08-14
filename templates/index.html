@@ -64,6 +64,7 @@
     .play::before  { background: linear-gradient(145deg, var(--surface) 35%, var(--play-a)); }
     .feed::before  { background: linear-gradient(145deg, var(--surface) 35%, var(--feed-a)); }
     .probiotic::before { background: linear-gradient(145deg, var(--surface) 35%, var(--probiotic-a)); }
+    .solid::before { background: linear-gradient(145deg, var(--surface) 35%, var(--solid-a)); }
     .count-card > * { position: relative; }
 
     .count-card .num {
@@ -365,6 +366,7 @@
     .btn-play  { background: linear-gradient(155deg, #a07ad0 0%, #7852b0 100%); }
     .btn-feed  { background: linear-gradient(155deg, #68bf80 0%, #47975c 100%); }
     .btn-probiotic { background: linear-gradient(155deg, #d27aae 0%, #a8447e 100%); }
+    .btn-solid { background: linear-gradient(155deg, #3fb3a3 0%, #268276 100%); }
 
     /* ── Maintenance actions (bottom of page) ── */
     .maintenance {
@@ -459,12 +461,14 @@
     .type-toggle.type-play  { color: var(--play);  background: var(--play-a);  }
     .type-toggle.type-feed  { color: var(--feed);  background: var(--feed-a);  }
     .type-toggle.type-probiotic { color: var(--probiotic); background: var(--probiotic-a); }
+    .type-toggle.type-solid { color: var(--solid); background: var(--solid-a); }
     .type-toggle.is-active           { color: #fff; }
     .type-toggle.type-wet.is-active   { background: var(--wet);   border-color: var(--wet);   }
     .type-toggle.type-dirty.is-active { background: var(--dirty); border-color: var(--dirty); }
     .type-toggle.type-play.is-active  { background: var(--play);  border-color: var(--play);  }
     .type-toggle.type-feed.is-active  { background: var(--feed);  border-color: var(--feed);  }
     .type-toggle.type-probiotic.is-active { background: var(--probiotic); border-color: var(--probiotic); }
+    .type-toggle.type-solid.is-active { background: var(--solid); border-color: var(--solid); }
 
     .history-filters input[type="date"]:focus-visible,
     .filter-chip:focus-visible,
@@ -515,6 +519,7 @@
     .type-pill.type-play  { color: var(--play);  background: var(--play-a); }
     .type-pill.type-feed  { color: var(--feed);  background: var(--feed-a); }
     .type-pill.type-probiotic { color: var(--probiotic); background: var(--probiotic-a); }
+    .type-pill.type-solid { color: var(--solid); background: var(--solid-a); }
 
     .entry .time { color: var(--text-muted); font-size: 0.77rem; flex: 1; }
 
@@ -569,6 +574,55 @@
       padding: 0 12px;
     }
     .modal input[type="datetime-local"]:focus-visible { outline: 2px solid var(--feed); outline-offset: 2px; }
+    .modal input[type="text"] {
+      font: inherit; font-size: 1rem;      /* ≥16px: smaller text zooms iOS Safari on focus */
+      width: 100%; min-height: 44px;
+      border: 1px solid var(--cream-2);
+      border-radius: 14px;
+      background: var(--cream);
+      color: var(--brown-deep);
+      padding: 0 12px;
+    }
+    .modal input[type="text"]:focus-visible { outline: 2px solid var(--solid); outline-offset: 2px; }
+
+    /* ── Foods card ── */
+    .foods-card {
+      border-radius: var(--r);
+      padding: 16px 16px 12px;
+      box-shadow: var(--shadow-card);
+      margin-bottom: 14px;
+      background: var(--surface);
+    }
+    .foods-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+    .foods-add {
+      font: inherit; font-size: 0.78rem; font-weight: 600;
+      min-height: var(--tap); padding: 0 12px;
+      border: 1px solid var(--solid); border-radius: 999px;
+      background: var(--solid-a); color: var(--solid);
+      cursor: pointer;
+    }
+    .foods-empty { font-size: 0.85rem; color: var(--text-muted); padding: 6px 0 4px; }
+    .food-row { display: flex; align-items: center; gap: 8px; border-top: 1px solid var(--cream-2); }
+    .food-row:first-of-type { border-top: none; }
+    /* The row itself is the "offered again" button — the most common action on a
+       food you have already introduced. */
+    .food-tap {
+      flex: 1; display: flex; align-items: baseline; gap: 8px;
+      font: inherit; text-align: left; cursor: pointer;
+      background: none; border: none; padding: 9px 0; min-height: var(--tap);
+      color: var(--brown-deep);
+    }
+    .food-name { font-size: 0.92rem; font-weight: 600; }
+    .food-meta { font-size: 0.72rem; color: var(--text-muted); margin-left: auto; }
+    .food-count { font-size: 0.72rem; color: var(--solid); font-weight: 600; }
+    .food-reaction {
+      display: block; font-size: 0.74rem; color: var(--danger); font-weight: 600;
+    }
+    .food-note-btn {
+      font: inherit; font-size: 0.9rem; line-height: 1;
+      min-width: var(--tap); min-height: var(--tap);
+      background: none; border: none; color: var(--text-muted); cursor: pointer;
+    }
     .modal-actions {
       display: flex; gap: 10px; justify-content: flex-end;
       margin-top: 18px;
@@ -781,6 +835,17 @@
     <button class="action-btn btn-play"  onclick="logEvent('Play')">🧸 Play<span class="btn-ago" data-ago="Play"></span></button>
     <button class="action-btn btn-feed"  onclick="logEvent('Feed')">🍼 Feed<span class="btn-ago" data-ago="Feed"></span></button>
     <button class="action-btn btn-probiotic" onclick="logEvent('Probiotic')">💊 Probiotic<span class="btn-ago" data-ago="Probiotic"></span></button>
+    <button class="action-btn btn-solid" onclick="logEvent('Solid')">🥄 Solids<span class="btn-ago" data-ago="Solid"></span></button>
+  </div>
+
+  <!-- Foods is a permanent record, not a daily one: what she has tried and when
+       first, so a reaction can be traced back to an introduction. -->
+  <div class="foods-card stale-dim" id="foodsCard">
+    <div class="foods-head">
+      <div class="sleep-card-title" id="foodsTitle">🌿 Foods tried</div>
+      <button class="foods-add" onclick="openNewFood()">+ new food</button>
+    </div>
+    <div id="foodsBody"></div>
   </div>
 
   <p class="section-label">History</p>
@@ -853,6 +918,10 @@
       <div class="num" id="cnt-Probiotic">{{ counts.Probiotic }}</div>
       <div class="label">Probiotic</div>
     </div>
+    <div class="count-card solid">
+      <div class="num" id="cnt-Solid">{{ counts.Solid }}</div>
+      <div class="label">Solids</div>
+    </div>
   </div>
 
   <div class="chart-card stale-dim">
@@ -884,6 +953,21 @@
     </div>
   </div>
 
+  <!-- Separate from editOverlay: that one is built around type chips and a
+       datetime, and overloading it for a free-text field would leave both
+       dialogs hiding half their own controls. Shares the styling only. -->
+  <div class="modal-overlay" id="foodOverlay" hidden onclick="if(event.target===this)closeFood()">
+    <div class="modal" role="dialog" aria-modal="true" aria-label="Food">
+      <div class="modal-title" id="foodModalTitle">New food</div>
+      <input type="text" id="foodInput" maxlength="40" autocomplete="off"
+             enterkeyhint="done" aria-label="Food name">
+      <div class="modal-actions">
+        <button class="btn-cancel" onclick="closeFood()">Cancel</button>
+        <button class="btn-save" onclick="saveFood()">Save</button>
+      </div>
+    </div>
+  </div>
+
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
   <script>
@@ -903,6 +987,133 @@
         sel.appendChild(opt);
       }
     })();
+
+    // --- Foods ---
+    // foodMode is "new" (free text) or a food name (editing that food's reaction).
+    let foodMode = "new";
+
+    function updateFoods(foods) {
+      if (!foods) return;
+      const body = document.getElementById("foodsBody");
+      document.getElementById("foodsTitle").textContent =
+        "🌿 Foods tried" + (foods.length ? " · " + foods.length : "");
+      body.replaceChildren();
+
+      if (!foods.length) {
+        const p = document.createElement("div");
+        p.className = "foods-empty";
+        p.textContent = "Nothing yet. Tap “+ new food” the first time she tries something.";
+        body.appendChild(p);
+        return;
+      }
+
+      const day = iso => new Date(iso).toLocaleDateString("en-US",
+        { month: "short", day: "numeric" });
+
+      for (const f of foods) {
+        const row = document.createElement("div");
+        row.className = "food-row";
+
+        // Whole row logs another offering — the common case once a food is known.
+        const tap = document.createElement("button");
+        tap.className = "food-tap";
+        tap.onclick = () => offerFood(f.name);
+
+        const name = document.createElement("span");
+        name.className = "food-name";
+        name.textContent = f.name;          // user input — never innerHTML
+        tap.appendChild(name);
+
+        if (f.times_offered > 1) {
+          const n = document.createElement("span");
+          n.className = "food-count";
+          n.textContent = "×" + f.times_offered;
+          tap.appendChild(n);
+        }
+        const meta = document.createElement("span");
+        meta.className = "food-meta";
+        meta.textContent = f.first_tried ? "first " + day(f.first_tried) : "";
+        tap.appendChild(meta);
+        row.appendChild(tap);
+
+        const note = document.createElement("button");
+        note.className = "food-note-btn";
+        note.textContent = f.reaction ? "⚠️" : "＋";
+        note.title = f.reaction ? "Edit reaction note" : "Add a reaction note";
+        note.setAttribute("aria-label", note.title + " for " + f.name);
+        note.onclick = () => openFoodNote(f.name, f.reaction);
+        row.appendChild(note);
+        body.appendChild(row);
+
+        if (f.reaction) {
+          const r = document.createElement("div");
+          r.className = "food-reaction";
+          r.textContent = "⚠ " + f.reaction;
+          body.appendChild(r);
+        }
+      }
+    }
+
+    function openNewFood() {
+      foodMode = "new";
+      document.getElementById("foodModalTitle").textContent = "New food";
+      const input = document.getElementById("foodInput");
+      input.value = "";
+      input.placeholder = "e.g. avocado";
+      document.getElementById("foodOverlay").hidden = false;
+      input.focus();
+    }
+
+    function openFoodNote(name, reaction) {
+      foodMode = name;
+      document.getElementById("foodModalTitle").textContent = "Reaction · " + name;
+      const input = document.getElementById("foodInput");
+      input.value = reaction || "";
+      input.placeholder = "e.g. mild rash — leave empty to clear";
+      document.getElementById("foodOverlay").hidden = false;
+      input.focus();
+    }
+
+    function closeFood() { document.getElementById("foodOverlay").hidden = true; }
+
+    async function saveFood() {
+      const value = document.getElementById("foodInput").value.trim();
+      if (foodMode === "new") {
+        if (!value) return closeFood();
+        closeFood();
+        await offerFood(value);
+        return;
+      }
+      closeFood();
+      try {
+        const res = await fetch("/foods", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: foodMode, reaction: value })
+        });
+        showToast(res.ok ? (value ? "Noted for " + foodMode : "Note cleared")
+                         : "Could not save note");
+        refresh();
+      } catch (e) { showToast("Error saving note"); }
+    }
+
+    // Also logs a Solid event server-side — a food is always offered at a meal.
+    async function offerFood(name) {
+      if (navigator.vibrate) navigator.vibrate(15);
+      try {
+        const res  = await fetch("/foods", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) { showToast(data.error || "Could not save food"); return; }
+        showToast(data.created
+          ? "First time: " + data.food.name
+          : data.food.name + " again · ×" + data.food.times_offered);
+        refresh();
+      } catch (e) { showToast("Error saving food"); }
+    }
 
     function updateSchedule(plan) {
       const body = document.getElementById("planBody");
@@ -1027,8 +1238,8 @@
       }
     }
 
-    const TYPES  = ["Wet", "Dirty", "Play", "Feed", "Probiotic"];
-    const COLORS = { Wet: "#4a9fd4", Dirty: "#c0813a", Play: "#8e6abf", Feed: "#5aaa72", Probiotic: "#c25b96", Sleep: "#5c7fa3" };
+    const TYPES  = ["Wet", "Dirty", "Play", "Feed", "Probiotic", "Solid"];
+    const COLORS = { Wet: "#4a9fd4", Dirty: "#c0813a", Play: "#8e6abf", Feed: "#5aaa72", Probiotic: "#c25b96", Solid: "#2f9e8f", Sleep: "#5c7fa3" };
 
     function updateDate() {
       document.getElementById("dateLabel").textContent =
@@ -1388,6 +1599,11 @@
 
     document.addEventListener("keydown", (e) => {
       if (e.key === "Escape" && !document.getElementById("editOverlay").hidden) closeEdit();
+      if (document.getElementById("foodOverlay").hidden) return;
+      if (e.key === "Escape") closeFood();
+      // Enter to submit: the on-screen keyboard's "done" is right there, and
+      // reaching for a Save button one-handed is the awkward part.
+      if (e.key === "Enter") saveFood();
     });
 
     function closeEdit() {
@@ -1735,6 +1951,7 @@
         }
         if (data.week) updateWeeklyPattern(data.week);
         updateSchedule(data.schedule);
+        updateFoods(data.foods);
       } catch (_) {
         notifyOffline();
       }

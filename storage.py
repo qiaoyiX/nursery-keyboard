@@ -20,7 +20,14 @@ SETTINGS_FILE    = os.path.join(os.path.dirname(__file__), "settings.json")
 SLEEP_FILE       = os.path.join(os.path.dirname(__file__), "sleep_sessions.json")
 SLEEP_EVENTS_FILE = os.path.join(os.path.dirname(__file__), "sleep_events.json")
 SLEEP_STATE_FILE = os.path.join(os.path.dirname(__file__), "sleep_state.json")
+FOODS_FILE       = os.path.join(os.path.dirname(__file__), "foods.json")
 CALIBRATE_FLAG   = os.path.join(os.path.dirname(__file__), "calibrate.flag")
+
+# The loggable event types, in dashboard button order. Single source of truth: this
+# list was previously written out in eight places across app.py and the template, and
+# missing one failed silently — a type absent from the /history filter simply never
+# matched, with no error anywhere.
+EVENT_TYPES = ("Wet", "Dirty", "Play", "Feed", "Probiotic", "Solid")
 
 DEFAULT_SETTINGS = {
     "feed_interval_minutes":    180,
@@ -35,7 +42,8 @@ DEFAULT_SETTINGS = {
     "sleep_wake_seconds":       20,   # short window for "life evidence" (probation/away override), NOT for waking a nap
     "sleep_wake_minutes":       3,    # sustained-motion minutes to END a sleep session; brief in-sleep arousals (startles, active-sleep squirms) below this are kept as sleep
     "sleep_max_session_hours":  14,    # sanity cap: force-end a sleep session open longer than this
-    "debounce_minutes":         {"Feed": 5, "Wet": 1, "Dirty": 1, "Play": 5, "Probiotic": 720},  # discard repeat presses of a type within N min (0 = off)
+    "debounce_minutes":         {"Feed": 5, "Wet": 1, "Dirty": 1, "Play": 5, "Probiotic": 720,
+                                 "Solid": 5},  # discard repeat presses of a type within N min (0 = off)
     "huckleberry_email":        "",
     "huckleberry_password":     "",
     "huckleberry_child_index":  0,
@@ -57,6 +65,7 @@ DEFAULT_SETTINGS = {
 log_lock      = threading.Lock()
 sleep_lock    = threading.Lock()
 sleep_events_lock = threading.Lock()
+foods_lock    = threading.Lock()
 settings_lock = threading.Lock()
 
 
@@ -399,6 +408,101 @@ def get_sleep_events(days=7):
             return []
     return sorted((e for e in events if str(e.get("at", "")) >= cutoff),
                   key=lambda e: e["at"])
+
+
+# ── Foods (what she has tried, for allergy watch) ─────────────────────────────
+#
+# A permanent list, not a per-day log: the point is "when did she FIRST try this,
+# and did anything happen after", so records are never rotated out. The name is the
+# natural key — matched case- and whitespace-insensitively so "Avocado" typed at
+# 6am doesn't become a second food, but stored as typed so the card reads the way
+# the parent wrote it.
+
+MAX_FOOD_NAME = 40
+
+
+def _normalize_food(name):
+    """Comparison key for a food name, or None if the name is unusable."""
+    if not isinstance(name, str):
+        return None
+    cleaned = " ".join(name.split())          # collapse runs of whitespace too
+    if not cleaned or len(cleaned) > MAX_FOOD_NAME:
+        return None
+    return cleaned.casefold()
+
+
+def _load_foods():
+    if os.path.exists(FOODS_FILE):
+        try:
+            with open(FOODS_FILE) as f:
+                return json.load(f)
+        except json.JSONDecodeError:
+            logging.warning("foods.json is corrupt — starting a new list")
+    return []
+
+
+def _save_foods_atomic(foods):
+    tmp = FOODS_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(foods, f)
+    os.replace(tmp, FOODS_FILE)
+
+
+def add_food(name, now=None):
+    """Record a food offering. Returns (record, created) or (None, False) if invalid.
+
+    Create-or-increment on purpose: the same endpoint backs both "+ new food" and
+    tapping an existing row to say "offered again", so a name that turns out not to
+    be new increments instead of erroring. `created` lets the caller tell the parent
+    which of the two just happened.
+    """
+    key = _normalize_food(name)
+    if key is None:
+        return None, False
+    now = now or datetime.now()
+    with foods_lock:
+        foods = _load_foods()
+        for f in foods:
+            if _normalize_food(f.get("name")) == key:
+                f["times_offered"] = int(f.get("times_offered", 1)) + 1
+                f["last_offered"] = now.isoformat()
+                _save_foods_atomic(foods)
+                return dict(f), False
+        record = {
+            "name": " ".join(str(name).split()),
+            "first_tried": now.isoformat(),
+            "last_offered": now.isoformat(),
+            "times_offered": 1,
+            "reaction": None,
+        }
+        foods.append(record)
+        _save_foods_atomic(foods)
+        return dict(record), True
+
+
+def set_food_reaction(name, reaction):
+    """Attach (or clear, with None/empty) a reaction note. Returns the record or None."""
+    key = _normalize_food(name)
+    if key is None:
+        return None
+    note = None
+    if isinstance(reaction, str) and reaction.strip():
+        note = " ".join(reaction.split())[:200]
+    with foods_lock:
+        foods = _load_foods()
+        for f in foods:
+            if _normalize_food(f.get("name")) == key:
+                f["reaction"] = note
+                _save_foods_atomic(foods)
+                return dict(f)
+    return None
+
+
+def get_foods():
+    """Every food ever recorded, most recently offered first."""
+    with foods_lock:
+        foods = _load_foods()
+    return sorted(foods, key=lambda f: str(f.get("last_offered") or ""), reverse=True)
 
 
 def _json_start_sleep(start_time, detected_at=None):

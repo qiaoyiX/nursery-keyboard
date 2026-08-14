@@ -10,11 +10,13 @@ from flask import Flask, render_template, jsonify, request
 from storage import (
     USE_DB,
     CALIBRATE_FLAG,
+    EVENT_TYPES,
     log_lock, settings_lock, sleep_lock,
     get_entries, add_entry, clear_today, delete_entry, update_entry,
     load_settings, update_setting,
     get_sleep_sessions_today, get_sleep_sessions_range, get_open_sleep_session,
     read_sleep_status,
+    add_food, set_food_reaction, get_foods,
 )
 
 try:
@@ -198,7 +200,7 @@ def is_debounced(event_type, now=None):
 def today_stats(entries):
     today = datetime.now().date().isoformat()
     today_entries = [e for e in entries if e["time"].startswith(today)]
-    counts = {label: 0 for label in ["Wet", "Dirty", "Play", "Feed", "Probiotic"]}
+    counts = {label: 0 for label in EVENT_TYPES}
     for e in today_entries:
         if e["type"] in counts:
             counts[e["type"]] += 1
@@ -210,7 +212,7 @@ def daily_stats(entries, days=7):
     result = []
     for i in range(days - 1, -1, -1):
         d = (today - timedelta(days=i)).isoformat()
-        counts = {label: 0 for label in ["Wet", "Dirty", "Play", "Feed", "Probiotic"]}
+        counts = {label: 0 for label in EVENT_TYPES}
         for e in entries:
             if e["time"].startswith(d) and e["type"] in counts:
                 counts[e["type"]] += 1
@@ -220,13 +222,13 @@ def daily_stats(entries, days=7):
 
 def hourly_stats(entries):
     today = datetime.now().date().isoformat()
-    result = [{"hour": h, "Wet": 0, "Dirty": 0, "Play": 0, "Feed": 0, "Probiotic": 0} for h in range(24)]
+    result = [{"hour": h, **{t: 0 for t in EVENT_TYPES}} for h in range(24)]
     for e in entries:
         if not e["time"].startswith(today):
             continue
         try:
             h = datetime.fromisoformat(e["time"]).hour
-            if e["type"] in ("Wet", "Dirty", "Play", "Feed", "Probiotic"):
+            if e["type"] in EVENT_TYPES:
                 result[h][e["type"]] += 1
         except Exception:
             pass
@@ -526,7 +528,7 @@ def update_entry_route():
     time = data.get("time")
     if not isinstance(entry_id, int):
         return jsonify({"error": "missing id"}), 400
-    if event_type not in ["Wet", "Dirty", "Play", "Feed", "Probiotic"]:
+    if event_type not in EVENT_TYPES:
         return jsonify({"error": "invalid type"}), 400
     try:
         time = datetime.fromisoformat(time).isoformat()
@@ -542,7 +544,7 @@ def update_entry_route():
 def log_event():
     data = request.get_json(silent=True) or {}
     event_type = data.get("type")
-    if event_type not in ["Wet", "Dirty", "Play", "Feed", "Probiotic"]:
+    if event_type not in EVENT_TYPES:
         return jsonify({"error": "invalid type"}), 400
     if is_debounced(event_type):
         return jsonify({"ok": True, "discarded": True, "reason": "debounced"})
@@ -550,6 +552,36 @@ def log_event():
     if HUCKLEBERRY_AVAILABLE:
         push_event(event_type, datetime.now())
     return jsonify({"ok": True})
+
+
+@app.route("/foods", methods=["POST"])
+def log_food():
+    """Record a food offering, and the solid feed that went with it.
+
+    One endpoint for both "+ new food" and tapping a food to say "offered again":
+    a name that turns out not to be new increments instead of failing, and `created`
+    tells the client which happened so the toast can say so. Deliberately NOT
+    debounced — the parent is naming a specific food, so a repeat is intentional.
+    """
+    data = request.get_json(silent=True) or {}
+    record, created = add_food(data.get("name"))
+    if record is None:
+        return jsonify({"error": "name must be 1-40 characters"}), 400
+    # A food is always offered at a meal, so this saves a second press. The Solid
+    # entry is what feeds the counts, charts and history; foods.json is the list.
+    add_entry("Solid")
+    if HUCKLEBERRY_AVAILABLE:
+        push_event("Solid", datetime.now())
+    return jsonify({"ok": True, "created": created, "food": record})
+
+
+@app.route("/foods", methods=["PATCH"])
+def update_food():
+    data = request.get_json(silent=True) or {}
+    record = set_food_reaction(data.get("name"), data.get("reaction"))
+    if record is None:
+        return jsonify({"error": "unknown food"}), 404
+    return jsonify({"ok": True, "food": record})
 
 
 @app.route("/data")
@@ -601,6 +633,8 @@ def get_data():
                                      days=days, max_open_minutes=max_open_min),
         "schedule": day_schedule(entries, sessions_today, interval,
                                  shift=settings.get("care_shift", "10:00-18:00")),
+        "event_types": list(EVENT_TYPES),
+        "foods": get_foods(),
     })
 
 
@@ -617,7 +651,7 @@ def history():
     entries = get_entries()
 
     etype = request.args.get("type")
-    if etype in ("Wet", "Dirty", "Play", "Feed", "Probiotic"):
+    if etype in EVENT_TYPES:
         entries = [e for e in entries if e["type"] == etype]
 
     date = request.args.get("date")
