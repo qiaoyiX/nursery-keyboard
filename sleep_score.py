@@ -202,6 +202,123 @@ def save_score(row):
     return path
 
 
+# ── Parent-labelled truth ─────────────────────────────────────────────────────
+#
+# Camera scoring above needs the nanny pipeline, covers ~8h a day, and is itself a
+# vision model's opinion. Parent labels from /review have none of those limits: they
+# cover the whole day, including the night where most of the sleep is, and "she was
+# awake then" is not an inference. Fewer data points, far higher quality.
+
+MIN_LABELS_FOR_PROPOSAL = 10
+
+
+def truth_report(days=30, now=None):
+    """Accuracy from the parent's verdicts, attributed to each session's end_reason."""
+    import storage
+
+    now = now or datetime.now()
+    cutoff = (now - timedelta(days=days)).isoformat()
+    truth = storage.get_sleep_truth()
+    verdicts = truth.get("verdicts", {})
+
+    labelled = []
+    for s in storage.get_sleep_sessions_range(days + 1):
+        start = str(s["start_time"])
+        if start < cutoff or start not in verdicts:
+            continue
+        end = s.get("end_time")
+        if end is None:
+            continue
+        try:
+            mins = (datetime.fromisoformat(str(end))
+                    - datetime.fromisoformat(start)).total_seconds() / 60
+        except ValueError:
+            continue
+        labelled.append({"start": start, "minutes": mins,
+                         "reason": s.get("end_reason") or "unknown",
+                         "verdict": verdicts[start]["verdict"]})
+
+    missed = [m for m in truth.get("missed", []) if m["start"] >= cutoff]
+
+    by_reason = {}
+    for r in labelled:
+        b = by_reason.setdefault(r["reason"], {"n": 0, "wrong": 0, "minutes_wrong": 0.0})
+        b["n"] += 1
+        # not_in_crib is not the detector being wrong about sleep — it is being
+        # wrong about WHERE, which no threshold can fix. Counted separately.
+        if r["verdict"] == "false_alarm":
+            b["wrong"] += 1
+            b["minutes_wrong"] += r["minutes"]
+
+    n = len(labelled)
+    false_alarms = [r for r in labelled if r["verdict"] == "false_alarm"]
+    return {
+        "window_days": days,
+        "labelled": n,
+        "false_alarms": len(false_alarms),
+        "not_in_crib": sum(1 for r in labelled if r["verdict"] == "not_in_crib"),
+        "confirmed": sum(1 for r in labelled if r["verdict"] == "correct"),
+        "false_alarm_rate": round(len(false_alarms) / n, 3) if n else None,
+        "missed_blocks": len(missed),
+        "missed_minutes": round(sum(m["minutes"] for m in missed), 1),
+        "by_reason": dict(sorted(by_reason.items(),
+                                 key=lambda kv: -kv[1]["wrong"])),
+        "proposal": propose_threshold(labelled),
+    }
+
+
+def propose_threshold(labelled):
+    """Best sleep_min_minutes on the labelled data, or None if it isn't clear.
+
+    A one-dimensional sweep, not a model: for each candidate minimum, count the
+    false alarms it would remove against the confirmed naps it would also destroy.
+    Only worth proposing when it clears real errors and costs nothing — a change
+    that trades away true sleep to look tidier is not an improvement.
+    """
+    usable = [r for r in labelled if r["verdict"] in ("correct", "false_alarm")]
+    if len(usable) < MIN_LABELS_FOR_PROPOSAL:
+        return {"ready": False,
+                "reason": f"{len(usable)} of {MIN_LABELS_FOR_PROPOSAL} labels needed"}
+
+    best = None
+    for cand in range(5, 31):
+        removed = sum(1 for r in usable
+                      if r["verdict"] == "false_alarm" and r["minutes"] < cand)
+        lost = sum(1 for r in usable if r["verdict"] == "correct" and r["minutes"] < cand)
+        if lost == 0 and removed > (best["removes"] if best else 0):
+            best = {"sleep_min_minutes": cand, "removes": removed, "costs": lost}
+
+    if not best or not best["removes"]:
+        return {"ready": True, "change": None,
+                "reason": "no minimum duration separates the false alarms from real naps"}
+    return {"ready": True, "change": best,
+            "reason": (f"raising sleep_min_minutes to {best['sleep_min_minutes']} would drop "
+                       f"{best['removes']} confirmed false alarm(s) and lose no real nap")}
+
+
+def print_truth_report(rep):
+    print(f"Parent-checked accuracy · last {rep['window_days']} days\n")
+    if not rep["labelled"]:
+        print("  Nothing checked yet. Open /review on the dashboard to label a day.")
+        return
+    print(f"  blocks checked   {rep['labelled']}")
+    print(f"  confirmed sleep  {rep['confirmed']}")
+    print(f"  false alarms     {rep['false_alarms']}"
+          + (f"  ({rep['false_alarm_rate']*100:.0f}%)" if rep["false_alarm_rate"] is not None else ""))
+    print(f"  not in crib      {rep['not_in_crib']}")
+    print(f"  missed sleep     {rep['missed_blocks']} block(s), {rep['missed_minutes']:.0f} min")
+    if rep["by_reason"]:
+        print("\n  by end_reason:")
+        for reason, b in rep["by_reason"].items():
+            print(f"    {reason:22} {b['wrong']:2d} wrong of {b['n']:2d}"
+                  + (f"   ({b['minutes_wrong']:.0f} min)" if b["wrong"] else ""))
+    p = rep["proposal"]
+    print("\n  proposal: " + ("not yet — " + p["reason"] if not p["ready"] else p["reason"]))
+    if p.get("change"):
+        print(f"            apply by editing settings.json on the Pi, then restarting"
+              f" nursery-sleep-monitor")
+
+
 def load_day(day):
     day_dir = os.path.join(CHUNKS_DIR, day.isoformat())
     if not os.path.isdir(day_dir):
@@ -219,7 +336,16 @@ def main():
                     help="also recompute the report's own numbers and compare")
     ap.add_argument("--save", action="store_true",
                     help="also write each day's score to nanny/sleep_scores/<date>.json")
+    ap.add_argument("--truth", action="store_true",
+                    help="score against the parent's /review labels instead of the cameras")
     args = ap.parse_args()
+
+    if args.truth:
+        rep = truth_report(days=args.days or 30)
+        print(json.dumps(rep, indent=2) if args.json else "", end="")
+        if not args.json:
+            print_truth_report(rep)
+        return
 
     if args.days:
         days = [date.today() - timedelta(days=i) for i in range(1, args.days + 1)]

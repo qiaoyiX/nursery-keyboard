@@ -602,6 +602,11 @@
       cursor: pointer;
     }
     .foods-empty { font-size: 0.85rem; color: var(--text-muted); padding: 6px 0 4px; }
+    .check-link {
+      font-size: 0.74rem; color: var(--sleep); text-decoration: none;
+      white-space: nowrap; padding: 4px 0;
+    }
+    .check-link:focus-visible { outline: 2px solid var(--sleep); outline-offset: 2px; }
     .food-row { display: flex; align-items: center; gap: 8px; border-top: 1px solid var(--cream-2); }
     .food-row:first-of-type { border-top: none; }
     /* The row itself is the "offered again" button — the most common action on a
@@ -876,7 +881,12 @@
   </div>
 
   <div class="sleep-timeline-card stale-dim">
-    <div class="sleep-card-title">😴 Today's Sleep</div>
+    <div class="foods-head">
+      <div class="sleep-card-title">😴 Today's Sleep</div>
+      <!-- The only way the detector gets better: it cannot tell an invented nap
+           from a real one, and nothing else on the Pi can either. -->
+      <a class="check-link" href="/review">Check yesterday →</a>
+    </div>
     <div class="sleep-summary-text" id="sleepSummaryText"></div>
     <div class="sleep-timeline-track" id="sleepTrack"></div>
     <div class="sleep-timeline-labels">

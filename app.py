@@ -17,6 +17,7 @@ from storage import (
     get_sleep_sessions_today, get_sleep_sessions_range, get_open_sleep_session,
     read_sleep_status,
     add_food, set_food_reaction, get_foods,
+    set_sleep_verdict, add_missed_sleep, delete_missed_sleep, get_sleep_truth,
 )
 
 try:
@@ -777,6 +778,87 @@ def nanny_clip(day, filename):
     if os.sep in filename or not filename.endswith(".mp4"):
         abort(404)
     return send_from_directory(os.path.join(CLIPS_DIR, day), filename)
+
+
+@app.route("/review")
+def review_page():
+    return render_template("review.html")
+
+
+@app.route("/review/data")
+def review_data():
+    """One day's detected sessions, each carrying the parent's verdict if any.
+
+    Serves the labelling page. Unlike /data this exposes end_reason, which is the
+    whole point: a verdict is only useful for tuning if you know which code path
+    produced the block being judged.
+    """
+    try:
+        day = datetime.strptime(request.args.get("date", ""), "%Y-%m-%d").date()
+    except ValueError:
+        day = (datetime.now() - timedelta(days=1)).date()
+
+    day_start = datetime.combine(day, datetime.min.time())
+    day_end = day_start + timedelta(days=1)
+    days_back = max((datetime.now().date() - day).days + 1, 1)
+
+    truth = get_sleep_truth()
+    blocks = []
+    for s in get_sleep_sessions_range(days_back):
+        start = s["start_time"]
+        start = start if isinstance(start, datetime) else datetime.fromisoformat(str(start))
+        end = s.get("end_time")
+        if end is None:
+            continue                      # still running — nothing to judge yet
+        end = end if isinstance(end, datetime) else datetime.fromisoformat(str(end))
+        if end <= day_start or start >= day_end:
+            continue
+        key = start.isoformat()
+        blocks.append({
+            "session_start": key,
+            "start_iso": start.isoformat(),
+            "end_iso": end.isoformat(),
+            "minutes": round((end - start).total_seconds() / 60, 1),
+            "end_reason": s.get("end_reason"),
+            "verdict": (truth["verdicts"].get(key) or {}).get("verdict"),
+        })
+    blocks.sort(key=lambda b: b["start_iso"])
+
+    missed = [m for m in truth["missed"]
+              if day_start.isoformat() <= m["start"] < day_end.isoformat()]
+    return jsonify({
+        "date": day.isoformat(),
+        "blocks": blocks,
+        "missed": sorted(missed, key=lambda m: m["start"]),
+        "labeled": sum(1 for b in blocks if b["verdict"]),
+    })
+
+
+@app.route("/review/verdict", methods=["POST"])
+def review_verdict():
+    data = request.get_json(silent=True) or {}
+    rec = set_sleep_verdict(data.get("session_start"), data.get("verdict"))
+    if rec is None:
+        return jsonify({"error": "bad session_start or verdict"}), 400
+    return jsonify({"ok": True, **rec})
+
+
+@app.route("/review/missed", methods=["POST"])
+def review_missed():
+    data = request.get_json(silent=True) or {}
+    rec = add_missed_sleep(data.get("start"), data.get("end"))
+    if rec is None:
+        return jsonify({"error": "end must be after start"}), 400
+    return jsonify({"ok": True, "missed": rec})
+
+
+@app.route("/review/missed", methods=["DELETE"])
+def review_missed_delete():
+    data = request.get_json(silent=True) or {}
+    removed = delete_missed_sleep(data.get("start"))
+    if not removed:
+        return jsonify({"error": "not found"}), 404
+    return jsonify({"ok": True})
 
 
 @app.route("/sleep/calibrate", methods=["POST"])

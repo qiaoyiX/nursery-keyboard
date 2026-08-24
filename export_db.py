@@ -20,8 +20,9 @@ import argparse
 import json
 import os
 import sys
+from datetime import datetime
 
-from storage import DATA_FILE, FOODS_FILE, SLEEP_FILE, USE_DB, db
+from storage import DATA_FILE, FOODS_FILE, SLEEP_FILE, SLEEP_TRUTH_FILE, USE_DB, db
 
 REPORTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                            "nanny", "reports")
@@ -62,6 +63,7 @@ def main():
     _refuse_overwrite(DATA_FILE, args.force)
     _refuse_overwrite(SLEEP_FILE, args.force)
     _refuse_overwrite(FOODS_FILE, args.force)
+    _refuse_overwrite(SLEEP_TRUTH_FILE, args.force)
 
     with db() as conn:
         with conn.cursor() as cur:
@@ -93,10 +95,31 @@ def main():
                     "reaction": rx,
                 } for n, ft, lo, times, rx in cur.fetchall()]
             except Exception:
-                # Table only exists once migrate_foods_schema.py has run; its
+                # Table only exists once migrate_schema.py has run; its
                 # absence is not a failed restore.
                 conn.rollback()
                 print("No foods table in Neon — skipping the food list.")
+
+            truth = {"verdicts": {}, "missed": []}
+            try:
+                cur.execute("""SELECT kind, ref, ends, value, labeled_at
+                               FROM sleep_truth ORDER BY ref""")
+                for kind, ref, ends, value, at in cur.fetchall():
+                    stamp = at.isoformat() if at else None
+                    if kind == "verdict":
+                        truth["verdicts"][ref] = {"verdict": value, "labeled_at": stamp}
+                    elif kind == "missed" and ends:
+                        mins = None
+                        try:
+                            mins = round((datetime.fromisoformat(ends)
+                                          - datetime.fromisoformat(ref)).total_seconds()/60, 1)
+                        except ValueError:
+                            pass
+                        truth["missed"].append({"start": ref, "end": ends,
+                                                "minutes": mins, "labeled_at": stamp})
+            except Exception:
+                conn.rollback()
+                print("No sleep_truth table in Neon — skipping parent labels.")
 
             reports = []
             try:
@@ -113,6 +136,8 @@ def main():
     _atomic_write(SLEEP_FILE, sessions)
     if foods:
         _atomic_write(FOODS_FILE, foods)
+    if truth['verdicts'] or truth['missed']:
+        _atomic_write(SLEEP_TRUTH_FILE, truth)
 
     written = 0
     if reports:
@@ -129,6 +154,9 @@ def main():
     print(f"Exported {len(sessions)} sleep sessions -> {SLEEP_FILE}")
     if foods:
         print(f"Exported {len(foods)} foods -> {FOODS_FILE}")
+    if truth["verdicts"] or truth["missed"]:
+        n_v, n_m = len(truth["verdicts"]), len(truth["missed"])
+        print(f"Exported {n_v} verdicts + {n_m} missed -> {SLEEP_TRUTH_FILE}")
     if reports:
         print(f"Exported {written} of {len(reports)} nanny reports -> {REPORTS_DIR}")
     print("Verify these counts against Neon, then remove DATABASE_URL from both service units.")

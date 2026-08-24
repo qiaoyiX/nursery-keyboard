@@ -21,6 +21,7 @@ SLEEP_FILE       = os.path.join(os.path.dirname(__file__), "sleep_sessions.json"
 SLEEP_EVENTS_FILE = os.path.join(os.path.dirname(__file__), "sleep_events.json")
 SLEEP_STATE_FILE = os.path.join(os.path.dirname(__file__), "sleep_state.json")
 FOODS_FILE       = os.path.join(os.path.dirname(__file__), "foods.json")
+SLEEP_TRUTH_FILE = os.path.join(os.path.dirname(__file__), "sleep_truth.json")
 CALIBRATE_FLAG   = os.path.join(os.path.dirname(__file__), "calibrate.flag")
 
 # The loggable event types, in dashboard button order. Single source of truth: this
@@ -66,6 +67,7 @@ log_lock      = threading.Lock()
 sleep_lock    = threading.Lock()
 sleep_events_lock = threading.Lock()
 foods_lock    = threading.Lock()
+truth_lock    = threading.Lock()
 settings_lock = threading.Lock()
 
 
@@ -503,6 +505,92 @@ def get_foods():
     with foods_lock:
         foods = _load_foods()
     return sorted(foods, key=lambda f: str(f.get("last_offered") or ""), reverse=True)
+
+
+# ── Sleep truth (the parent's verdict on what the detector saw) ───────────────
+#
+# The detector both invents sleep and misses it, and nothing else on the Pi can
+# tell which. These labels are the only ground truth available: without crib
+# footage there is nothing to replay, and the nanny cameras cover ~8h a day and
+# are themselves a model's opinion. A parent saying "she was awake then" is the
+# one unambiguous signal in the system.
+#
+# Keyed by session start_time rather than id: ids are local-only and export_db
+# renumbers them on restore, which would silently re-point every verdict at the
+# wrong session.
+
+TRUTH_VERDICTS = ("correct", "false_alarm", "not_in_crib")
+
+
+def _load_truth():
+    if os.path.exists(SLEEP_TRUTH_FILE):
+        try:
+            with open(SLEEP_TRUTH_FILE) as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                return data
+        except json.JSONDecodeError:
+            logging.warning("sleep_truth.json is corrupt — starting over")
+    return {"verdicts": {}, "missed": []}
+
+
+def _save_truth_atomic(data):
+    tmp = SLEEP_TRUTH_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(data, f)
+    os.replace(tmp, SLEEP_TRUTH_FILE)
+
+
+def set_sleep_verdict(session_start, verdict, now=None):
+    """Label one detected session. Returns the stored record, or None if invalid."""
+    if verdict not in TRUTH_VERDICTS or not session_start:
+        return None
+    try:
+        datetime.fromisoformat(str(session_start))
+    except ValueError:
+        return None
+    rec = {"verdict": verdict, "labeled_at": (now or datetime.now()).isoformat()}
+    with truth_lock:
+        data = _load_truth()
+        data["verdicts"][str(session_start)] = rec
+        _save_truth_atomic(data)
+    return {"session_start": str(session_start), **rec}
+
+
+def add_missed_sleep(start, end, now=None):
+    """Record sleep the detector never saw. Returns the record, or None if invalid."""
+    try:
+        s, e = datetime.fromisoformat(str(start)), datetime.fromisoformat(str(end))
+    except (ValueError, TypeError):
+        return None
+    if e <= s:
+        return None
+    rec = {"start": s.isoformat(), "end": e.isoformat(),
+           "minutes": round((e - s).total_seconds() / 60, 1),
+           "labeled_at": (now or datetime.now()).isoformat()}
+    with truth_lock:
+        data = _load_truth()
+        # Same interval twice is a double-tap, not two naps.
+        if not any(m["start"] == rec["start"] and m["end"] == rec["end"]
+                   for m in data["missed"]):
+            data["missed"].append(rec)
+            _save_truth_atomic(data)
+    return rec
+
+
+def delete_missed_sleep(start):
+    with truth_lock:
+        data = _load_truth()
+        before = len(data["missed"])
+        data["missed"] = [m for m in data["missed"] if m["start"] != str(start)]
+        if len(data["missed"]) != before:
+            _save_truth_atomic(data)
+        return before - len(data["missed"])
+
+
+def get_sleep_truth():
+    with truth_lock:
+        return _load_truth()
 
 
 def _json_start_sleep(start_time, detected_at=None):

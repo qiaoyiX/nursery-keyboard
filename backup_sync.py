@@ -38,7 +38,8 @@ import os
 import sys
 from datetime import datetime
 
-from storage import DATA_FILE, FOODS_FILE, SLEEP_EVENTS_FILE, SLEEP_FILE, USE_DB, db
+from storage import (DATA_FILE, FOODS_FILE, SLEEP_EVENTS_FILE, SLEEP_FILE,
+                     SLEEP_TRUTH_FILE, USE_DB, db)
 
 LAST_SYNC_FILE = os.path.join(os.path.dirname(__file__), "last_sync.json")
 REPORTS_DIR = os.path.join(os.path.dirname(__file__), "nanny", "reports")
@@ -134,6 +135,9 @@ def main():
     events_in_nap = load_local(SLEEP_EVENTS_FILE, required=False)
     # Absent until the first food is recorded; never rotated, so it only grows.
     foods    = load_local(FOODS_FILE, required=False)
+    # Hand-labelled, so the most expensive rows on the Pi to recreate: every one
+    # cost a parent looking at a block and deciding. A dict, not a list.
+    truth    = load_local(SLEEP_TRUTH_FILE, required=False) or {}
     reports  = load_nanny_reports()
 
     with db() as conn:
@@ -158,7 +162,7 @@ def main():
             # stale or truncated local file must never be able to erase it. start_time
             # is the natural key — microsecond precision, one per session, and unlike
             # `id` it survives an export_db restore's renumbering.
-            # Savepointed: until migrate_sleep_schema.py has run there is no
+            # Savepointed: until migrate_schema.py has run there is no
             # UNIQUE(start_time) for ON CONFLICT to match, and the error would abort the
             # whole transaction — taking the events backup down with it for as long as
             # nobody notices. Sleep failing must cost only sleep.
@@ -188,7 +192,7 @@ def main():
                 # and the stamp below records it so the failure is visible without
                 # reading journald.
                 logging.error("sleep_sessions NOT backed up (%s) — run "
-                              "migrate_sleep_schema.py on the Pi.", sleep_error)
+                              "migrate_schema.py on the Pi.", sleep_error)
             # Within-nap events: append-only by nature, so upsert-or-skip. A missing
             # table means the migration has not run yet; that must not fail the
             # events/sessions backup, which is the part that matters.
@@ -209,7 +213,7 @@ def main():
                     cur.execute("ROLLBACK TO SAVEPOINT sleep_events_sync")
                     synced_nap_events = 0
                     logging.warning("sleep_events not synced (%s) — run "
-                                    "migrate_sleep_schema.py on the Pi.", e)
+                                    "migrate_schema.py on the Pi.", e)
 
             # Foods upsert on the name. Losing this list would mean losing which
             # foods have ever been introduced and when — the allergy record — so it
@@ -234,7 +238,32 @@ def main():
                     cur.execute("ROLLBACK TO SAVEPOINT foods_sync")
                     synced_foods = 0
                     logging.warning("foods not synced (%s) — run "
-                                    "migrate_foods_schema.py on the Pi.", e)
+                                    "migrate_schema.py on the Pi.", e)
+
+            # Parent verdicts and missed-sleep intervals, flattened into one table
+            # so both survive on a single natural key.
+            truth_rows = [("verdict", ref, None, v.get("verdict"), v.get("labeled_at"))
+                          for ref, v in (truth.get("verdicts") or {}).items()]
+            truth_rows += [("missed", m["start"], m["end"], None, m.get("labeled_at"))
+                           for m in (truth.get("missed") or [])]
+            synced_truth = len(truth_rows)
+            if truth_rows:
+                try:
+                    cur.execute("SAVEPOINT truth_sync")
+                    cur.executemany(
+                        """INSERT INTO sleep_truth (kind, ref, ends, value, labeled_at)
+                           VALUES (%s, %s, %s, %s, %s)
+                           ON CONFLICT (kind, ref) DO UPDATE SET
+                               ends       = EXCLUDED.ends,
+                               value      = EXCLUDED.value,
+                               labeled_at = EXCLUDED.labeled_at""",
+                        truth_rows)
+                    cur.execute("RELEASE SAVEPOINT truth_sync")
+                except Exception as e:
+                    cur.execute("ROLLBACK TO SAVEPOINT truth_sync")
+                    synced_truth = 0
+                    logging.warning("sleep_truth not synced (%s) — run "
+                                    "migrate_schema.py on the Pi.", e)
 
             # Archive, not mirror — see sync_nanny_reports(). No DELETE, and no
             # shrinkage guard: this table is expected to outgrow the local dir.
@@ -244,6 +273,7 @@ def main():
              "events": len(events),
              "sleep_sessions": 0 if sleep_error else len(sessions),
              "sleep_events": synced_nap_events, "foods": synced_foods,
+             "sleep_truth": synced_truth,
              "nanny_reports": synced_reports}
     if sleep_error:
         stamp["sleep_sessions_error"] = sleep_error

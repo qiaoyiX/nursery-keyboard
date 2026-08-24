@@ -6,6 +6,7 @@ sleep_sessions.json
 sleep_events.json
 sleep_state.json
 foods.json
+sleep_truth.json
 reference_frame.npy
 reference_frame_meta.json
 recordings/

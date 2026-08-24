@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Check Sleep</title>
+  {% include "_theme.html" %}
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: var(--cream);
+      color: var(--brown-deep);
+      min-height: 100vh;
+      padding: 24px 16px 64px;
+      max-width: 680px;
+      margin: 0 auto;
+    }
+    .header { text-align: center; margin-bottom: 18px; }
+    h1 { font-family: Georgia, "Times New Roman", serif; font-weight: normal;
+         font-size: 1.5rem; }
+    .sub { font-size: 0.8rem; color: var(--text-muted); margin-top: 4px; }
+    a.back { font-size: 0.8rem; color: var(--sleep); text-decoration: none; }
+
+    .daybar { display: flex; align-items: center; justify-content: center; gap: 10px;
+              margin-bottom: 16px; }
+    .daybar button, .daybar input {
+      font: inherit; font-size: 0.85rem; min-height: var(--tap);
+      border: 1px solid var(--cream-2); border-radius: 12px;
+      background: var(--surface); color: var(--brown-deep); padding: 0 12px;
+      cursor: pointer;
+    }
+    .daybar button:disabled { opacity: 0.4; cursor: default; }
+
+    .card { background: var(--surface); border-radius: var(--r);
+            box-shadow: var(--shadow-card); padding: 16px; margin-bottom: 14px; }
+    .card h2 { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.09em;
+               color: var(--text-muted); margin-bottom: 10px; font-weight: 600; }
+
+    .progress { font-size: 0.8rem; color: var(--text-muted); text-align: center;
+                margin-bottom: 14px; }
+    .progress b { color: var(--sleep); }
+
+    .blk { border-top: 1px solid var(--cream-2); padding: 11px 0; }
+    .blk:first-of-type { border-top: none; }
+    .blk-top { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+    .blk-time { font-size: 0.95rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+    .blk-dur { font-size: 0.78rem; color: var(--text-muted); }
+    .blk-why { font-size: 0.68rem; color: var(--text-muted); margin-left: auto;
+               font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    /* A block short enough to be detector noise gets flagged, so the obvious
+       false alarms are the ones you look at first. */
+    .blk.suspect .blk-time { color: var(--danger); }
+    .blk-hint { font-size: 0.72rem; color: var(--danger); margin-top: 2px; }
+
+    .choices { display: flex; gap: 8px; margin-top: 9px; flex-wrap: wrap; }
+    .choice {
+      font: inherit; font-size: 0.8rem; font-weight: 600;
+      min-height: var(--tap); padding: 0 14px; cursor: pointer;
+      border-radius: 999px; border: 1px solid var(--cream-2);
+      background: var(--cream); color: var(--text-muted);
+    }
+    .choice[aria-pressed="true"].yes { background: var(--feed); border-color: var(--feed); color: #fff; }
+    .choice[aria-pressed="true"].no  { background: var(--danger); border-color: var(--danger); color: #fff; }
+    .choice[aria-pressed="true"].out { background: var(--brown-mid); border-color: var(--brown-mid); color: #fff; }
+    .choice:focus-visible { outline: 2px solid var(--sleep); outline-offset: 2px; }
+
+    .missed { display: flex; align-items: center; gap: 8px; border-top: 1px solid var(--cream-2);
+              padding: 9px 0; font-size: 0.88rem; }
+    .missed:first-of-type { border-top: none; }
+    .missed .rm { margin-left: auto; font: inherit; font-size: 0.9rem;
+                  min-width: var(--tap); min-height: var(--tap);
+                  background: none; border: none; color: var(--text-muted); cursor: pointer; }
+    .addrow { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 10px; }
+    .addrow input[type="time"] {
+      font: inherit; font-size: 1rem; min-height: var(--tap);
+      border: 1px solid var(--cream-2); border-radius: 12px;
+      background: var(--cream); color: var(--brown-deep); padding: 0 10px;
+    }
+    .addrow button {
+      font: inherit; font-size: 0.8rem; font-weight: 600; min-height: var(--tap);
+      padding: 0 14px; border-radius: 999px;
+      border: 1px solid var(--sleep); background: var(--sleep-a); color: var(--sleep);
+      cursor: pointer;
+    }
+    .empty { font-size: 0.85rem; color: var(--text-muted); }
+
+    .why { font-size: 0.78rem; color: var(--text-muted); line-height: 1.5; }
+    .why strong { color: var(--brown-deep); }
+
+    .toast {
+      position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%);
+      background: var(--toast-bg); color: var(--toast-fg);
+      padding: 10px 16px; border-radius: 999px; font-size: 0.82rem;
+      opacity: 0; pointer-events: none; transition: opacity .18s;
+    }
+    .toast.show { opacity: 1; }
+    @media (prefers-reduced-motion: reduce) { .toast { transition: none; } }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>Check Sleep</h1>
+    <div class="sub">Tell the monitor where it was wrong &mdash; <a class="back" href="/">back to dashboard</a></div>
+  </div>
+
+  <div class="daybar">
+    <button id="prev" onclick="shiftDay(-1)" aria-label="Previous day">&larr;</button>
+    <input type="date" id="date" onchange="load()" aria-label="Day to check" />
+    <button id="next" onclick="shiftDay(1)" aria-label="Next day">&rarr;</button>
+  </div>
+
+  <div class="progress" id="progress"></div>
+
+  <div class="card">
+    <h2>What it recorded</h2>
+    <div id="blocks"></div>
+  </div>
+
+  <div class="card">
+    <h2>Sleep it missed</h2>
+    <div id="missed"></div>
+    <div class="addrow">
+      <input type="time" id="ms" aria-label="Missed sleep start" />
+      <span aria-hidden="true">&rarr;</span>
+      <input type="time" id="me" aria-label="Missed sleep end" />
+      <button onclick="addMissed()">Add</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Why this helps</h2>
+    <p class="why">
+      The crib monitor guesses from stillness alone, so it both <strong>invents</strong> sleep
+      (she was lying quietly awake) and <strong>misses</strong> it (she slept somewhere it
+      cannot see). Nothing on the Pi can tell the difference &mdash; only you can.
+      Each verdict is stored against the reason that block ended, so once there are enough
+      of them the tuning page can say <em>which</em> setting is causing the errors instead
+      of guessing.
+    </p>
+  </div>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <script>
+    const $ = id => document.getElementById(id);
+    const el = (t, c, txt) => { const n = document.createElement(t);
+      if (c) n.className = c; if (txt != null) n.textContent = txt; return n; };
+    const hm = iso => iso.slice(11, 16);
+    const dur = m => m >= 60 ? `${Math.floor(m/60)}h ${Math.round(m%60)}m` : `${Math.round(m)}m`;
+    const todayIso = () => new Date().toLocaleDateString("en-CA");
+
+    let toastTimer;
+    function showToast(msg) {
+      const t = $("toast"); t.textContent = msg; t.classList.add("show");
+      clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove("show"), 2200);
+    }
+
+    // Default to yesterday: today is still in progress, and judging a nap she is
+    // currently taking is not a verdict anyone can give.
+    (function init() {
+      const d = new Date(); d.setDate(d.getDate() - 1);
+      $("date").value = d.toLocaleDateString("en-CA");
+      $("date").max = todayIso();
+      load();
+    })();
+
+    function shiftDay(n) {
+      const d = new Date($("date").value + "T12:00:00");
+      d.setDate(d.getDate() + n);
+      const iso = d.toLocaleDateString("en-CA");
+      if (iso > todayIso()) return;
+      $("date").value = iso;
+      load();
+    }
+
+    async function load() {
+      $("next").disabled = $("date").value >= todayIso();
+      let data;
+      try {
+        const res = await fetch("/review/data?date=" + encodeURIComponent($("date").value));
+        data = await res.json();
+      } catch (e) { showToast("Could not load that day"); return; }
+
+      const wrap = $("blocks");
+      wrap.replaceChildren();
+      if (!data.blocks.length) {
+        wrap.appendChild(el("p", "empty", "No sleep recorded on this day."));
+      }
+      for (const b of data.blocks) {
+        // Under 15 min is the band the detector gets wrong most often.
+        const suspect = b.minutes < 15;
+        const row = el("div", "blk" + (suspect ? " suspect" : ""));
+        const top = el("div", "blk-top");
+        top.appendChild(el("span", "blk-time", hm(b.start_iso) + "–" + hm(b.end_iso)));
+        top.appendChild(el("span", "blk-dur", dur(b.minutes)));
+        if (b.end_reason) top.appendChild(el("span", "blk-why", b.end_reason));
+        row.appendChild(top);
+        if (suspect) row.appendChild(el("div", "blk-hint", "Very short — often a false alarm"));
+
+        const choices = el("div", "choices");
+        for (const [val, cls, label] of [["correct", "yes", "✓ Asleep"],
+                                         ["false_alarm", "no", "✗ Awake"],
+                                         ["not_in_crib", "out", "Not in crib"]]) {
+          const btn = el("button", "choice " + cls, label);
+          btn.type = "button";
+          btn.setAttribute("aria-pressed", b.verdict === val ? "true" : "false");
+          btn.onclick = () => setVerdict(b.session_start, val, choices, btn);
+          choices.appendChild(btn);
+        }
+        row.appendChild(choices);
+        wrap.appendChild(row);
+      }
+
+      const mw = $("missed");
+      mw.replaceChildren();
+      if (!data.missed.length) {
+        mw.appendChild(el("p", "empty", "Nothing added. Use this if she slept somewhere the camera can’t see."));
+      }
+      for (const m of data.missed) {
+        const row = el("div", "missed");
+        row.appendChild(el("span", null, hm(m.start) + "–" + hm(m.end)));
+        row.appendChild(el("span", "blk-dur", dur(m.minutes)));
+        const rm = el("button", "rm", "✕");
+        rm.type = "button";
+        rm.title = "Remove";
+        rm.setAttribute("aria-label", "Remove " + hm(m.start) + " to " + hm(m.end));
+        rm.onclick = () => removeMissed(m.start);
+        row.appendChild(rm);
+        mw.appendChild(row);
+      }
+
+      const n = data.blocks.length;
+      $("progress").replaceChildren();
+      if (n) {
+        const done = el("b", null, data.labeled);
+        $("progress").append(done, document.createTextNode(` of ${n} blocks checked`));
+      }
+    }
+
+    async function setVerdict(sessionStart, verdict, group, btn) {
+      try {
+        const res = await fetch("/review/verdict", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ session_start: sessionStart, verdict })
+        });
+        if (!res.ok) { showToast("Could not save"); return; }
+        for (const b of group.children) b.setAttribute("aria-pressed", "false");
+        btn.setAttribute("aria-pressed", "true");
+        if (navigator.vibrate) navigator.vibrate(12);
+        load();
+      } catch (e) { showToast("Could not save"); }
+    }
+
+    async function addMissed() {
+      const d = $("date").value, s = $("ms").value, e = $("me").value;
+      if (!s || !e) { showToast("Pick a start and an end"); return; }
+      // An end before the start means it ran past midnight into the next day.
+      const endDay = e > s ? d : new Date(new Date(d + "T12:00:00").getTime() + 864e5)
+                                    .toLocaleDateString("en-CA");
+      try {
+        const res = await fetch("/review/missed", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ start: `${d}T${s}:00`, end: `${endDay}T${e}:00` })
+        });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) { showToast(body.error || "Could not add"); return; }
+        $("ms").value = ""; $("me").value = "";
+        showToast("Added");
+        load();
+      } catch (err) { showToast("Could not add"); }
+    }
+
+    async function removeMissed(start) {
+      try {
+        await fetch("/review/missed", {
+          method: "DELETE", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ start })
+        });
+        load();
+      } catch (e) { showToast("Could not remove"); }
+    }
+  </script>
+</body>
+</html>
