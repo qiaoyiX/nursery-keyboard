@@ -106,7 +106,7 @@
 
   <div class="daybar">
     <button id="prev" onclick="shiftDay(-1)" aria-label="Previous day">&larr;</button>
-    <input type="date" id="date" onchange="load()" aria-label="Day to check" />
+    <input type="date" id="date" onchange="pickDate()" aria-label="Day to check" />
     <button id="next" onclick="shiftDay(1)" aria-label="Next day">&rarr;</button>
   </div>
 
@@ -156,16 +156,38 @@
       clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove("show"), 2200);
     }
 
+    // True once you deliberately choose a day, which stops the auto-roll below
+    // from moving the date out from under you mid-label.
+    let pinnedDate = false;
+
+    const autoDate = () => {
+      const d = new Date(); d.setDate(d.getDate() - 1);
+      return d.toLocaleDateString("en-CA");
+    };
+
     // Default to yesterday: today is still in progress, and judging a nap she is
     // currently taking is not a verdict anyone can give.
     (function init() {
-      const d = new Date(); d.setDate(d.getDate() - 1);
-      $("date").value = d.toLocaleDateString("en-CA");
+      $("date").value = autoDate();
       $("date").max = todayIso();
       load();
     })();
 
+    // This page has no poll loop — you are labelling a finished day, so there is
+    // nothing to stream. But it was previously computing "yesterday" once at load
+    // and never refetching, so a tab left open overnight kept showing the day
+    // before last with stale counts. Re-check whenever it comes back into view.
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden) return;
+      $("date").max = todayIso();
+      if (!pinnedDate && $("date").value !== autoDate()) $("date").value = autoDate();
+      load();
+    });
+
+    function pickDate() { pinnedDate = true; load(); }
+
     function shiftDay(n) {
+      pinnedDate = true;
       const d = new Date($("date").value + "T12:00:00");
       d.setDate(d.getDate() + n);
       const iso = d.toLocaleDateString("en-CA");
