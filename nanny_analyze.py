@@ -203,6 +203,12 @@ ACTIVITY_CATEGORIES = ["feeding", "diaper", "play", "holding_baby", "sleep_prep"
                        "housework", "eating", "resting", "out_of_frame", "other"]
 # Judged from THIS camera only; the report fuses the rooms afterwards.
 BABY_STATES = ["awake", "asleep", "not_visible", "unclear"]
+# What the caregiver actually did during play. A closed list rather than free text:
+# the descriptions this replaced were all "playing with the baby", and free text with
+# permissive wording is what produced the 8-second phone-use events. A list, not one
+# value — real sessions are mixed (floor toys that become tummy time).
+PLAY_TYPES = ["tummy_time", "floor_toys", "books", "singing_talking",
+              "held_interactive", "held_passive", "outdoor", "other"]
 
 CHUNK_SCHEMA = {
     "type": "OBJECT",
@@ -218,7 +224,12 @@ CHUNK_SCHEMA = {
                     "description":  {"type": "STRING"},
                     "baby_visible": {"type": "BOOLEAN"},
                     "baby_state":   {"type": "STRING", "enum": BABY_STATES},
+                    "play_types":   {"type": "ARRAY",
+                                     "items": {"type": "STRING", "enum": PLAY_TYPES}},
                 },
+                # play_types is deliberately NOT required: structured output cannot
+                # express "required only when category is play", so build_chunk keeps
+                # it on play activities and strips it everywhere else.
                 "required": ["start", "end", "category", "description",
                              "baby_visible", "baby_state"],
             },
@@ -251,8 +262,12 @@ CHUNK_SCHEMA = {
                 "type": "OBJECT",
                 "properties": {
                     "time":        {"type": "STRING"},
+                    # No "visitor": in a family home people come and go constantly, so
+                    # it produced ~9 events a day (100% of them on 2026-08-27), each
+                    # cutting an evidence clip nobody watches. Removed at the enum so
+                    # the model cannot report one at all.
                     "type":        {"type": "STRING",
-                                    "enum": ["safety_concern", "milestone", "visitor", "other"]},
+                                    "enum": ["safety_concern", "milestone", "other"]},
                     "description": {"type": "STRING"},
                 },
                 "required": ["time", "type", "description"],
@@ -287,6 +302,15 @@ all) and baby_state: "asleep" only when the baby is visibly settled and still (l
 down, eyes closed, no active movement) for the span, "awake" when visibly moving, \
 being held, fed, played with or attended to, "not_visible" when the baby is not in \
 frame, "unclear" when in frame but you cannot tell.
+For spans with category "play" ONLY, also set play_types: every kind of play you can \
+actually SEE in that span, from the enum — tummy_time (baby on her front, chest off \
+the floor), floor_toys (toys or a mat on the floor), books, singing_talking (the \
+caregiver clearly vocalising to the baby), held_interactive (held and engaged with \
+face to face), held_passive (held while the caregiver's attention is elsewhere), \
+outdoor, other. A session can be more than one, so list all that apply. If you cannot \
+see well enough to name the kind of play, return an EMPTY list — an empty list is a \
+normal and correct answer, and is always better than a guess. Leave play_types off \
+entirely for every category other than "play".
 2. phone_use — EVERY interval where an adult is actively using a mobile phone: \
 holding it with the screen oriented toward them, tapping, swiping, typing, taking a \
 call, or otherwise clearly operating it. Sustained operation is the whole test. \
@@ -315,7 +339,9 @@ object may be a phone, report it with confidence "low" rather than omitting it. 
 use low confidence to report a stationary, stored, or merely glanced-at phone. Do not \
 count baby monitors or TV remotes as phones if distinguishable.
 3. notable_events — safety-relevant moments (baby unattended on a raised surface, \
-falls, distress ignored), visitors, or milestones.
+falls, distress ignored) or developmental milestones. This is a family home where \
+people come and go: do NOT report someone simply arriving, leaving, or being present. \
+Most hours contain nothing notable, and an empty list is the correct answer then.
 4. summary — 2-3 plain sentences describing this hour. Mention which room this is.
 
 Frames are sampled every few seconds rather than continuously, so treat a brief \
@@ -789,11 +815,22 @@ def build_chunk(parsed, camera, seg_start, minutes, model, usage, room=None):
         if state not in BABY_STATES:
             # Older/looser output: fall back to the boolean we do have.
             state = "unclear" if a.get("baby_visible") else "not_visible"
+        category = a.get("category", "other")
+        # play_types only means anything on a play span, and the model is asked to
+        # omit it elsewhere — but the schema cannot enforce that, so enforce it here.
+        # Unknown values are dropped rather than passed through: the point of a closed
+        # list is that nothing downstream has to defend against a surprise value.
+        play_types = []
+        if category == "play":
+            raw = a.get("play_types")
+            if isinstance(raw, list):
+                play_types = [t for t in raw if t in PLAY_TYPES]
         activities.append({"start_iso": s.isoformat(), "end_iso": e.isoformat(),
-                           "category": a.get("category", "other"),
+                           "category": category,
                            "description": a.get("description", ""),
                            "baby_visible": bool(a.get("baby_visible", False)),
-                           "baby_state": state})
+                           "baby_state": state,
+                           "play_types": play_types})
     for p in parsed.get("phone_use") or []:
         s, e = wall(p.get("start")), wall(p.get("end"))
         # e <= s, not e < s: a zero-length interval is not an observation of

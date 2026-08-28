@@ -165,6 +165,8 @@ CONTEXT_RANK = {"while_holding_baby": 5, "baby_unattended": 4, "baby_nearby_awak
 PERSON_RANK = {"caregiver": 2, "unclear": 1, "other_adult": 0}
 MERGE_GAP_SECONDS = 30
 NOTABLE_MERGE_GAP_SECONDS = 60
+# "visitor" is no longer producible (removed from the analyzer's enum), but it stays
+# ranked so historical reports that still contain them merge and sort as they always did.
 NOTABLE_TYPE_RANK = {"other": 0, "visitor": 1, "milestone": 2, "safety_concern": 3}
 
 
@@ -234,6 +236,113 @@ def _collapse(group):
     if others:
         best["also_seen_by"] = others
     return best
+
+
+# ── Day at a glance ───────────────────────────────────────────────────────────
+#
+# The raw timeline is one row per camera per observed span — 201 of them on
+# 2026-08-27 — because the model loses the thread mid-activity and each camera
+# reports independently. That day's twelve "feeding" spans were three actual
+# feeds, one of them split seven ways between 16:29 and 17:04.
+#
+# So the readable timeline is a merge, not new data: join same-category spans that
+# sit within a category-specific gap, across cameras, and promote only the
+# categories a parent asked to see. Nothing is deleted — the rest becomes coarse
+# with-baby / away bands, and report["timeline"] keeps every original row.
+
+# Widest real intra-feed gap measured on 08-27 was 8 min (13:38→13:46). Ten is
+# safe against over-merging: actual feeds sit ~4h apart at this age.
+CARE_MERGE_GAP_MINUTES = {"feeding": 10, "diaper": 10, "play": 5}
+HEADLINE_CATEGORIES = ("feeding", "diaper", "play")
+# Which of the demoted categories mean the caregiver was WITH the baby. Everything
+# else (housework, eating, resting, out_of_frame) reads as away.
+WITH_BABY_CATEGORIES = ("holding_baby", "sleep_prep")
+
+
+def care_timeline(timeline, naps, gaps=None):
+    """The day's shape: merged feeds/diapers/play, sleep from naps, coarse bands.
+
+    naps is report["naps"] — the crib-monitor/camera fusion — rather than anything
+    re-derived from `timeline`, so sleep has exactly one source of truth.
+    """
+    gaps = gaps or CARE_MERGE_GAP_MINUTES
+    out = []
+
+    by_cat = {}
+    for a in timeline:
+        span = _span(a)
+        if span and a.get("category") in HEADLINE_CATEGORIES:
+            by_cat.setdefault(a["category"], []).append((span, a))
+
+    for cat, items in by_cat.items():
+        items.sort(key=lambda it: it[0][0])
+        gap = timedelta(minutes=gaps.get(cat, 5))
+        run = []
+        for span, a in items:
+            if run and span[0] - max(s[1] for s, _ in run) <= gap:
+                run.append((span, a))
+            else:
+                if run:
+                    out.append(_fold_run(cat, run))
+                run = [(span, a)]
+        if run:
+            out.append(_fold_run(cat, run))
+
+    for s, e in naps:
+        out.append({"kind": "sleep", "category": "sleep",
+                    "start_iso": s.isoformat(), "end_iso": e.isoformat(),
+                    "minutes": round(total_minutes([(s, e)]), 1),
+                    "parts": 1, "cameras": [], "play_types": [], "description": ""})
+
+    out.sort(key=lambda r: r["start_iso"])
+    return {"events": out, "bands": _care_bands(timeline)}
+
+
+def _fold_run(category, run):
+    """One merged care event from the fragments that make it up."""
+    start = min(s[0] for s, _ in run)
+    end = max(s[1] for s, _ in run)
+    play_types, cameras, descriptions = [], [], []
+    for _, a in run:
+        for t in a.get("play_types") or []:
+            if t not in play_types:
+                play_types.append(t)
+        cam = a.get("camera")
+        if cam and cam not in cameras:
+            cameras.append(cam)
+        d = (a.get("description") or "").strip()
+        if d and d not in descriptions:
+            descriptions.append(d)
+    return {
+        "kind": "care", "category": category,
+        "start_iso": start.isoformat(), "end_iso": end.isoformat(),
+        "minutes": round(total_minutes([(start, end)]), 1),
+        # How many fragments this came from — a run of 7 is worth knowing when
+        # judging whether the merge window is right.
+        "parts": len(run),
+        "cameras": cameras,
+        "play_types": play_types,
+        # The longest fragment description carries the most detail; the rest are
+        # near-duplicates of it.
+        "description": max(descriptions, key=len) if descriptions else "",
+    }
+
+
+def _care_bands(timeline):
+    """Everything not promoted, as two unioned bands. Demoted, never dropped."""
+    with_baby, away = [], []
+    for a in timeline:
+        span = _span(a)
+        cat = a.get("category")
+        if not span or cat in HEADLINE_CATEGORIES:
+            continue
+        (with_baby if cat in WITH_BABY_CATEGORIES else away).append(span)
+    return {
+        "with_baby": [{"start_iso": s.isoformat(), "end_iso": e.isoformat()}
+                      for s, e in union_intervals(with_baby)],
+        "away": [{"start_iso": s.isoformat(), "end_iso": e.isoformat()}
+                 for s, e in union_intervals(away)],
+    }
 
 
 def merge_notable_events(events, gap_seconds=NOTABLE_MERGE_GAP_SECONDS):
@@ -949,6 +1058,9 @@ def build_report(day, chunks, cameras, window, rooms=None, config_errors=None,
         "care": activity_metrics(day, chunks, rooms, window),
         "attendance": attendance_metrics(day, chunks, rooms, naps, window),
         "timeline": timeline,
+        # The readable view. `timeline` stays exactly as it was so the full log and
+        # every existing metric keep working off it.
+        "care_timeline": care_timeline(timeline, naps),
         "phone_use": {"events": phone_events, **phone_stats,
                       "unauthorized_intervals": [
                           {"start_iso": s.isoformat(), "end_iso": e.isoformat()}

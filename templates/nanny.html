@@ -125,6 +125,41 @@
     .touch-note[hidden] { display: none; }
     .foot { font-size: .78rem; color: var(--text-muted); line-height: 1.5; }
     .empty { text-align: center; color: var(--text-muted); padding: 40px 0; }
+
+    /* ── Day at a glance ── */
+    .care-row {
+      display: flex; align-items: baseline; gap: 10px;
+      padding: 7px 0; border-top: 1px solid var(--cream-2);
+    }
+    .care-row:first-of-type { border-top: none; }
+    .care-time {
+      font-variant-numeric: tabular-nums; font-size: .82rem;
+      color: var(--text-muted); white-space: nowrap; min-width: 8.4em;
+    }
+    .care-what { font-size: .92rem; font-weight: 600; flex: 1; }
+    .care-dur {
+      font-size: .78rem; color: var(--text-muted);
+      font-variant-numeric: tabular-nums; white-space: nowrap;
+    }
+    /* Sleep is the one row that reads as a block of the day rather than a moment. */
+    .care-sleep .care-what { color: var(--sleep); }
+    .care-feeding .care-what { color: var(--feed); }
+    .care-badges { display: flex; flex-wrap: wrap; gap: 5px; margin: 0 0 4px 8.4em; }
+    .play-badge {
+      font-size: .7rem; font-weight: 600; padding: 2px 8px; border-radius: 999px;
+      background: var(--play-a); color: var(--play);
+    }
+    .care-desc {
+      font-size: .78rem; color: var(--text-muted); margin: 0 0 6px 8.4em;
+      line-height: 1.45;
+    }
+    .care-bands {
+      margin-top: 10px; padding-top: 9px; border-top: 1px solid var(--cream-2);
+      font-size: .78rem; color: var(--text-muted);
+    }
+    @media (max-width: 420px) {
+      .care-badges, .care-desc { margin-left: 0; }
+    }
   </style>
 </head>
 <body>
@@ -200,6 +235,18 @@ const CATEGORY_LABELS = {
   feeding: "Feeding", diaper: "Diaper", play: "Play", holding_baby: "Holding baby",
   sleep_prep: "Sleep prep", housework: "Housework", eating: "Eating",
   resting: "Resting", out_of_frame: "Caregiver out of frame", other: "Other",
+};
+
+const CARE_LABELS = {
+  feeding: "Feed", diaper: "Diaper", play: "Play", sleep: "Sleep",
+};
+const CARE_ICONS = {
+  feeding: "🍼", diaper: "💩", play: "🧸", sleep: "😴",
+};
+const PLAY_LABELS = {
+  tummy_time: "Tummy time", floor_toys: "Floor toys", books: "Books",
+  singing_talking: "Singing / talking", held_interactive: "Held — interactive",
+  held_passive: "Held — passive", outdoor: "Outdoor", other: "Other play",
 };
 
 const CONTEXT_LABELS = {
@@ -496,8 +543,47 @@ function render(report, status, trend) {
     contentEl.append(c);
   }
 
+  // Day at a glance. The full log below stays exactly as it was — this is the
+  // merged view of the same data, since one feed arrives as up to seven fragments.
+  const ct = report.care_timeline;
+  if (ct && ct.events && ct.events.length) {
+    const g = el("div", "card");
+    g.append(el("h2", null, "Day at a glance"));
+    for (const e of ct.events) {
+      const row = el("div", "care-row care-" + e.category);
+      // Diapers are instants in practice — several ran under a minute, and a
+      // "17:00–17:00" range reads as a bug rather than a quick change.
+      const instant = e.category === "diaper" && e.minutes < 2;
+      row.append(el("span", "care-time",
+        instant ? fmtTime(e.start_iso)
+                : fmtTime(e.start_iso) + "–" + fmtTime(e.end_iso)));
+      row.append(el("span", "care-what",
+        (CARE_ICONS[e.category] || "") + " " + (CARE_LABELS[e.category] || e.category)));
+      row.append(el("span", "care-dur", instant ? "" : fmtMin(e.minutes)));
+      g.append(row);
+
+      if (e.play_types && e.play_types.length) {
+        const badges = el("div", "care-badges");
+        for (const t of e.play_types) {
+          badges.append(el("span", "play-badge", PLAY_LABELS[t] || t));
+        }
+        g.append(badges);
+      }
+      if (e.description) g.append(el("div", "care-desc", e.description));
+    }
+    const b = ct.bands || {};
+    const mins = list => (list || []).reduce((a, s) =>
+      a + (new Date(s.end_iso) - new Date(s.start_iso)) / 60000, 0);
+    // "elsewhere", not "away": most of this band is out_of_frame, which means not
+    // in THIS camera's view — the caregiver may well be with the baby in another room.
+    g.append(el("div", "care-bands",
+      `The rest of the day: ${fmtMin(mins(b.with_baby))} holding or settling her · ` +
+      `${fmtMin(mins(b.away))} housework, breaks, or elsewhere in the house`));
+    contentEl.append(g);
+  }
+
   const tl = el("details", "card");
-  tl.append(el("summary", "h2-summary", "Timeline · " + report.timeline.length + " spans"));
+  tl.append(el("summary", "h2-summary", "Full log · " + report.timeline.length + " spans"));
   const naps = (report.naps || []).slice();
   let napIdx = 0, lastHour = null, group = null;
   for (const span of report.timeline) {

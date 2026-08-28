@@ -543,6 +543,68 @@ def test_phone_prompt_requires_active_use():
           in prompt)
 
 
+def test_visitors_are_no_longer_reported():
+    print("visitors are not an event type")
+    prompt = nanny_analyze.PROMPT.lower()
+    types = nanny_analyze.CHUNK_SCHEMA["properties"]["notable_events"]["items"] \
+        ["properties"]["type"]["enum"]
+    # In a family home people come and go constantly: this produced ~9 events a
+    # day, 100% of 2026-08-27's notable events, each cutting an unwatched clip.
+    check("removed from the enum", "visitor" not in types, str(types))
+    check("safety and milestones survive",
+          "safety_concern" in types and "milestone" in types, str(types))
+    check("the prompt tells it not to report arrivals",
+          "do not report someone simply arriving" in prompt)
+    check("an empty list is named as correct",
+          "empty list is the correct answer" in prompt)
+
+
+def test_play_types_are_a_closed_list():
+    print("play detail is a fixed list, not free text")
+    prompt = nanny_analyze.PROMPT.lower()
+    check("enum reaches the schema",
+          nanny_analyze.CHUNK_SCHEMA["properties"]["activities"]["items"]
+          ["properties"]["play_types"]["items"]["enum"] == nanny_analyze.PLAY_TYPES)
+    # Structured output cannot say "required only when category is play", so it
+    # must stay optional or every non-play activity would be forced to invent one.
+    check("not required at the schema level",
+          "play_types" not in nanny_analyze.CHUNK_SCHEMA["properties"]["activities"]
+          ["items"]["required"])
+    # The lesson from the 8-second phone events: permissive wording invents detail.
+    check("the prompt offers an explicit way out",
+          "return an empty list" in prompt and "better than a guess" in prompt)
+
+    seg = datetime(2026, 8, 27, 14, 0, 0)
+
+    def a(cat, start, end, play_types=None):
+        d = {"start": start, "end": end, "category": cat, "description": "x",
+             "baby_visible": True, "baby_state": "awake"}
+        if play_types is not None:
+            d["play_types"] = play_types
+        return d
+
+    chunk = nanny_analyze.build_chunk(
+        {"phone_use": [], "notable_events": [], "summary": "",
+         "activities": [
+             a("play", "13:00", "21:00", ["tummy_time", "floor_toys"]),
+             a("play", "22:00", "26:00", ["tummy_time", "not_a_real_type"]),
+             a("play", "27:00", "29:00", []),
+             # The model was told to omit it here; if it does not, drop it —
+             # nothing downstream should have to defend against play detail on
+             # a diaper change.
+             a("diaper", "30:00", "32:00", ["books"]),
+             a("housework", "33:00", "35:00"),
+         ]},
+        "nurserycam", seg, 60, "m", {})
+
+    got = [(x["category"], x["play_types"]) for x in chunk["activities"]]
+    check("valid types kept", got[0] == ("play", ["tummy_time", "floor_toys"]), str(got[0]))
+    check("unknown values dropped", got[1] == ("play", ["tummy_time"]), str(got[1]))
+    check("empty stays empty", got[2] == ("play", []), str(got[2]))
+    check("stripped from a non-play activity", got[3] == ("diaper", []), str(got[3]))
+    check("absent field defaults to empty", got[4] == ("housework", []), str(got[4]))
+
+
 def test_phone_events_have_a_duration_floor():
     print("sub-minute phone blips never reach the report")
     seg = datetime(2026, 8, 11, 17, 0, 0)
@@ -599,7 +661,8 @@ def main():
                test_server_errors_drop_fps, test_daily_quota_ends_the_run,
                test_poll_schedule_is_cheap, test_key_moment_clipping,
                test_key_moment_validation, test_phone_prompt_requires_active_use,
-               test_phone_events_have_a_duration_floor):
+               test_phone_events_have_a_duration_floor,
+               test_visitors_are_no_longer_reported, test_play_types_are_a_closed_list):
         fn()
     print()
     if FAILURES:

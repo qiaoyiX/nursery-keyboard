@@ -976,6 +976,73 @@ def test_merge_phone_events():
     check("unusable events pass through", len(R.merge_phone_events(bad)) == 1)
 
 
+def test_care_timeline():
+    print("day at a glance merges the model's fragments")
+    from nanny_report import care_timeline
+    d = datetime(2026, 8, 27)
+    def t(h, m): return d.replace(hour=h, minute=m).isoformat()
+    def act(cat, s, e, cam="nurserycam", **kw):
+        return {"category": cat, "start_iso": s, "end_iso": e, "camera": cam,
+                "room": "nursery", "description": kw.pop("desc", ""), **kw}
+
+    # The real 2026-08-27 feeding spans: three actual feeds arriving as twelve
+    # fragments, the last one split seven ways.
+    feeds = [(10, 2, 10, 19),
+             (13, 33, 13, 38), (13, 46, 13, 58), (14, 0, 14, 2), (14, 3, 14, 8),
+             (16, 29, 16, 33), (16, 33, 16, 35), (16, 40, 16, 52), (16, 52, 16, 53),
+             (16, 53, 16, 57), (16, 58, 17, 0), (17, 3, 17, 4)]
+    timeline = [act("feeding", t(a, b), t(c, e)) for a, b, c, e in feeds]
+    # Same play session seen by both nursery cameras — activities are the one event
+    # family that never got a cross-camera merge before this.
+    timeline += [act("play", t(14, 13), t(14, 21), play_types=["tummy_time"],
+                     desc="on the mat"),
+                 act("play", t(14, 14), t(14, 20), cam="nurserycam2",
+                     play_types=["floor_toys"], desc="reaching for a rattle toy")]
+    timeline += [act("housework", t(11, 0), t(11, 30)),
+                 act("holding_baby", t(12, 0), t(12, 40)),
+                 act("out_of_frame", t(15, 0), t(15, 20))]
+    naps = [(d.replace(hour=11, minute=28), d.replace(hour=12, minute=26))]
+
+    ct = care_timeline(timeline, naps)
+    ev = ct["events"]
+    feed_rows = [e for e in ev if e["category"] == "feeding"]
+    check("twelve feeding fragments become three feeds",
+          len(feed_rows) == 3, f"got {len(feed_rows)}")
+    seven = [e for e in feed_rows if e["parts"] == 7]
+    check("the seven-way 16:29-17:04 feed merges to one",
+          len(seven) == 1 and seven[0]["start_iso"] == t(16, 29)
+          and seven[0]["end_iso"] == t(17, 4), str(seven))
+    # Real feeds sit ~4h apart at this age, so the 10-minute window must never
+    # reach across them — a merged 10:02-17:04 "feed" would be worse than fragments.
+    check("feeds hours apart stay separate",
+          [e["start_iso"] for e in feed_rows] == [t(10, 2), t(13, 33), t(16, 29)],
+          str([e["start_iso"] for e in feed_rows]))
+
+    play = [e for e in ev if e["category"] == "play"]
+    check("both cameras' view of one play session merge", len(play) == 1, str(len(play)))
+    check("play types union across cameras",
+          sorted(play[0]["play_types"]) == ["floor_toys", "tummy_time"],
+          str(play[0]["play_types"]))
+    check("both cameras credited", sorted(play[0]["cameras"]) ==
+          ["nurserycam", "nurserycam2"], str(play[0]["cameras"]))
+    check("the fullest description wins",
+          play[0]["description"] == "reaching for a rattle toy", play[0]["description"])
+
+    sleep = [e for e in ev if e["category"] == "sleep"]
+    check("sleep comes from naps, not the timeline",
+          len(sleep) == 1 and sleep[0]["start_iso"] == t(11, 28), str(sleep))
+    check("events are in time order",
+          [e["start_iso"] for e in ev] == sorted(e["start_iso"] for e in ev))
+
+    # Demoted, never dropped: the parent should still be able to account for the day.
+    b = ct["bands"]
+    check("holding folds into the with-baby band", len(b["with_baby"]) == 1)
+    check("housework and out-of-frame fold into the other band",
+          len(b["away"]) == 2, str(b["away"]))
+    check("no headline category leaks into the bands",
+          not any(x["start_iso"] == t(10, 2) for x in b["with_baby"] + b["away"]))
+
+
 def test_merge_notable_events():
     print("two camera descriptions of one notable incident are one finding")
     import nanny_report as R
@@ -1310,6 +1377,7 @@ def main():
                test_coverage_counts_failed_pieces, test_room_decision_coverage,
                test_day_verdict, test_retention,
                test_notable_clips_survive_pruning, test_context_staleness_is_a_warning,
+               test_care_timeline,
                test_neon_reports_are_an_archive):
         fn()
     print()
