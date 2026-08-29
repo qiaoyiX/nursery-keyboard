@@ -538,6 +538,14 @@ def test_phone_prompt_requires_active_use():
     # scored as 24 seconds of unauthorized use. It must not come back.
     check("the reach-for loophole is gone",
           "unless the adult reaches for or operates it" not in prompt)
+    # 2026-08-28: six "high" confidence events, one of which described itself as
+    # "operates their phone while bottle-feeding". Across five days, 8 of 21 events
+    # sat inside a feed — the shape of an object confusion, not a habit.
+    check("the bottle is named", "bottle" in prompt)
+    check("other chest-height objects named",
+          "burp cloth" in prompt and "muslin" in prompt)
+    check("feeding is not phone use", "feeding a bottle is feeding" in prompt)
+    check("doubt resolves against a phone", "it is not a phone" in prompt)
     check("low confidence cannot revive a stored phone false positive",
           "never use low confidence to report a stationary, stored, or merely glanced-at phone"
           in prompt)

@@ -100,7 +100,7 @@ def main():
                 conn.rollback()
                 print("No foods table in Neon — skipping the food list.")
 
-            truth = {"verdicts": {}, "missed": []}
+            truth = {"verdicts": {}, "missed": [], "phone": {}}
             try:
                 cur.execute("""SELECT kind, ref, ends, value, labeled_at
                                FROM sleep_truth ORDER BY ref""")
@@ -108,6 +108,8 @@ def main():
                     stamp = at.isoformat() if at else None
                     if kind == "verdict":
                         truth["verdicts"][ref] = {"verdict": value, "labeled_at": stamp}
+                    elif kind == "phone_verdict":
+                        truth["phone"][ref] = {"verdict": value, "labeled_at": stamp}
                     elif kind == "missed" and ends:
                         mins = None
                         try:
@@ -136,7 +138,7 @@ def main():
     _atomic_write(SLEEP_FILE, sessions)
     if foods:
         _atomic_write(FOODS_FILE, foods)
-    if truth['verdicts'] or truth['missed']:
+    if truth['verdicts'] or truth['missed'] or truth['phone']:
         _atomic_write(SLEEP_TRUTH_FILE, truth)
 
     written = 0
@@ -154,7 +156,7 @@ def main():
     print(f"Exported {len(sessions)} sleep sessions -> {SLEEP_FILE}")
     if foods:
         print(f"Exported {len(foods)} foods -> {FOODS_FILE}")
-    if truth["verdicts"] or truth["missed"]:
+    if truth["verdicts"] or truth["missed"] or truth["phone"]:
         n_v, n_m = len(truth["verdicts"]), len(truth["missed"])
         print(f"Exported {n_v} verdicts + {n_m} missed -> {SLEEP_TRUTH_FILE}")
     if reports:

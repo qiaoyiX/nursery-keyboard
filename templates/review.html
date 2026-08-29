@@ -52,6 +52,7 @@
        false alarms are the ones you look at first. */
     .blk.suspect .blk-time { color: var(--danger); }
     .blk-hint { font-size: 0.72rem; color: var(--danger); margin-top: 2px; }
+    .blk-hint2 { font-size: 0.76rem; color: var(--text-muted); margin-top: 3px; line-height: 1.4; }
 
     .choices { display: flex; gap: 8px; margin-top: 9px; flex-wrap: wrap; }
     .choice {
@@ -115,6 +116,11 @@
   <div class="card">
     <h2>What it recorded</h2>
     <div id="blocks"></div>
+  </div>
+
+  <div class="card" id="phoneCard" hidden>
+    <h2>Phone events</h2>
+    <div id="phone"></div>
   </div>
 
   <div class="card">
@@ -234,6 +240,38 @@
         wrap.appendChild(row);
       }
 
+      // Phone events, from that day's nanny report. Hidden entirely on days with
+      // no report, rather than showing an empty section that looks broken.
+      const pc = $("phoneCard"), pw = $("phone");
+      pw.replaceChildren();
+      pc.hidden = !(data.phone && data.phone.length);
+      for (const p of (data.phone || [])) {
+        const row = el("div", "blk");
+        const top = el("div", "blk-top");
+        const secs = p.end_iso
+          ? (new Date(p.end_iso) - new Date(p.start_iso)) / 1000 : 0;
+        top.appendChild(el("span", "blk-time", hm(p.start_iso)));
+        top.appendChild(el("span", "blk-dur", secs ? dur(secs / 60) : ""));
+        if (p.authorization === "unauthorized") {
+          top.appendChild(el("span", "blk-why", "flagged"));
+        }
+        row.appendChild(top);
+        if (p.description) row.appendChild(el("div", "blk-hint2", p.description));
+
+        const choices = el("div", "choices");
+        for (const [val, cls, label] of [["correct", "yes", "✓ Was a phone"],
+                                         ["not_a_phone", "no", "✗ Not a phone"],
+                                         ["not_caregiver", "out", "Someone else"]]) {
+          const btn = el("button", "choice " + cls, label);
+          btn.type = "button";
+          btn.setAttribute("aria-pressed", p.verdict === val ? "true" : "false");
+          btn.onclick = () => setPhone(p.event_start, val, choices, btn);
+          choices.appendChild(btn);
+        }
+        row.appendChild(choices);
+        pw.appendChild(row);
+      }
+
       const mw = $("missed");
       mw.replaceChildren();
       if (!data.missed.length) {
@@ -265,6 +303,20 @@
         const res = await fetch("/review/verdict", {
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ session_start: sessionStart, verdict })
+        });
+        if (!res.ok) { showToast("Could not save"); return; }
+        for (const b of group.children) b.setAttribute("aria-pressed", "false");
+        btn.setAttribute("aria-pressed", "true");
+        if (navigator.vibrate) navigator.vibrate(12);
+        load();
+      } catch (e) { showToast("Could not save"); }
+    }
+
+    async function setPhone(eventStart, verdict, group, btn) {
+      try {
+        const res = await fetch("/review/phone", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ event_start: eventStart, verdict })
         });
         if (!res.ok) { showToast("Could not save"); return; }
         for (const b of group.children) b.setAttribute("aria-pressed", "false");

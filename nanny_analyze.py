@@ -337,7 +337,14 @@ seconds either side of it as the evidence for this event, not the whole interval
 conservative about identity only after active use is visible: if an actively handled \
 object may be a phone, report it with confidence "low" rather than omitting it. Never \
 use low confidence to report a stationary, stored, or merely glanced-at phone. Do not \
-count baby monitors or TV remotes as phones if distinguishable.
+count baby monitors or TV remotes as phones if distinguishable. \
+A caregiver seated with the baby in her arms is holding something almost every time, \
+and from an overhead camera most of those things read as a dark rectangle: a BOTTLE, \
+a burp cloth or muslin, a book, a dummy, her own or the baby's hand. Feeding a bottle \
+is FEEDING, not phone use. Do not report a phone during a feed, or while the baby is \
+being held, unless you can see the phone itself — a lit screen, or the device held up \
+and operated clear of the baby. When in doubt about an object in the hands of someone \
+holding the baby, it is not a phone.
 3. notable_events — safety-relevant moments (baby unattended on a raised surface, \
 falls, distress ignored) or developmental milestones. This is a family home where \
 people come and go: do NOT report someone simply arriving, leaving, or being present. \

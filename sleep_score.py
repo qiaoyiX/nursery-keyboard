@@ -264,6 +264,23 @@ def truth_report(days=30, now=None):
         "by_reason": dict(sorted(by_reason.items(),
                                  key=lambda kv: -kv[1]["wrong"])),
         "proposal": propose_threshold(labelled),
+        # No threshold to sweep for phone — there is no numeric knob — but the rate
+        # is the only way to tell whether a prompt change actually helped.
+        "phone": _phone_accuracy(truth.get("phone") or {}, cutoff),
+    }
+
+
+def _phone_accuracy(phone_verdicts, cutoff):
+    recent = {k: v for k, v in phone_verdicts.items() if k >= cutoff}
+    n = len(recent)
+    wrong = sum(1 for v in recent.values() if v.get("verdict") == "not_a_phone")
+    return {
+        "labelled": n,
+        "confirmed": sum(1 for v in recent.values() if v.get("verdict") == "correct"),
+        "not_a_phone": wrong,
+        "not_caregiver": sum(1 for v in recent.values()
+                             if v.get("verdict") == "not_caregiver"),
+        "false_alarm_rate": round(wrong / n, 3) if n else None,
     }
 
 
@@ -312,6 +329,14 @@ def print_truth_report(rep):
         for reason, b in rep["by_reason"].items():
             print(f"    {reason:22} {b['wrong']:2d} wrong of {b['n']:2d}"
                   + (f"   ({b['minutes_wrong']:.0f} min)" if b["wrong"] else ""))
+    ph = rep.get("phone") or {}
+    if ph.get("labelled"):
+        print(f"\n  phone events checked {ph['labelled']}")
+        print(f"    not a phone        {ph['not_a_phone']}"
+              + (f"  ({ph['false_alarm_rate']*100:.0f}%)"
+                 if ph.get("false_alarm_rate") is not None else ""))
+        print(f"    someone else       {ph['not_caregiver']}")
+
     p = rep["proposal"]
     print("\n  proposal: " + ("not yet — " + p["reason"] if not p["ready"] else p["reason"]))
     if p.get("change"):

@@ -18,6 +18,7 @@ from storage import (
     read_sleep_status,
     add_food, set_food_reaction, get_foods,
     set_sleep_verdict, add_missed_sleep, delete_missed_sleep, get_sleep_truth,
+    set_phone_verdict,
 )
 
 try:
@@ -826,11 +827,43 @@ def review_data():
 
     missed = [m for m in truth["missed"]
               if day_start.isoformat() <= m["start"] < day_end.isoformat()]
+
+    # Phone events come from that day's nanny report rather than storage — the
+    # model's own confidence is useless here (every event on 2026-08-28 was "high",
+    # several of them a bottle held during a feed), so the parent's call is the
+    # only signal worth recording.
+    phone = []
+    from nanny_common import REPORTS_DIR
+    report_path = os.path.join(REPORTS_DIR, f"{day.isoformat()}.json")
+    if os.path.exists(report_path):
+        try:
+            with open(report_path) as f:
+                report = json.load(f) or {}
+            for ev in ((report.get("phone_use") or {}).get("events") or []):
+                key = ev.get("start_iso")
+                if not key:
+                    continue
+                phone.append({
+                    "event_start": key,
+                    "start_iso": key,
+                    "end_iso": ev.get("end_iso"),
+                    "minutes": ev.get("unauthorized_minutes"),
+                    "context": ev.get("context"),
+                    "authorization": ev.get("authorization"),
+                    "description": ev.get("description") or "",
+                    "camera": ev.get("room") or ev.get("camera"),
+                    "verdict": (truth["phone"].get(key) or {}).get("verdict"),
+                })
+        except (OSError, ValueError):
+            pass                      # an unreadable report costs phone labelling, not the page
+
     return jsonify({
         "date": day.isoformat(),
         "blocks": blocks,
         "missed": sorted(missed, key=lambda m: m["start"]),
         "labeled": sum(1 for b in blocks if b["verdict"]),
+        "phone": sorted(phone, key=lambda p: p["start_iso"]),
+        "phone_labeled": sum(1 for p in phone if p["verdict"]),
     })
 
 
@@ -840,6 +873,15 @@ def review_verdict():
     rec = set_sleep_verdict(data.get("session_start"), data.get("verdict"))
     if rec is None:
         return jsonify({"error": "bad session_start or verdict"}), 400
+    return jsonify({"ok": True, **rec})
+
+
+@app.route("/review/phone", methods=["POST"])
+def review_phone_verdict():
+    data = request.get_json(silent=True) or {}
+    rec = set_phone_verdict(data.get("event_start"), data.get("verdict"))
+    if rec is None:
+        return jsonify({"error": "bad event_start or verdict"}), 400
     return jsonify({"ok": True, **rec})
 
 

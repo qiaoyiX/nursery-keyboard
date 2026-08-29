@@ -520,6 +520,10 @@ def get_foods():
 # wrong session.
 
 TRUTH_VERDICTS = ("correct", "false_alarm", "not_in_crib")
+# Phone detections need the same treatment for a different reason: the model's own
+# confidence is worthless here (every event on 2026-08-28 was "high", and several
+# were a bottle held during a feed), so the parent's verdict is the only signal.
+PHONE_VERDICTS = ("correct", "not_a_phone", "not_caregiver")
 
 
 def _load_truth():
@@ -528,10 +532,15 @@ def _load_truth():
             with open(SLEEP_TRUTH_FILE) as f:
                 data = json.load(f)
             if isinstance(data, dict):
+                # setdefault, not a rewrite: a file written before phone verdicts
+                # existed must keep working without a migration step.
+                data.setdefault("verdicts", {})
+                data.setdefault("missed", [])
+                data.setdefault("phone", {})
                 return data
         except json.JSONDecodeError:
             logging.warning("sleep_truth.json is corrupt — starting over")
-    return {"verdicts": {}, "missed": []}
+    return {"verdicts": {}, "missed": [], "phone": {}}
 
 
 def _save_truth_atomic(data):
@@ -586,6 +595,26 @@ def delete_missed_sleep(start):
         if len(data["missed"]) != before:
             _save_truth_atomic(data)
         return before - len(data["missed"])
+
+
+def set_phone_verdict(event_start, verdict, now=None):
+    """Label one detected phone event. Returns the record, or None if invalid.
+
+    Keyed on the merged event's start_iso for the same reason sleep verdicts key on
+    start_time: phone events have no stable id, and the report is rebuilt each night.
+    """
+    if verdict not in PHONE_VERDICTS or not event_start:
+        return None
+    try:
+        datetime.fromisoformat(str(event_start))
+    except ValueError:
+        return None
+    rec = {"verdict": verdict, "labeled_at": (now or datetime.now()).isoformat()}
+    with truth_lock:
+        data = _load_truth()
+        data["phone"][str(event_start)] = rec
+        _save_truth_atomic(data)
+    return {"event_start": str(event_start), **rec}
 
 
 def get_sleep_truth():

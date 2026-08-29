@@ -246,6 +246,10 @@ def main():
                           for ref, v in (truth.get("verdicts") or {}).items()]
             truth_rows += [("missed", m["start"], m["end"], None, m.get("labeled_at"))
                            for m in (truth.get("missed") or [])]
+            # Same table: the kind column was added precisely so a new sort of
+            # verdict needs no migration.
+            truth_rows += [("phone_verdict", ref, None, v.get("verdict"), v.get("labeled_at"))
+                           for ref, v in (truth.get("phone") or {}).items()]
             synced_truth = len(truth_rows)
             if truth_rows:
                 try:
