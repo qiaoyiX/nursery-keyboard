@@ -1043,6 +1043,73 @@ def test_care_timeline():
           not any(x["start_iso"] == t(10, 2) for x in b["with_baby"] + b["away"]))
 
 
+def test_care_timeline_has_one_truth_per_moment():
+    print("one thing at a time, inside the shift")
+    from nanny_report import care_timeline
+    d = datetime(2026, 8, 28)
+    win = (dtime(10, 0), dtime(18, 0))
+    def t(h, m, sec=0): return d.replace(hour=h, minute=m, second=sec).isoformat()
+    def act(cat, s, e, cam="nurserycam", room="nursery"):
+        return {"category": cat, "start_iso": s, "end_iso": e, "camera": cam,
+                "room": room, "description": ""}
+
+    # The real 2026-08-28 contradiction: the crib monitor called a nap from 16:28
+    # to 17:03 while cameras watched play, a diaper change and more play inside it.
+    naps = [(d.replace(hour=16, minute=28), d.replace(hour=17, minute=3)),
+            (d.replace(hour=1, minute=0), d.replace(hour=4, minute=0))]   # overnight
+    timeline = [
+        act("play",   t(16, 37), t(16, 52)),
+        act("diaper", t(16, 52), t(17, 17)),
+        act("play",   t(16, 57), t(16, 59), cam="nurserycam2"),
+        # Two cameras on one moment at different specificity — 71 of these a day.
+        act("feeding", t(10, 7), t(10, 8)),
+        act("holding_baby", t(10, 7), t(10, 11), cam="nurserycam2"),
+        # Same rank, wildly different length: a 32s "diaper" inside a 35m feed.
+        act("feeding", t(11, 0), t(11, 35)),
+        act("diaper",  t(11, 20), t(11, 20, 32)),
+    ]
+    ev = care_timeline(timeline, naps, window=win, day=d.date())["events"]
+
+    # The invariant this whole change exists to create.
+    pairs = [(a, b) for i, a in enumerate(ev) for b in ev[i + 1:]
+             if b["start_iso"] < a["end_iso"]]
+    check("no two events overlap", not pairs,
+          str([(a["category"], b["category"]) for a, b in pairs][:3]))
+    check("everything is inside 10:00-18:00",
+          all("10:00" <= e["start_iso"][11:16] < "18:00" for e in ev),
+          str([e["start_iso"][11:16] for e in ev]))
+    check("the overnight nap is off the card",
+          not any(e["category"] == "sleep" and e["start_iso"][11:16] < "10:00" for e in ev))
+
+    sleeps = [e for e in ev if e["category"] == "sleep"]
+    check("the contradicted nap is trimmed, not deleted",
+          len(sleeps) == 1 and sleeps[0]["end_iso"] == t(16, 37),
+          str([(s["start_iso"][11:16], s["end_iso"][11:16]) for s in sleeps]))
+
+    # holding_baby never competes for a row — it is a demoted category and lands in
+    # the bands — so the feeding survives the moment intact.
+    at_1007 = [e for e in ev if e["start_iso"] == t(10, 7)]
+    check("the specific act keeps the moment", len(at_1007) == 1
+          and at_1007[0]["category"] == "feeding", str(at_1007))
+    check("the generic view is demoted, not shown as a rival row",
+          not any(e["category"] == "holding_baby" for e in ev))
+
+    # Where two headline categories really do collide, rank decides. This is the
+    # only such collision that reaches the card: 4 diaper-vs-play pairs on 08-28.
+    ev2 = care_timeline(
+        [act("play", t(15, 20), t(15, 40)), act("diaper", t(15, 18), t(15, 25))],
+        [], window=win, day=d.date())["events"]
+    check("diaper outranks play where they overlap",
+          [(e["category"], e["start_iso"][11:16], e["end_iso"][11:16]) for e in ev2]
+          == [("diaper", "15:18", "15:25"), ("play", "15:25", "15:40")],
+          str([(e["category"], e["start_iso"][11:16], e["end_iso"][11:16]) for e in ev2]))
+
+    check("a 32-second diaper does not split a 35-minute feed",
+          any(e["category"] == "feeding" and e["start_iso"] == t(11, 0)
+              and e["end_iso"] == t(11, 35) for e in ev),
+          str([(e["category"], e["start_iso"][11:19], e["end_iso"][11:19]) for e in ev]))
+
+
 def test_merge_notable_events():
     print("two camera descriptions of one notable incident are one finding")
     import nanny_report as R
@@ -1377,7 +1444,7 @@ def main():
                test_coverage_counts_failed_pieces, test_room_decision_coverage,
                test_day_verdict, test_retention,
                test_notable_clips_survive_pruning, test_context_staleness_is_a_warning,
-               test_care_timeline,
+               test_care_timeline, test_care_timeline_has_one_truth_per_moment,
                test_neon_reports_are_an_archive):
         fn()
     print()

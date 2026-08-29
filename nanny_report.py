@@ -258,9 +258,34 @@ HEADLINE_CATEGORIES = ("feeding", "diaper", "play")
 # else (housework, eating, resting, out_of_frame) reads as away.
 WITH_BABY_CATEGORIES = ("holding_baby", "sleep_prep")
 
+# How specific an observation is, for deciding which of two cameras is right about
+# the same moment. Extends the CONTEXT_RANK idea above from phone contexts to
+# activities: on 2026-08-28 the cameras disagreed 71 times, and almost none were
+# contradictions — one camera saw "feeding" while the other saw "holding_baby",
+# which is the same act described at two levels. The more specific one knows more.
+CATEGORY_RANK = {
+    "feeding": 5, "diaper": 5,          # the act itself
+    "play": 4, "sleep_prep": 4,         # a named activity
+    "holding_baby": 3,                  # a posture that contains all of the above
+    "resting": 2, "eating": 2, "housework": 2,   # the caregiver, not the baby
+    "other": 1,
+    "out_of_frame": 0,                  # an absence of information
+}
+# Camera-observed handling that a baby asleep in the crib cannot be receiving.
+HANDLING_CATEGORIES = ("feeding", "diaper", "play")
+# A nap trimmed below this by the rule above is noise, not a nap.
+MIN_NAP_AFTER_TRIM_MINUTES = 5
 
-def care_timeline(timeline, naps, gaps=None):
-    """The day's shape: merged feeds/diapers/play, sleep from naps, coarse bands.
+
+def care_timeline(timeline, naps, window=None, day=None, gaps=None):
+    """The day's shape: one row per thing that happened, in sequence, no overlaps.
+
+    Three rules decide the single truth when sources disagree, in order:
+      1. the most specific observation of a moment wins (CATEGORY_RANK)
+      2. camera-observed handling beats crib-monitor sleep — she cannot be fed or
+         changed while asleep in the crib, and the monitor infers sleep from
+         stillness alone
+      3. whatever survives is clipped to the care window
 
     naps is report["naps"] — the crib-monitor/camera fusion — rather than anything
     re-derived from `timeline`, so sleep has exactly one source of truth.
@@ -288,14 +313,77 @@ def care_timeline(timeline, naps, gaps=None):
         if run:
             out.append(_fold_run(cat, run))
 
-    for s, e in naps:
-        out.append({"kind": "sleep", "category": "sleep",
-                    "start_iso": s.isoformat(), "end_iso": e.isoformat(),
-                    "minutes": round(total_minutes([(s, e)]), 1),
-                    "parts": 1, "cameras": [], "play_types": [], "description": ""})
+    # Rule 1: the more specific camera wins where two overlap and disagree.
+    out = _resolve_overlaps(out)
 
-    out.sort(key=lambda r: r["start_iso"])
-    return {"events": out, "bands": _care_bands(timeline)}
+    # Rule 2: sleep yields to handling anyone actually saw. On 2026-08-28 a single
+    # nap ran 16:28-17:03 while cameras recorded play at 16:37, a diaper change at
+    # 16:52 and more play at 16:57 — the bedding-ghost failure the crib monitor is
+    # known for, presented to the parent as fact.
+    handled = union_intervals([
+        (datetime.fromisoformat(e["start_iso"]), datetime.fromisoformat(e["end_iso"]))
+        for e in out if e["category"] in HANDLING_CATEGORIES])
+    for s, e in naps:
+        for ns, ne in subtract_intervals([(s, e)], handled):
+            if total_minutes([(ns, ne)]) < MIN_NAP_AFTER_TRIM_MINUTES:
+                continue          # a sliver left over from a contradiction is not a nap
+            out.append({"kind": "sleep", "category": "sleep",
+                        "start_iso": ns.isoformat(), "end_iso": ne.isoformat(),
+                        "minutes": round(total_minutes([(ns, ne)]), 1),
+                        "parts": 1, "cameras": [], "play_types": [], "description": ""})
+
+    # Rule 3: the card is about the nanny's shift, so overnight naps do not belong
+    # on it. report["naps"] and the Sleep card keep the whole day.
+    if window and day:
+        out = _clip_events(out, window_bounds(day, window))
+
+    # Where two survivors still share a start, the more specific reads first.
+    out.sort(key=lambda r: (r["start_iso"], -CATEGORY_RANK.get(r["category"], 0)))
+    return {"events": out,
+            "bands": _care_bands(timeline, window_bounds(day, window)
+                                 if (window and day) else None)}
+
+
+def _resolve_overlaps(events):
+    """Trim each event out of whatever a stronger claim on the same moment already took.
+
+    Strength is specificity first, then duration. Duration settles same-rank ties,
+    which are real: a 32-second "diaper" sat inside a 35-minute feed on 2026-08-27,
+    and feeding and changing carry equal rank so neither displaced the other. There
+    is one baby and one caregiver, so two things at one moment is always an error —
+    the longer observation is the better-evidenced one.
+    """
+    def strength(e):
+        span = (datetime.fromisoformat(e["end_iso"])
+                - datetime.fromisoformat(e["start_iso"])).total_seconds()
+        return (-CATEGORY_RANK.get(e["category"], 0), -span)
+
+    kept = []
+    for ev in sorted(events, key=strength):
+        span = [(datetime.fromisoformat(ev["start_iso"]),
+                 datetime.fromisoformat(ev["end_iso"]))]
+        taken = union_intervals([
+            (datetime.fromisoformat(k["start_iso"]), datetime.fromisoformat(k["end_iso"]))
+            for k in kept])
+        for s, e in subtract_intervals(span, taken):
+            piece = dict(ev)
+            piece["start_iso"], piece["end_iso"] = s.isoformat(), e.isoformat()
+            piece["minutes"] = round(total_minutes([(s, e)]), 1)
+            kept.append(piece)
+    return kept
+
+
+def _clip_events(events, win):
+    out = []
+    for ev in events:
+        span = [(datetime.fromisoformat(ev["start_iso"]),
+                 datetime.fromisoformat(ev["end_iso"]))]
+        for s, e in intersect_intervals(span, win):
+            piece = dict(ev)
+            piece["start_iso"], piece["end_iso"] = s.isoformat(), e.isoformat()
+            piece["minutes"] = round(total_minutes([(s, e)]), 1)
+            out.append(piece)
+    return out
 
 
 def _fold_run(category, run):
@@ -328,7 +416,7 @@ def _fold_run(category, run):
     }
 
 
-def _care_bands(timeline):
+def _care_bands(timeline, win=None):
     """Everything not promoted, as two unioned bands. Demoted, never dropped."""
     with_baby, away = [], []
     for a in timeline:
@@ -337,6 +425,9 @@ def _care_bands(timeline):
         if not span or cat in HEADLINE_CATEGORIES:
             continue
         (with_baby if cat in WITH_BABY_CATEGORIES else away).append(span)
+    if win:
+        with_baby = intersect_intervals(union_intervals(with_baby), win)
+        away = intersect_intervals(union_intervals(away), win)
     return {
         "with_baby": [{"start_iso": s.isoformat(), "end_iso": e.isoformat()}
                       for s, e in union_intervals(with_baby)],
@@ -1060,7 +1151,7 @@ def build_report(day, chunks, cameras, window, rooms=None, config_errors=None,
         "timeline": timeline,
         # The readable view. `timeline` stays exactly as it was so the full log and
         # every existing metric keep working off it.
-        "care_timeline": care_timeline(timeline, naps),
+        "care_timeline": care_timeline(timeline, naps, window=window, day=day),
         "phone_use": {"events": phone_events, **phone_stats,
                       "unauthorized_intervals": [
                           {"start_iso": s.isoformat(), "end_iso": e.isoformat()}
