@@ -1,0 +1,212 @@
+{# The garment sprite for the clothing page and the dashboard teaser.
+
+   Every piece of clothing on /clothes is one of these. They are drawn once here as
+   <symbol>s and referenced with <use href="#ic-…">, so the outfit grid, the hourly
+   ribbon and the dashboard strip all share one set of shapes.
+
+   Style: a soft silhouette fill under a drawn outline, both in currentColor — so a
+   garment inherits the text colour of whatever card it sits in and stays legible in
+   light, dark and night without a second palette. Ids match clothing.py's GARMENTS
+   keys; add a garment there and a <symbol> here with the same id. #}
+<style>
+  /* Sizing only. The drawing itself is done with presentation attributes inside each
+     <symbol>, because <use> clones the symbol into a shadow tree that these selectors
+     cannot reach — a rule here would silently paint every garment black.
+     Only inherited properties cross that boundary, which is why everything is drawn in
+     currentColor: a garment takes the text colour of the card it hangs in. */
+  .ic { display: block; overflow: visible; }
+</style>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+  <defs>
+    <!-- ── Garments ─────────────────────────────────────────────── -->
+    <symbol id="ic-bodysuit_short" viewBox="0 0 32 32">
+      <g fill="currentColor" fill-opacity=".16" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round">
+      <path d="M10 9 L6 12 L8.5 16.5 L11 14.5 V21 Q11 26.5 16 27.5 Q21 26.5 21 21 V14.5 L23.5 16.5 L26 12 L22 9 Q16 12.5 10 9 Z"/>
+      <circle stroke="none" fill-opacity="1" cx="14.2" cy="25.4" r=".85"/>
+      <circle stroke="none" fill-opacity="1" cx="17.8" cy="25.4" r=".85"/>
+      </g>
+    </symbol>
+
+    <symbol id="ic-bodysuit_long" viewBox="0 0 32 32">
+      <g fill="currentColor" fill-opacity=".16" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round">
+      <path d="M10 9 L6 11 L5 19.5 L8.6 20.2 L11 15 V21 Q11 26.5 16 27.5 Q21 26.5 21 21 V15 L23.4 20.2 L27 19.5 L26 11 L22 9 Q16 12.5 10 9 Z"/>
+      <circle stroke="none" fill-opacity="1" cx="14.2" cy="25.6" r=".85"/>
+      <circle stroke="none" fill-opacity="1" cx="17.8" cy="25.6" r=".85"/>
+      </g>
+    </symbol>
+
+    <symbol id="ic-romper" viewBox="0 0 32 32">
+      <g fill="currentColor" fill-opacity=".16" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round">
+      <path d="M10 9 L6 12 L8.5 16.5 L11 14.5 V20 L10 26.5 H14.4 L16 21.5 L17.6 26.5 H22 L21 20 V14.5 L23.5 16.5 L26 12 L22 9 Q16 12.5 10 9 Z"/>
+      </g>
+    </symbol>
+
+    <symbol id="ic-sleeper_footed" viewBox="0 0 32 32">
+      <g fill="currentColor" fill-opacity=".16" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round">
+      <path d="M10 7.5 L6 9.5 L5 18 L8.6 18.7 L11 14 V19 L10 25 Q10 27.5 12.4 27.5 H14 Q15.4 27.5 15.5 26 L16 21 L16.5 26 Q16.6 27.5 18 27.5 H19.6 Q22 27.5 22 25 L21 19 V14 L23.4 18.7 L27 18 L26 9.5 L22 7.5 Q16 11 10 7.5 Z"/>
+      <path fill="none" d="M10.6 24.2 H14.9 M17.1 24.2 H21.4"/>
+      </g>
+    </symbol>
+
+    <symbol id="ic-pants" viewBox="0 0 32 32">
+      <g fill="currentColor" fill-opacity=".16" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round">
+      <path d="M9.5 7.5 H22.5 L21.6 27 H17.4 L16 15.5 L14.6 27 H10.4 Z"/>
+      <path fill="none" d="M9.8 11 H22.2"/>
+      </g>
+    </symbol>
+
+    <symbol id="ic-cardigan" viewBox="0 0 32 32">
+      <g fill="currentColor" fill-opacity=".16" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round">
+      <path d="M15.1 8.5 L11 8.5 L6.5 11 L8 19.5 L11 18.6 V26.5 H15.1 Z"/>
+      <path d="M16.9 8.5 L21 8.5 L25.5 11 L24 19.5 L21 18.6 V26.5 H16.9 Z"/>
+      <circle stroke="none" fill-opacity="1" cx="14.2" cy="13" r=".9"/>
+      <circle stroke="none" fill-opacity="1" cx="14.2" cy="18" r=".9"/>
+      <circle stroke="none" fill-opacity="1" cx="14.2" cy="23" r=".9"/>
+      </g>
+    </symbol>
+
+    <symbol id="ic-fleece" viewBox="0 0 32 32">
+      <g fill="currentColor" fill-opacity=".16" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round">
+      <path d="M11 8.5 L6.5 11 L8 19.5 L11 18.6 V26.5 H21 V18.6 L24 19.5 L25.5 11 L21 8.5 L16 12 Z"/>
+      <path fill="none" d="M16 12 V26.5 M11 8.5 L16 12 L21 8.5"/>
+      </g>
+    </symbol>
+
+    <symbol id="ic-bunting" viewBox="0 0 32 32">
+      <g fill="currentColor" fill-opacity=".16" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round">
+      <path d="M16 3.5 A5.2 5.2 0 0 1 21 11 L11 11 A5.2 5.2 0 0 1 16 3.5 Z"/>
+      <path d="M11 11 L7 14 L8.4 20.6 L11.4 19.6 V24 Q16 28.5 20.6 24 V19.6 L23.6 20.6 L25 14 L21 11 Z"/>
+      <path fill="none" d="M16 14.5 V23"/>
+      </g>
+    </symbol>
+
+    <symbol id="ic-rain_cover" viewBox="0 0 32 32">
+      <g fill="currentColor" fill-opacity=".16" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round">
+      <path d="M5.5 24.5 A10.5 10.5 0 0 1 26.5 24.5 Z"/>
+      <path fill="none" d="M16 14.5 V24 M9.5 24.5 A6.5 6.5 0 0 1 22.5 24.5"/>
+      <path fill="none" d="M9 8.5 l-1.4 2.6 M16 6 l-1.4 2.6 M23 8.5 l-1.4 2.6"/>
+      </g>
+    </symbol>
+
+    <symbol id="ic-sun_hat" viewBox="0 0 32 32">
+      <g fill="currentColor" fill-opacity=".16" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round">
+      <path d="M9.8 19 A6.2 6.2 0 0 1 22.2 19 Z"/>
+      <ellipse cx="16" cy="19.6" rx="11" ry="3.1"/>
+      <path fill="none" d="M10.4 17.8 Q16 20 21.6 17.8"/>
+      </g>
+    </symbol>
+
+    <symbol id="ic-knit_hat" viewBox="0 0 32 32">
+      <g fill="currentColor" fill-opacity=".16" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round">
+      <path d="M8 21.5 A8 8 0 0 1 24 21.5 Z"/>
+      <rect x="6.8" y="21.5" width="18.4" height="4.6" rx="2.3"/>
+      <circle cx="16" cy="10.6" r="2.7"/>
+      </g>
+    </symbol>
+
+    <symbol id="ic-mittens" viewBox="0 0 32 32">
+      <g fill="currentColor" fill-opacity=".16" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round">
+      <path d="M5.4 18 a4.6 4.6 0 0 1 9.2 0 v4.8 a2.4 2.4 0 0 1 -2.4 2.4 H7.8
+                   a2.4 2.4 0 0 1 -2.4 -2.4 Z"/>
+      <path d="M5.4 19.4 l-1.8 -1.2 a1.9 1.9 0 0 1 1.8 -3.3"/>
+      <path fill="none" d="M5.4 22 H14.6"/>
+      <path d="M26.6 18 a4.6 4.6 0 0 0 -9.2 0 v4.8 a2.4 2.4 0 0 0 2.4 2.4 h4.4
+                   a2.4 2.4 0 0 0 2.4 -2.4 Z"/>
+      <path d="M26.6 19.4 l1.8 -1.2 a1.9 1.9 0 0 0 -1.8 -3.3"/>
+      <path fill="none" d="M26.6 22 H17.4"/>
+      </g>
+    </symbol>
+
+    <symbol id="ic-socks" viewBox="0 0 32 32">
+      <g fill="currentColor" fill-opacity=".16" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round">
+      <path d="M6 8.5 h4.4 v7 l2.8 1.4 a2.6 2.6 0 0 1 -1.2 4.9 H6 Z"/>
+      <path fill="none" d="M6 11.4 h4.4"/>
+      <path d="M18.2 8.5 h4.4 v7 l2.8 1.4 a2.6 2.6 0 0 1 -1.2 4.9 h-6 Z"/>
+      <path fill="none" d="M18.2 11.4 h4.4"/>
+      </g>
+    </symbol>
+
+    <symbol id="ic-booties" viewBox="0 0 32 32">
+      <g fill="currentColor" fill-opacity=".16" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round">
+      <path d="M10 7.5 h6.2 v8.4 l5.4 2.6 a3.4 3.4 0 0 1 -1.5 6.5 H10 Z"/>
+      <path fill="none" d="M10 11.4 h6.2 M10 21.2 h10.8"/>
+      </g>
+    </symbol>
+
+    <symbol id="ic-blanket" viewBox="0 0 32 32">
+      <g fill="currentColor" fill-opacity=".16" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round">
+      <path d="M6 8 h20 v13 a5 5 0 0 1 -5 5 H6 Z"/>
+      <path fill="none" d="M21 26 a5 5 0 0 0 5 -5 h-5 Z"/>
+      <path fill="none" d="M6 12 q4 2 8 0 t8 0 M6 17 q4 2 8 0 t8 0"/>
+      </g>
+    </symbol>
+
+    {# Sleep sacks: same bag, more quilting as the TOG goes up. The number of lines is
+       the rating — you can count the warmth without reading it. #}
+    <symbol id="ic-sack_05" viewBox="0 0 32 32">
+      <g fill="currentColor" fill-opacity=".16" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round">
+      <path d="M11 8.5 L8 10.5 v3.4 l3 -1.2 V20 Q11 27.5 16 27.5 Q21 27.5 21 20 v-7.3 l3 1.2 v-3.4 L21 8.5 Q16 12 11 8.5 Z"/>
+      <path fill="none" d="M11.4 19 H20.6"/>
+      </g>
+    </symbol>
+    <symbol id="ic-sack_10" viewBox="0 0 32 32">
+      <g fill="currentColor" fill-opacity=".16" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round">
+      <path d="M11 8.5 L8 10.5 v3.4 l3 -1.2 V20 Q11 27.5 16 27.5 Q21 27.5 21 20 v-7.3 l3 1.2 v-3.4 L21 8.5 Q16 12 11 8.5 Z"/>
+      <path fill="none" d="M11.2 17 H20.8 M11.6 21.4 H20.4"/>
+      </g>
+    </symbol>
+    <symbol id="ic-sack_25" viewBox="0 0 32 32">
+      <g fill="currentColor" fill-opacity=".16" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round">
+      <path d="M11 8.5 L8 10.5 v3.4 l3 -1.2 V20 Q11 27.5 16 27.5 Q21 27.5 21 20 v-7.3 l3 1.2 v-3.4 L21 8.5 Q16 12 11 8.5 Z"/>
+      <path fill="none" d="M11.1 15.6 H20.9 M11.2 19.4 H20.8 M11.8 23.2 H20.2"/>
+      </g>
+    </symbol>
+
+    <!-- ── Sky conditions ───────────────────────────────────────── -->
+    <symbol id="ic-clear" viewBox="0 0 32 32">
+      <g fill="currentColor" fill-opacity=".16" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round">
+      <circle cx="16" cy="16" r="6.4"/>
+      <path fill="none" d="M16 3.5 V6.6 M16 25.4 V28.5 M3.5 16 H6.6 M25.4 16 H28.5
+                          M7.2 7.2 l2.2 2.2 M22.6 22.6 l2.2 2.2 M24.8 7.2 l-2.2 2.2 M9.4 22.6 l-2.2 2.2"/>
+      </g>
+    </symbol>
+    {# A clear sky at 11pm is not a sunny one. #}
+    <symbol id="ic-moon" viewBox="0 0 32 32">
+      <g fill="currentColor" fill-opacity=".16" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round">
+      <path d="M21.4 20.6 A8.4 8.4 0 0 1 12.4 7.6 A9 9 0 1 0 21.4 20.6 Z"/>
+      <path fill="none" d="M24.6 7.4 v3 M23.1 8.9 h3 M27.4 13.6 v2.2 M26.3 14.7 h2.2"/>
+      </g>
+    </symbol>
+
+    <symbol id="ic-cloud" viewBox="0 0 32 32">
+      <g fill="currentColor" fill-opacity=".16" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round">
+      <path d="M10 24 a5.6 5.6 0 0 1 -.6 -11.2 A7 7 0 0 1 22.6 14 a5 5 0 0 1 -.6 10 Z"/>
+      </g>
+    </symbol>
+    <symbol id="ic-rain" viewBox="0 0 32 32">
+      <g fill="currentColor" fill-opacity=".16" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round">
+      <path d="M10 20.5 a5 5 0 0 1 -.5 -10 A6.4 6.4 0 0 1 21.8 12 a4.5 4.5 0 0 1 -.5 8.5 Z"/>
+      <path fill="none" d="M11.4 23.6 l-1.4 3.6 M16 23.6 l-1.4 3.6 M20.6 23.6 l-1.4 3.6"/>
+      </g>
+    </symbol>
+    <symbol id="ic-snow" viewBox="0 0 32 32">
+      <g fill="currentColor" fill-opacity=".16" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round">
+      <path d="M10 20.5 a5 5 0 0 1 -.5 -10 A6.4 6.4 0 0 1 21.8 12 a4.5 4.5 0 0 1 -.5 8.5 Z"/>
+      <path fill="none" d="M11 25.4 h2.4 M10.6 24.2 l1.6 2.4 M12.2 24.2 l-1.6 2.4
+                          M18.6 25.4 h2.4 M18.2 24.2 l1.6 2.4 M19.8 24.2 l-1.6 2.4"/>
+      </g>
+    </symbol>
+    <symbol id="ic-fog" viewBox="0 0 32 32">
+      <g fill="currentColor" fill-opacity=".16" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round">
+      <path d="M10 19 a5 5 0 0 1 -.5 -10 A6.4 6.4 0 0 1 21.8 10.5 a4.5 4.5 0 0 1 -.5 8.5 Z"/>
+      <path fill="none" d="M7 23 h18 M9.5 26.4 h13"/>
+      </g>
+    </symbol>
+    <symbol id="ic-storm" viewBox="0 0 32 32">
+      <g fill="currentColor" fill-opacity=".16" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round">
+      <path d="M10 19.5 a5 5 0 0 1 -.5 -10 A6.4 6.4 0 0 1 21.8 11 a4.5 4.5 0 0 1 -.5 8.5 Z"/>
+      <path d="M17.4 21 h4.2 l-3.4 3.6 h2.8 L14 30 l2.2 -4.4 h-2.6 Z"/>
+      </g>
+    </symbol>
+  </defs>
+</svg>

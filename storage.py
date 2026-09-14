@@ -49,6 +49,12 @@ DEFAULT_SETTINGS = {
     "huckleberry_password":     "",
     "huckleberry_child_index":  0,
     "huckleberry_timezone":     "America/New_York",
+    # Weather / clothing page. Seeded to New York to match huckleberry_timezone; the
+    # real spot is set from the page's location chip, which writes these three keys.
+    "weather_latitude":         40.7128,
+    "weather_longitude":        -74.0060,
+    "weather_place":            "New York, NY",
+    "nursery_temp_f":           70,     # drives the sleep-sack TOG; no sensor, so it's a setting
     "sleep_presence_threshold": 0.02,  # fraction of ROI that must differ from empty-crib reference
     "sleep_crib_roi":            [0.0, 0.0, 1.0, 1.0],  # crib region as [x0, y0, x1, y1] fractions of the frame
     "sleep_disturbance_fraction": 0.30,  # motion fraction = parent-scale disturbance; presence re-evaluated after it settles.

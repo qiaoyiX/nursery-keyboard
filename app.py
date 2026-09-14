@@ -21,6 +21,9 @@ from storage import (
     set_phone_verdict,
 )
 
+import clothing
+import weather
+
 try:
     from huckleberry_sync import push_event, test_connection
     HUCKLEBERRY_AVAILABLE = True
@@ -637,7 +640,184 @@ def get_data():
                                  shift=settings.get("care_shift", "10:00-18:00")),
         "event_types": list(EVENT_TYPES),
         "foods": get_foods(),
+        # Cache-only, and None until the first successful fetch — the dashboard strip
+        # simply doesn't render rather than showing an empty placeholder.
+        "weather": weather_teaser(),
     })
+
+
+# ── Weather → clothes ─────────────────────────────────────────────────────────
+#
+# Every handler here reads weather_cache.json and nothing else. The network call
+# lives in weather.start_refresher()'s thread, because /data is polled every 8
+# seconds and an upstream stall must never reach the logging path.
+
+def weather_location(settings=None):
+    if settings is None:
+        with settings_lock:
+            settings = load_settings()
+    return (float(settings.get("weather_latitude", 40.7128)),
+            float(settings.get("weather_longitude", -74.0060)))
+
+
+def clothes_view(now=None):
+    """Everything /clothes needs, from cache only. Returns None if never fetched."""
+    now = now or datetime.now()
+    with settings_lock:
+        settings = load_settings()
+    entry = weather.read_cache()
+    if not entry:
+        return None
+
+    payload = entry["payload"]
+    current = payload.get("current") or {}
+    daily   = payload.get("daily") or {}
+
+    is_day  = bool(current.get("is_day", 1))
+    code    = current.get("weather_code")
+    feels   = current.get("apparent_temperature")
+
+    hours = []
+    for row in weather.upcoming_hours(payload, count=8, now=now):
+        hours.append({
+            "time":       row["time"],
+            "temp":       row.get("temperature_2m"),
+            "feels_like": row.get("apparent_temperature"),
+            "code":       row.get("weather_code"),
+            "condition":  clothing.condition_for(row.get("weather_code")),
+            "sky":        weather.sky_key(row.get("weather_code"), bool(row.get("is_day", 1))),
+            "precip_probability": row.get("precipitation_probability"),
+            "outfit":     clothing.outfit_for(row.get("apparent_temperature"),
+                                              row.get("weather_code"),
+                                              row.get("wind_speed_10m") or 0,
+                                              row.get("uv_index") or 0,
+                                              bool(row.get("is_day", 1))),
+        })
+
+    low = weather.overnight_low(payload, now=now)
+    age = weather.cache_age(entry, now)
+
+    return {
+        "place":      settings.get("weather_place", ""),
+        "latitude":   settings.get("weather_latitude"),
+        "longitude":  settings.get("weather_longitude"),
+        "nursery_temp_f": settings.get("nursery_temp_f", 70),
+        "fetched_at": entry.get("fetched_at"),
+        "age_minutes": None if age is None else int(age.total_seconds() // 60),
+        "stale":      age is None or age.total_seconds() > weather.STALE_AFTER_SECONDS,
+        "now": {
+            "temp":       current.get("temperature_2m"),
+            "feels_like": feels,
+            "code":       code,
+            "condition":  clothing.condition_for(code),
+            "condition_label": clothing.CONDITIONS[clothing.condition_for(code)],
+            "wind_mph":   current.get("wind_speed_10m"),
+            "is_day":     is_day,
+            "sky":        weather.sky_key(code, is_day),
+            "high":       (daily.get("temperature_2m_max") or [None])[0],
+            "low":        (daily.get("temperature_2m_min") or [None])[0],
+            "outfit":     clothing.outfit_for(feels, code,
+                                              current.get("wind_speed_10m") or 0,
+                                              _uv_now(payload, now), is_day),
+        },
+        "hours": hours,
+        "night": {
+            "overnight_low": None if low is None else round(low),
+            **clothing.sleepwear_for(low, settings.get("nursery_temp_f", 70)),
+        },
+    }
+
+
+def weather_teaser():
+    """The one-line version for the dashboard: a temperature and three pictures.
+
+    Built straight off the cache rather than from clothes_view(), because /data is
+    polled every 8 seconds and the strip needs none of the hourly work.
+    """
+    try:
+        entry = weather.read_cache()
+        if not entry:
+            return None
+        current = entry["payload"].get("current") or {}
+        feels = current.get("apparent_temperature")
+        if feels is None:
+            return None
+        is_day = bool(current.get("is_day", 1))
+        code = current.get("weather_code")
+        outfit = clothing.outfit_for(feels, code, current.get("wind_speed_10m") or 0, 0, is_day)
+        age = weather.cache_age(entry)
+        return {
+            "feels_like": round(feels),
+            "condition":  clothing.condition_for(code),
+            "sky":        weather.sky_key(code, is_day),
+            "headline":   outfit["headline"],
+            # Three tiles is what fits on one line next to the temperature on a phone.
+            "garments":   [g["id"] for g in outfit["garments"][:3]],
+            "stale":      age is None or age.total_seconds() > weather.STALE_AFTER_SECONDS,
+        }
+    except Exception:
+        logging.exception("weather teaser failed")
+        return None
+
+
+def _uv_now(payload, now):
+    """UV index for the current hour — Open-Meteo only reports it hourly."""
+    rows = weather.upcoming_hours(payload, count=1, now=now)
+    return (rows[0].get("uv_index") or 0) if rows else 0
+
+
+@app.route("/clothes")
+def clothes_page():
+    return render_template("clothes.html")
+
+
+@app.route("/clothes/data")
+def clothes_data():
+    view = clothes_view()
+    if view is None:
+        return jsonify({"error": "no weather yet", "place": ""}), 503
+    return jsonify(view)
+
+
+@app.route("/clothes/location", methods=["POST"])
+def clothes_location():
+    data = request.get_json(silent=True) or {}
+    try:
+        lat = float(data["latitude"])
+        lon = float(data["longitude"])
+    except (KeyError, TypeError, ValueError):
+        return jsonify({"error": "latitude and longitude required"}), 400
+    if not (-90 <= lat <= 90) or not (-180 <= lon <= 180):
+        return jsonify({"error": "latitude/longitude out of range"}), 400
+    place = str(data.get("place") or "").strip()[:60]
+
+    with settings_lock:
+        # One key at a time. Saving the merged dict bakes every current default into
+        # settings.json and freezes it against future tuning — see update_settings().
+        update_setting("weather_latitude", lat)
+        update_setting("weather_longitude", lon)
+        if place:
+            update_setting("weather_place", place)
+        if isinstance(data.get("nursery_temp_f"), (int, float)):
+            update_setting("nursery_temp_f", float(data["nursery_temp_f"]))
+
+    weather.refresh(lat, lon, force=True)
+    view = clothes_view()
+    return jsonify(view or {"ok": True})
+
+
+@app.route("/clothes/search")
+def clothes_search():
+    """Place name → coordinates, proxied so the page needs no second origin."""
+    q = (request.args.get("q") or "").strip()
+    if len(q) < 2:
+        return jsonify({"results": []})
+    try:
+        results = weather.geocode(q)
+    except Exception as e:
+        logging.warning("geocoding failed for %r: %s", q, e)
+        return jsonify({"error": "lookup failed", "results": []}), 502
+    return jsonify({"results": results})
 
 
 @app.route("/history")
@@ -937,4 +1117,5 @@ if __name__ == "__main__":
     if EVDEV_AVAILABLE:
         t = threading.Thread(target=keypad_listener, daemon=True)
         t.start()
+    weather.start_refresher(weather_location)
     app.run(host="0.0.0.0", port=8080, threaded=True)

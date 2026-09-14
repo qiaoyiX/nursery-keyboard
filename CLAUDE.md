@@ -54,6 +54,26 @@ Three files form the core:
 - Every frame logs `state / presence / motion / micro / dist` + thresholds at INFO — tune the `sleep_*` settings from the real numbers (`journalctl -u nursery-sleep-monitor -f`), no code change needed. To tune offline: `record_camera.sh` (on the Pi) captures footage, `replay_sleep.py` runs the identical pipeline over it anywhere.
 - Writes sleep sessions via `storage.py`; writes heartbeat file so Flask can detect if daemon is offline.
 
+**`weather.py` + `clothing.py` + `templates/clothes.html`** — The "what to wear" page (`/clothes`).
+- `weather.py` fetches Open-Meteo (no API key) and caches to `weather_cache.json`; a daemon thread
+  started in `app.py`'s `__main__` refreshes every 30 min. **Request handlers only ever read the
+  cache** — `/data` is polled every 8s and must never wait on the network. A failed fetch keeps the
+  old copy and the page dims itself (`stale`) rather than blanking. `read_cache()` is memoised on mtime.
+- `clothing.py` is pure (no I/O, no clock): `outfit_for(feels_like_f, weather_code, wind_mph, uv,
+  is_day)` and `sleepwear_for(overnight_low_f, nursery_temp_f)` return **garment ids**, one layer
+  warmer than an adult would dress. Bands live in one table at the top of the file — edit it when
+  it's wrong for her. Wind is *not* added on top of feels-like (apparent temperature already
+  contains wind chill).
+- `templates/clothes.html` draws the answer: a sky-coloured hero, the outfit hanging on a
+  clothesline, caveat chips (car-seat / rain / sun), an hourly ribbon you can tap to dress her for
+  5pm, and tonight's sleep sack. The dashboard shows a one-line teaser of the same data.
+- Garment art is `templates/_clothes_icons.html`, a `<symbol>` sprite shared by both pages. Ids
+  match `clothing.py`'s `GARMENTS`. **Style it with presentation attributes, never CSS classes** —
+  `<use>` clones into a shadow tree the page stylesheet can't reach, which silently paints every
+  garment black. See ADR-011.
+- Settings: `weather_latitude`, `weather_longitude`, `weather_place` (set from the page's location
+  chip) and `nursery_temp_f` (drives the sleep-sack TOG — there is no nursery thermometer).
+
 **`templates/index.html`** — Single-page dashboard. Pure HTML/CSS/JS, no build step.
 - Polls `GET /data` every 8 seconds; `refresh()` updates counts, history, next-feed card, all three Chart.js charts, and the weekly pattern grid in one pass.
 - Section order (PRD hierarchy pass, 2026-07-06): next-feed card → log buttons → history → "😴 Today's Sleep" card (live state line + 24h timeline + per-nap list, one merged card, now including overnight sessions that span midnight) → count cards → charts (doughnut, hourly, daily, then Weekly Pattern) → maintenance row ("Clear today" + "📷 Crib is empty" calibrate, deliberately at the bottom away from the one-handed logging zone).
@@ -192,6 +212,10 @@ Independent pipeline (does not touch the crib monitor): records the `NANNY_CAM_*
 | PATCH | `/log/entry` | Edit one entry `{"id": <int>, "type": "Wet\|Dirty\|Play\|Feed", "time": <ISO>}` |
 | GET | `/settings` | Get `feed_interval_minutes` |
 | POST | `/settings` | Set `feed_interval_minutes` (multiple of 15, 15–720) |
+| GET | `/clothes` | "What to wear" page HTML |
+| GET | `/clothes/data` | JSON: weather now, next 8 hours, tonight's sleepwear, each with an outfit. 503 until the first fetch succeeds |
+| POST | `/clothes/location` | Set `{"latitude", "longitude", "place"?, "nursery_temp_f"?}`, refetch, return the new view |
+| GET | `/clothes/search` | `?q=` place-name lookup, proxied to Open-Meteo's geocoder |
 | POST | `/sleep/calibrate` | Save current frame as empty-crib reference baseline (crib must be empty) |
 | GET | `/devices` | Debug: list input devices (only with `NURSERY_DEBUG=1`) |
 

@@ -1,0 +1,435 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>What to Wear</title>
+  {% include "_theme.html" %}
+  <style>
+    /* The sky is the only saturated surface in this app. Everything else stays in the
+       nursery's cream so the gradient reads as weather, not as decoration — you should
+       know it's raining before your eyes reach a number. */
+    .sky-day-clear  { --sky-a:#6ec0e6; --sky-b:#bde5f4; --sky-ink:#12384c; }
+    .sky-day-cloud  { --sky-a:#93a9b8; --sky-b:#ccd8de; --sky-ink:#22333d; }
+    .sky-day-rain   { --sky-a:#5f7a8b; --sky-b:#9db0ba; --sky-ink:#15252e; }
+    .sky-day-snow   { --sky-a:#a9bfd0; --sky-b:#e4eef4; --sky-ink:#1d3140; }
+    .sky-night-clear{ --sky-a:#1b2a48; --sky-b:#3d5179; --sky-ink:#eaf0fb; }
+    .sky-night-cloud{ --sky-a:#232d3e; --sky-b:#465468; --sky-ink:#e6ebf3; }
+    .sky-night-rain { --sky-a:#1c2533; --sky-b:#3a4656; --sky-ink:#e3e9f1; }
+    .sky-night-snow { --sky-a:#2b3a4d; --sky-b:#566779; --sky-ink:#eef3f8; }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: var(--cream); color: var(--brown-deep);
+      min-height: 100vh; padding: 16px 16px 56px;
+      max-width: 460px; margin: 0 auto;
+    }
+
+    /* ── Sky ───────────────────────────────────────────────────── */
+    .sky {
+      position: relative; border-radius: 26px; padding: 20px 20px 16px;
+      background: linear-gradient(165deg, var(--sky-a, #93a9b8), var(--sky-b, #ccd8de));
+      color: var(--sky-ink, #22333d); overflow: hidden; margin-bottom: 22px;
+      transition: background .6s ease, color .6s ease;
+    }
+    .sky-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+    .sky-top > div { min-width: 0; flex: 1; }
+    .sky-place { font-size: var(--t-sm); opacity: .85;
+                 overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .sky-when  { font-size: var(--t-xs); opacity: .7; margin-top: 2px; }
+    .sky-icon  { width: 64px; height: 64px; flex: none; opacity: .92; }
+    .sky-temp  {
+      font-family: var(--font-display); font-size: 4.4rem; line-height: .95;
+      font-variant-numeric: tabular-nums; margin-top: 10px; letter-spacing: -.02em;
+    }
+    .sky-temp .deg { font-size: 2rem; vertical-align: super; opacity: .6; }
+    .sky-sub { font-size: var(--t-sm); opacity: .85; margin-top: 6px; }
+    .sky.is-stale-sky::after {
+      content: ""; position: absolute; inset: 0; background: var(--cream); opacity: .38;
+    }
+
+    /* ── Clothesline ───────────────────────────────────────────── */
+    /* The outfit hangs from a line with pegs. It is a laundry line because these are
+       baby clothes — and because a row of identical cards would read as a table of
+       data rather than as a pile of things to put on her. */
+    h2.sec {
+      font-family: var(--font-display); font-weight: normal; font-size: var(--t-lg);
+      margin-bottom: 4px;
+    }
+    .sec-why { font-size: var(--t-sm); color: var(--text-muted); margin-bottom: 16px; }
+
+    .line { position: relative; padding-top: 12px; margin-bottom: 8px; }
+    .line::before {
+      content: ""; position: absolute; top: 10px; left: -6px; right: -6px; height: 2px;
+      background: var(--cream-2); border-radius: 2px;
+    }
+    .hangers {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(76px, 1fr));
+      gap: 4px 2px;
+    }
+    .hang {
+      position: relative; padding-top: 14px; text-align: center;
+      display: flex; flex-direction: column; align-items: center;
+    }
+    .hang::before {   /* the peg */
+      content: ""; position: absolute; top: 0; left: 50%; transform: translateX(-50%);
+      width: 7px; height: 16px; border-radius: 3px;
+      background: var(--brown-muted); opacity: .55;
+    }
+    .hang .art {
+      width: 62px; height: 62px; color: var(--brown-mid);
+      background: var(--surface); border-radius: 16px; padding: 8px;
+    }
+    .hang .cap {
+      font-size: var(--t-xs); color: var(--text-muted); margin-top: 6px;
+      line-height: 1.3; max-width: 84px;
+    }
+    /* One orchestrated moment: the washing sways once as it lands, then holds still. */
+    @media (prefers-reduced-motion: no-preference) {
+      .hang { animation: sway .9s ease-out both; transform-origin: 50% 6px; }
+      @keyframes sway {
+        0%   { transform: rotate(-5deg); opacity: 0; }
+        55%  { transform: rotate(2.5deg); opacity: 1; }
+        100% { transform: rotate(0); opacity: 1; }
+      }
+    }
+
+    .caveats { margin-top: 14px; display: flex; flex-direction: column; gap: 8px; }
+    .caveat {
+      display: flex; gap: 9px; align-items: flex-start;
+      font-size: var(--t-sm); line-height: 1.45;
+      background: var(--cream-2); border-radius: 14px; padding: 10px 12px;
+    }
+    .caveat.is-safety { background: var(--danger-a); color: var(--danger); font-weight: 600; }
+    .caveat .cv-icon { flex: none; font-size: 1rem; line-height: 1.3; }
+
+    /* ── Hours ─────────────────────────────────────────────────── */
+    .hours {
+      display: flex; gap: 8px; overflow-x: auto; padding: 4px 4px 10px;
+      margin: 26px -4px 0; scrollbar-width: none;
+    }
+    .hours::-webkit-scrollbar { display: none; }
+    .hour {
+      flex: none; width: 62px; min-height: var(--tap); border: none; cursor: pointer;
+      border-radius: 16px; padding: 9px 6px 10px; font: inherit; text-align: center;
+      background: linear-gradient(165deg, var(--sky-a, #93a9b8), var(--sky-b, #ccd8de));
+      color: var(--sky-ink, #22333d);
+      outline: 2px solid transparent; outline-offset: 2px;
+    }
+    .hour[aria-pressed="true"] { outline-color: var(--brown-mid); }
+    .hour .h-when { font-size: var(--t-xs); opacity: .8; }
+    .hour .h-art  { width: 26px; height: 26px; margin: 3px auto 2px; opacity: .9; }
+    .hour .h-temp { font-size: var(--t-sm); font-weight: 600; font-variant-numeric: tabular-nums; }
+
+    /* ── Tonight ───────────────────────────────────────────────── */
+    /* Sleepwear lives indoors, so it gets a drawer, not a washing line. */
+    .tonight {
+      margin-top: 30px; background: var(--sleep-a); border-radius: var(--r);
+      padding: 16px 16px 18px;
+    }
+    .tonight .hangers { margin-top: 12px; grid-template-columns: repeat(2, 1fr); }
+    .tonight .hang { padding-top: 0; }
+    .tonight .hang::before { display: none; }
+    .tonight .hang .art { color: var(--sleep); }
+    .tonight .line { padding-top: 0; }
+    .tonight .line::before { display: none; }
+    .safe-note { font-size: var(--t-xs); color: var(--text-muted); margin-top: 12px; line-height: 1.5; }
+
+    /* ── Footer ────────────────────────────────────────────────── */
+    .foot {
+      margin-top: 30px; display: flex; align-items: center; justify-content: space-between;
+      gap: 12px; font-size: var(--t-xs); color: var(--text-muted);
+    }
+    .foot a { color: var(--sleep); text-decoration: none; min-height: var(--tap);
+              display: inline-flex; align-items: center; }
+    .place-btn {
+      font: inherit; font-size: var(--t-xs); color: var(--brown-mid); cursor: pointer;
+      background: var(--cream-2); border: none; border-radius: 999px;
+      padding: 0 14px; min-height: var(--tap);
+    }
+
+    .msg { text-align: center; color: var(--text-muted); font-size: var(--t-sm);
+           padding: 40px 20px; line-height: 1.6; }
+
+    /* ── Location sheet ────────────────────────────────────────── */
+    .sheet {
+      position: fixed; inset: 0; background: rgba(61,43,31,.45); display: none;
+      align-items: flex-end; justify-content: center; padding: 0; z-index: 20;
+    }
+    .sheet[open] { display: flex; }
+    .sheet-body {
+      background: var(--surface); width: 100%; max-width: 460px;
+      border-radius: 22px 22px 0 0; padding: 20px 18px calc(20px + env(safe-area-inset-bottom));
+    }
+    .sheet h3 { font-family: var(--font-display); font-weight: normal;
+                font-size: var(--t-lg); margin-bottom: 12px; }
+    .sheet label { display: block; font-size: var(--t-xs); color: var(--text-muted);
+                   margin: 12px 0 5px; }
+    .sheet input {
+      font: inherit; width: 100%; min-height: var(--tap); padding: 0 12px;
+      border: 1px solid var(--cream-2); border-radius: 12px;
+      background: var(--cream); color: var(--brown-deep);
+    }
+    .hits { list-style: none; margin-top: 10px; max-height: 40vh; overflow-y: auto; }
+    .hits button {
+      font: inherit; width: 100%; text-align: left; min-height: var(--tap);
+      background: none; border: none; border-bottom: 1px solid var(--cream-2);
+      color: var(--brown-deep); cursor: pointer; padding: 8px 2px;
+    }
+    .sheet-actions { display: flex; gap: 10px; margin-top: 16px; }
+    .sheet-actions .btn { flex: 1; }
+  </style>
+</head>
+<body>
+  {% include "_clothes_icons.html" %}
+
+  <div class="sky sky-day-cloud" id="sky" aria-live="polite">
+    <div class="sky-top">
+      <div>
+        <div class="sky-place" id="skyPlace">—</div>
+        <div class="sky-when" id="skyWhen"></div>
+      </div>
+      <svg class="sky-icon ic" id="skyIcon" aria-hidden="true"><use href="#ic-cloud"></use></svg>
+    </div>
+    <div class="sky-temp" id="skyTemp">—<span class="deg">°</span></div>
+    <div class="sky-sub" id="skySub">Loading the forecast</div>
+  </div>
+
+  <div id="main" hidden>
+    <h2 class="sec" id="outHeadline">—</h2>
+    <p class="sec-why" id="outWhy"></p>
+    <div class="line">
+      <div class="hangers" id="outfit"></div>
+    </div>
+    <div class="caveats" id="caveats"></div>
+
+    <div class="hours" id="hours" role="group" aria-label="Outfit by hour"></div>
+
+    <section class="tonight">
+      <h2 class="sec" id="nightHeadline">Tonight</h2>
+      <p class="sec-why" id="nightWhy"></p>
+      <div class="line">
+        <div class="hangers" id="nightfit"></div>
+      </div>
+      <p class="safe-note" id="safeNote"></p>
+    </section>
+
+    <div class="foot">
+      <button class="place-btn" id="placeBtn" onclick="openSheet()">Change location</button>
+      <span id="updated"></span>
+      <a href="/">Dashboard</a>
+    </div>
+  </div>
+
+  <p class="msg" id="msg">Checking the weather…</p>
+
+  <div class="sheet" id="sheet" role="dialog" aria-modal="true" aria-label="Location">
+    <div class="sheet-body">
+      <h3>Where are you?</h3>
+      <label for="q">Town or city</label>
+      <input id="q" type="search" placeholder="Brooklyn" autocomplete="off"
+             oninput="searchPlaces()" />
+      <ul class="hits" id="hits"></ul>
+      <label for="roomTemp">Nursery temperature (°F)</label>
+      <input id="roomTemp" type="number" min="55" max="85" step="1" />
+      <div class="sheet-actions">
+        <button class="btn" onclick="closeSheet()">Cancel</button>
+        <button class="btn" onclick="saveRoomTemp()">Save temperature</button>
+      </div>
+    </div>
+  </div>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+  let view = null;       // last payload from /clothes/data
+  let picked = null;     // index into view.hours, or null for "now"
+
+  applyTheme(localStorage.getItem("theme") || "auto");
+  function applyTheme(name) {
+    if (name === "auto") document.documentElement.removeAttribute("data-theme");
+    else document.documentElement.setAttribute("data-theme", name);
+  }
+
+  // A clear sky after dark is a moon, not a sun — the one place where the same
+  // weather code needs two different drawings.
+  function conditionIcon(src) {
+    return (src.condition === "clear" && (src.sky || "").startsWith("night"))
+      ? "moon" : src.condition;
+  }
+
+  function icon(id, cls) {
+    return `<svg class="ic ${cls || ""}" aria-hidden="true"><use href="#ic-${id}"></use></svg>`;
+  }
+
+  function hangers(garments, extraClass) {
+    return garments.map((g, i) => `
+      <div class="hang" style="animation-delay:${i * 55}ms">
+        ${icon(g.id, "art")}
+        <span class="cap">${g.label}</span>
+      </div>`).join("");
+  }
+
+  function ago(min) {
+    if (min === null) return "a while ago";
+    if (min < 1)  return "just now";
+    if (min < 60) return min + " min ago";
+    const h = Math.round(min / 60);
+    return h + (h === 1 ? " hour ago" : " hours ago");
+  }
+
+  function hourLabel(iso) {
+    const d = new Date(iso);
+    let h = d.getHours();
+    const ampm = h >= 12 ? "pm" : "am";
+    h = h % 12 || 12;
+    return h + ampm;
+  }
+
+  function render() {
+    if (!view) return;
+    const atHour = picked !== null && view.hours[picked] ? view.hours[picked] : null;
+    const src = atHour || view.now;
+    const outfit = src.outfit;
+
+    // Sky
+    const sky = $("sky");
+    sky.className = "sky sky-" + (src.sky || "day-cloud");
+    sky.classList.toggle("is-stale-sky", !!view.stale);
+    $("skyIcon").innerHTML = `<use href="#ic-${conditionIcon(src)}"></use>`;
+    $("skyPlace").textContent = view.place || "Weather";
+    $("skyWhen").textContent = atHour
+      ? "Dressed for " + hourLabel(atHour.time)
+      : (view.now.condition_label || "");
+    const feels = atHour ? atHour.feels_like : view.now.feels_like;
+    $("skyTemp").innerHTML = (feels === null ? "—" : Math.round(feels)) + '<span class="deg">°</span>';
+    const actual = atHour ? atHour.temp : view.now.temp;
+    $("skySub").textContent = actual === null ? "" :
+      `Feels like ${Math.round(feels)}° · actually ${Math.round(actual)}°`;
+
+    // Outfit
+    $("outHeadline").textContent = outfit.headline;
+    $("outWhy").textContent = atHour
+      ? `For ${hourLabel(atHour.time)}, when it feels like ${Math.round(atHour.feels_like)}°.`
+      : "Out the door right now.";
+    $("outfit").innerHTML = hangers(outfit.garments);
+
+    $("caveats").innerHTML = outfit.caveats.map(c => `
+      <div class="caveat ${c.id === "carseat" ? "is-safety" : ""}">
+        <span class="cv-icon" aria-hidden="true">${c.icon}</span><span>${c.text}</span>
+      </div>`).join("");
+
+    // Hours
+    $("hours").innerHTML = `
+      <button class="hour sky-${view.now.sky}" aria-pressed="${picked === null}" onclick="pick(null)">
+        <span class="h-when">Now</span>
+        ${icon(conditionIcon(view.now), "h-art")}
+        <span class="h-temp">${Math.round(view.now.feels_like)}°</span>
+      </button>` +
+      view.hours.map((h, i) => `
+      <button class="hour sky-${h.sky}" aria-pressed="${picked === i}" onclick="pick(${i})">
+        <span class="h-when">${hourLabel(h.time)}</span>
+        ${icon(conditionIcon(h), "h-art")}
+        <span class="h-temp">${Math.round(h.feels_like)}°</span>
+      </button>`).join("");
+
+    // Tonight
+    const n = view.night;
+    $("nightHeadline").textContent = n.headline;
+    $("nightWhy").textContent = n.overnight_low === null
+      ? `Nursery around ${n.room_estimate}°.`
+      : `It drops to ${n.overnight_low}° outside; nursery around ${n.room_estimate}°.`;
+    $("nightfit").innerHTML = hangers(n.garments);
+    $("safeNote").textContent = n.note;
+
+    $("updated").textContent = (view.stale ? "Last checked " : "Updated ") + ago(view.age_minutes);
+    $("placeBtn").textContent = view.place || "Set location";
+    $("roomTemp").value = view.nursery_temp_f;
+
+    $("msg").hidden = true;
+    $("main").hidden = false;
+  }
+
+  function pick(i) {
+    picked = i;
+    render();
+  }
+
+  async function load() {
+    try {
+      const res = await fetch("/clothes/data");
+      if (res.status === 503) {
+        $("msg").textContent = "No forecast yet. The Pi checks the weather every half hour — " +
+                               "give it a minute, or set your location below.";
+        $("msg").hidden = false;
+        return;
+      }
+      if (!res.ok) throw new Error(res.status);
+      view = await res.json();
+      picked = null;
+      render();
+    } catch (e) {
+      if (!view) {
+        $("msg").textContent = "Can't reach the tracker. Check that it's running, then reload.";
+        $("msg").hidden = false;
+      }
+    }
+  }
+
+  // The forecast is hourly; ten minutes keeps the "updated N min ago" honest without
+  // polling a free service for nothing. Coming back to the tab always refetches.
+  setInterval(load, 10 * 60 * 1000);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") load();
+  });
+
+  // ── Location ──────────────────────────────────────────────────
+  function openSheet()  { $("sheet").setAttribute("open", ""); $("q").focus(); }
+  function closeSheet() { $("sheet").removeAttribute("open"); $("hits").innerHTML = ""; }
+  $("sheet").addEventListener("click", (e) => { if (e.target === $("sheet")) closeSheet(); });
+
+  let searchTimer = null;
+  function searchPlaces() {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(async () => {
+      const q = $("q").value.trim();
+      if (q.length < 2) { $("hits").innerHTML = ""; return; }
+      try {
+        const res = await fetch("/clothes/search?q=" + encodeURIComponent(q));
+        const data = await res.json();
+        $("hits").innerHTML = (data.results || []).map(r => `
+          <li><button onclick="setPlace(${r.latitude}, ${r.longitude}, ${JSON.stringify(r.name)})">
+            ${r.name}</button></li>`).join("")
+          || "<li><button disabled>No matches</button></li>";
+      } catch (e) {
+        $("hits").innerHTML = "<li><button disabled>Lookup failed — try again</button></li>";
+      }
+    }, 300);
+  }
+
+  async function setPlace(lat, lon, name) {
+    await post({ latitude: lat, longitude: lon, place: name });
+    closeSheet();
+  }
+
+  async function saveRoomTemp() {
+    const t = parseFloat($("roomTemp").value);
+    if (!view || isNaN(t)) return closeSheet();
+    await post({ latitude: view.latitude, longitude: view.longitude, nursery_temp_f: t });
+    closeSheet();
+  }
+
+  async function post(body) {
+    try {
+      const res = await fetch("/clothes/location", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (res.ok) { view = await res.json(); picked = null; render(); }
+    } catch (e) { /* the page keeps the weather it already has */ }
+  }
+
+  load();
+</script>
+</body>
+</html>

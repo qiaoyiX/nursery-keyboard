@@ -344,3 +344,52 @@ track.
   Probiotic incorrectly.
 - New event types added to the keypad vocabulary must also be added to `huckleberry_sync.py`'s
   `event_type` branch — this was missed for Probiotic (see backlog M-7).
+
+---
+
+## ADR-011: Weather in the Flask process, cached to disk, with the rules kept pure
+
+**Decision (2026-09-13):** `/clothes` turns the weather into a picture of what to put her in.
+It is built from four pieces:
+
+- **Open-Meteo** as the source (`weather.py`), over stdlib `urllib`. No API key, no account,
+  no rate-limit ceremony — so there is nothing to add to the Pi's EnvironmentFile and nothing
+  to rotate. The same service's geocoder backs the page's location search, proxied through
+  `/clothes/search` so the page talks to one origin.
+- **A daemon thread inside `nursery-tracker`**, started next to the keypad listener, refreshing
+  `weather_cache.json` every 30 minutes. No new systemd unit; deploying stays `git pull &&
+  sudo systemctl restart nursery-tracker`.
+- **Every request handler reads the cache and only the cache.** `read_cache()` is memoised on
+  the file's mtime.
+- **`clothing.py` is pure** — no I/O, no clock, no globals. `outfit_for()` and `sleepwear_for()`
+  take numbers and return garment ids, which is what makes the hourly ribbon possible (the same
+  rules re-run for any hour of the forecast) and what makes the rules testable offline.
+
+**Rejected:**
+
+- *Fetching inside the request.* `/data` is polled every 8 seconds by the dashboard; an upstream
+  stall on hotel wifi would land directly in the logging path. This is the same reasoning as
+  ADR-003 — the keypad must never wait on anything.
+- *A systemd timer like `nursery-backup.timer`.* Right shape for a 6-hourly batch job that writes
+  Postgres; overkill for a 4KB GET, and it would be a fourth unit to install and debug on the Pi.
+- *An API that needs a key (OpenWeather, WeatherAPI).* A secret to store, a quota to watch, and
+  one more thing that silently expires.
+- *Storing the weather in the database.* It is a cache, not a record. Nothing about last Tuesday's
+  temperature is worth backing up, and ADR-001 keeps live services away from `DATABASE_URL`.
+
+**Consequences:**
+
+- The page can be up to 30 minutes behind, and says so ("Updated 12 min ago"). Past 90 minutes it
+  declares itself stale and dims, reusing the existing `.stale-dim` convention.
+- An offline Pi still answers the question with this morning's weather rather than a blank page.
+- The clothing bands are a judgement call, not a measurement — one layer more than a comfortable
+  adult, by feels-like temperature. They live in one table at the top of `clothing.py` and are
+  meant to be edited when they are wrong for this baby, like the `sleep_*` settings in ADR-006.
+- Nursery temperature is a setting (`nursery_temp_f`), not a sensor. The sleep-sack TOG is only
+  as good as that number.
+- Garment ids are shared between `clothing.py` and the `<symbol>` sprite in
+  `templates/_clothes_icons.html`. Adding a garment means adding both, or the tile renders empty.
+- SVG styling in that sprite must use presentation attributes, not CSS classes: `<use>` clones a
+  symbol into a shadow tree that the page's stylesheet cannot reach, so a class-based rule paints
+  every garment default black. Everything is drawn in `currentColor` for the same reason —
+  inherited properties are what cross that boundary.

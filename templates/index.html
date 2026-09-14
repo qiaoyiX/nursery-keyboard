@@ -805,9 +805,34 @@
       box-shadow: 0 4px 18px rgba(61,43,31,.28);
     }
     .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+    /* Weather strip. The sky gradient is the page's only saturated surface, kept to
+       one line so it can never push the log buttons out of the one-handed zone. */
+    .wx-strip {
+      display: flex; align-items: center; gap: 10px;
+      min-height: var(--tap); padding: 0 14px; margin-bottom: 12px;
+      border-radius: 16px; text-decoration: none;
+      background: linear-gradient(100deg, var(--sky-a, #93a9b8), var(--sky-b, #ccd8de));
+      color: var(--sky-ink, #22333d);
+    }
+    .wx-strip.sky-day-clear  { --sky-a:#6ec0e6; --sky-b:#bde5f4; --sky-ink:#12384c; }
+    .wx-strip.sky-day-cloud  { --sky-a:#93a9b8; --sky-b:#ccd8de; --sky-ink:#22333d; }
+    .wx-strip.sky-day-rain   { --sky-a:#5f7a8b; --sky-b:#9db0ba; --sky-ink:#15252e; }
+    .wx-strip.sky-day-snow   { --sky-a:#a9bfd0; --sky-b:#e4eef4; --sky-ink:#1d3140; }
+    .wx-strip.sky-night-clear{ --sky-a:#1b2a48; --sky-b:#3d5179; --sky-ink:#eaf0fb; }
+    .wx-strip.sky-night-cloud{ --sky-a:#232d3e; --sky-b:#465468; --sky-ink:#e6ebf3; }
+    .wx-strip.sky-night-rain { --sky-a:#1c2533; --sky-b:#3a4656; --sky-ink:#e3e9f1; }
+    .wx-strip.sky-night-snow { --sky-a:#2b3a4d; --sky-b:#566779; --sky-ink:#eef3f8; }
+    .wx-strip.is-stale { opacity: .6; }
+    .wx-temp { font-family: var(--font-display); font-size: 1.3rem;
+               font-variant-numeric: tabular-nums; }
+    .wx-what { font-size: var(--t-sm); opacity: .9; }
+    .wx-art  { margin-left: auto; display: flex; gap: 4px; }
+    .wx-art .ic { width: 26px; height: 26px; }
   </style>
 </head>
 <body>
+  {% include "_clothes_icons.html" %}
+
   <div class="header">
     <h1>👶 Nursery Tracker</h1>
     <p class="date" id="dateLabel"></p>
@@ -833,6 +858,15 @@
     <div class="sleep-card-title">🗓 Today's Plan</div>
     <div id="planBody"></div>
   </div>
+
+  <!-- One line, one tap: the temperature and the first few things she needs on.
+       Hidden entirely until the weather cache has been filled once — an empty
+       placeholder above the log buttons would be worse than no strip at all. -->
+  <a class="wx-strip" id="wxStrip" href="/clothes" hidden>
+    <span class="wx-temp" id="wxTemp">—°</span>
+    <span class="wx-what" id="wxWhat"></span>
+    <span class="wx-art" id="wxArt"></span>
+  </a>
 
   <div class="buttons">
     <button class="action-btn btn-wet"   onclick="logEvent('Wet')">💧 Wet<span class="btn-ago" data-ago="Wet"></span></button>
@@ -1937,6 +1971,18 @@
     }
     setInterval(updateStaleness, 5000);
 
+    function updateWeatherStrip(wx) {
+      const strip = document.getElementById("wxStrip");
+      if (!wx || wx.feels_like === null) { strip.hidden = true; return; }
+      strip.hidden = false;
+      strip.className = "wx-strip sky-" + wx.sky + (wx.stale ? " is-stale" : "");
+      document.getElementById("wxTemp").textContent = wx.feels_like + "\u00b0";
+      document.getElementById("wxWhat").textContent = wx.headline;
+      document.getElementById("wxArt").innerHTML = wx.garments.map(
+        id => `<svg class="ic" aria-hidden="true"><use href="#ic-${id}"></use></svg>`).join("");
+      strip.setAttribute("aria-label", `Feels like ${wx.feels_like} degrees. ${wx.headline}.`);
+    }
+
     async function refresh() {
       try {
         const res  = await fetch("/data");
@@ -1962,6 +2008,7 @@
         if (data.week) updateWeeklyPattern(data.week);
         updateSchedule(data.schedule);
         updateFoods(data.foods);
+        updateWeatherStrip(data.weather);
       } catch (_) {
         notifyOffline();
       }
