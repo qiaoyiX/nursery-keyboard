@@ -18,6 +18,89 @@
     .sky-night-rain { --sky-a:#1c2533; --sky-b:#3a4656; --sky-ink:#e3e9f1; }
     .sky-night-snow { --sky-a:#2b3a4d; --sky-b:#566779; --sky-ink:#eef3f8; }
 
+    /* Weather-icon colours ride on the SKY class, not on the app theme: the panel is
+       saturated whatever the theme, and the day and night grounds are 30x apart in
+       luminance (0.18-0.84 vs 0.02-0.13). One palette cannot serve both — Apple's own
+       sun yellow scores 1.28:1 on our palest sky, which is a sunny afternoon, which is
+       exactly when this page gets opened. Custom properties inherit into the cloned
+       <use> tree, so these reach the gradients inside each symbol. */
+    [class*="sky-day"] {
+      --wx-sun-a:#FFD84D; --wx-sun-b:#FF9E2C; --wx-sun-ray:#FFB020;
+      --wx-sun-edge:rgba(176,88,0,.5);
+      --wx-cloud-a:#FFFFFF; --wx-cloud-b:#DCE6ED; --wx-cloud-back:#C3D2DC; --wx-cloud-edge:#A9BCC9;
+      --wx-storm-a:#C6D2DC; --wx-storm-b:#93A5B5;
+      --wx-rain:#2E8BD0; --wx-snow:#4E97CE;
+      --wx-fog-near:#8FA6B4; --wx-fog-far:#B6C7D2;
+      --wx-bolt-a:#FFD230; --wx-bolt-b:#FF9B1E; --wx-bolt-edge:rgba(150,70,0,.45);
+    }
+    [class*="sky-night"] {
+      --wx-moon-a:#F6EBC9; --wx-moon-b:#DCBE79; --wx-star:#FFFFFF;
+      --wx-cloud-a:#D2DCE8; --wx-cloud-b:#92A3B8; --wx-cloud-back:#6E7F96; --wx-cloud-edge:#5A6A80;
+      --wx-storm-a:#7C8CA3; --wx-storm-b:#4E5C72;
+      --wx-rain:#7BC8F2; --wx-snow:#DCEDFB;
+      --wx-fog-near:#7E8FA6; --wx-fog-far:#A9B8C9;
+      --wx-bolt-a:#FFD230; --wx-bolt-b:#FF9B1E; --wx-bolt-edge:rgba(150,70,0,.45);
+    }
+    /* day-snow is the palest ground the page can paint (luminance up to 0.84, and the
+       icon sits low where it is palest), so a white cloud on it measures 1.18:1 and
+       simply disappears. This one sky gets a deeper cloud and a stronger edge. */
+    .sky-day-snow {
+      --wx-cloud-a:#F2F7FB; --wx-cloud-b:#B9C9D8;
+      --wx-cloud-back:#A8BACB; --wx-cloud-edge:#7E93A6;
+      --wx-snow:#3B7FB5; --wx-fog-far:#9DB0C0;
+    }
+
+    /* Not pure white at 3am. */
+    :root[data-theme="night"] [class*="sky-night"] { --wx-moon-a:#DCCDA8; --wx-star:#E8E2D2; }
+
+    /* ── Fabrics ──────────────────────────────────────────────────
+       Garment ids come from clothing.py; the assignment is driven by which garments can
+       share one grid (worst case is freezing + rain: nine tiles at once). Confusable
+       pairs are separated by hue as well as silhouette — socks/booties/mittens are
+       sky/heather/rose, the sacks run butter->sage->indigo as the TOG climbs, and
+       cardigan/fleece/bunting are rose/sage/clay. The knit hat and mittens deliberately
+       match: they are a set, and no two shapes here are less confusable. */
+    .art[data-g] { background: var(--g-wash, var(--surface)); }
+    .art[data-g="bodysuit_short"], .art[data-g="bodysuit_long"] {
+      --g-wash: var(--fab-milk-wash); --g-fill: var(--fab-milk-fill);
+      --g-ink: var(--fab-milk-ink);  --g-trim: var(--fab-milk-ink); }
+    .art[data-g="romper"], .art[data-g="socks"], .art[data-g="blanket"] {
+      --g-wash: var(--fab-sky-wash); --g-fill: var(--fab-sky-fill);
+      --g-ink: var(--fab-sky-ink);   --g-trim: var(--fab-milk-fill); }
+    .art[data-g="sleeper_footed"], .art[data-g="cardigan"],
+    .art[data-g="knit_hat"], .art[data-g="mittens"] {
+      --g-wash: var(--fab-rose-wash); --g-fill: var(--fab-rose-fill);
+      --g-ink: var(--fab-rose-ink);   --g-trim: var(--fab-milk-fill); }
+    .art[data-g="pants"], .art[data-g="sack_25"] {
+      --g-wash: var(--fab-indigo-wash); --g-fill: var(--fab-indigo-fill);
+      --g-ink: var(--fab-indigo-ink);   --g-trim: var(--fab-milk-fill); }
+    .art[data-g="fleece"], .art[data-g="sack_10"] {
+      --g-wash: var(--fab-sage-wash); --g-fill: var(--fab-sage-fill);
+      --g-ink: var(--fab-sage-ink);   --g-trim: var(--fab-milk-fill); }
+    .art[data-g="bunting"] {
+      --g-wash: var(--fab-clay-wash); --g-fill: var(--fab-clay-fill);
+      --g-ink: var(--fab-clay-ink);   --g-trim: var(--fab-milk-fill); }
+    .art[data-g="sun_hat"], .art[data-g="sack_05"] {
+      --g-wash: var(--fab-butter-wash); --g-fill: var(--fab-butter-fill);
+      --g-ink: var(--fab-butter-ink);   --g-trim: var(--fab-clay-ink); }
+    .art[data-g="booties"] {
+      --g-wash: var(--fab-heather-wash); --g-fill: var(--fab-heather-fill);
+      --g-ink: var(--fab-heather-ink);   --g-trim: var(--fab-clay-ink); }
+    .art[data-g="rain_cover"] {
+      --g-wash: var(--fab-clear-wash); --g-fill: var(--fab-clear-fill);
+      --g-ink: var(--fab-clear-ink);   --g-trim: #FFFFFF; }
+
+    /* At 3am a grid of nine tinted squares is noise. The outlines alone carry it. */
+    :root[data-theme="night"] .art[data-g] { background: var(--surface); }
+
+    /* Colour is never the only signal — every tile is captioned — but if the viewer has
+       asked for more contrast, fall all the way back to the monochrome this page
+       shipped with, which is known legible. */
+    @media (prefers-contrast: more) {
+      .art[data-g] { --g-fill: transparent; --g-ink: var(--brown-deep);
+                     --g-trim: var(--brown-deep); background: var(--surface); }
+    }
+
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -38,7 +121,7 @@
     .sky-place { font-size: var(--t-sm); opacity: .85;
                  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .sky-when  { font-size: var(--t-xs); opacity: .7; margin-top: 2px; }
-    .sky-icon  { width: 64px; height: 64px; flex: none; opacity: .92; }
+    .sky-icon  { width: 64px; height: 64px; flex: none; }
     .sky-temp  {
       font-family: var(--font-display); font-size: 4.4rem; line-height: .95;
       font-variant-numeric: tabular-nums; margin-top: 10px; letter-spacing: -.02em;
@@ -79,7 +162,7 @@
     }
     .hang .art {
       width: 62px; height: 62px; color: var(--brown-mid);
-      background: var(--surface); border-radius: 16px; padding: 8px;
+      border-radius: 16px; padding: 8px;
     }
     .hang .cap {
       font-size: var(--t-xs); color: var(--text-muted); margin-top: 6px;
@@ -101,7 +184,15 @@
       font-size: var(--t-sm); line-height: 1.45;
       background: var(--cream-2); border-radius: 14px; padding: 10px 12px;
     }
-    .caveat.is-safety { background: var(--danger-a); color: var(--danger); font-weight: 600; }
+    /* The safety chip wins by MECHANISM, not by hue: it is the only solid-filled thing
+       on the page below the sky, so it still comes first for a red-green colourblind
+       parent. The other chips stay at one low tint weight — three tinted chips would
+       make a traffic light and dilute this one. */
+    .caveat.is-safety {
+      background: var(--danger); color: #fff; font-weight: 700;
+    }
+    .caveat.cv-wet { background: var(--fab-sky-wash); color: var(--fab-sky-ink); }
+    .caveat.cv-uv  { background: var(--fab-butter-wash); color: var(--fab-butter-ink); }
     .caveat .cv-icon { flex: none; font-size: 1rem; line-height: 1.3; }
 
     /* ── Hours ─────────────────────────────────────────────────── */
@@ -116,10 +207,15 @@
       background: linear-gradient(165deg, var(--sky-a, #93a9b8), var(--sky-b, #ccd8de));
       color: var(--sky-ink, #22333d);
       outline: 2px solid transparent; outline-offset: 2px;
+      /* A top edge so eight adjacent gradients read as separate chips rather than one
+         smeared band. */
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.35);
     }
-    .hour[aria-pressed="true"] { outline-color: var(--brown-mid); }
+    .hour[aria-pressed="true"] { outline-color: var(--brown-deep); outline-width: 2px; }
     .hour .h-when { font-size: var(--t-xs); opacity: .8; }
-    .hour .h-art  { width: 26px; height: 26px; margin: 3px auto 2px; opacity: .9; }
+    /* 26px: the sun's rim, the cloud's back lobe and the fog's far bar all turn to
+       grey mush at this size, so the fidelity switch drops them. */
+    .hour .h-art  { width: 26px; height: 26px; margin: 3px auto 2px; --wx-detail: 0; }
     .hour .h-temp { font-size: var(--t-sm); font-weight: 600; font-variant-numeric: tabular-nums; }
 
     /* ── Tonight ───────────────────────────────────────────────── */
@@ -131,7 +227,10 @@
     .tonight .hangers { margin-top: 12px; grid-template-columns: repeat(2, 1fr); }
     .tonight .hang { padding-top: 0; }
     .tonight .hang::before { display: none; }
-    .tonight .hang .art { color: var(--sleep); }
+    /* Tiles here keep the plain surface: a tinted square on a tinted blue-grey panel is
+       mud, and these two need to lift off the ground. The fabrics themselves stay — a
+       rose sleeper under an indigo 2.5 sack is the block's whole payoff. */
+    .tonight .art[data-g] { background: var(--surface); }
     .tonight .line { padding-top: 0; }
     .tonight .line::before { display: none; }
     .safe-note { font-size: var(--t-xs); color: var(--text-muted); margin-top: 12px; line-height: 1.5; }
@@ -258,8 +357,10 @@
       ? "moon" : src.condition;
   }
 
+  // data-g is how colour reaches the drawing: CSS can't select inside a <use> shadow
+  // tree, but the custom properties set on this host element inherit into it.
   function icon(id, cls) {
-    return `<svg class="ic ${cls || ""}" aria-hidden="true"><use href="#ic-${id}"></use></svg>`;
+    return `<svg class="ic ${cls || ""}" data-g="${id}" aria-hidden="true"><use href="#ic-${id}"></use></svg>`;
   }
 
   function hangers(garments, extraClass) {
@@ -315,7 +416,7 @@
     $("outfit").innerHTML = hangers(outfit.garments);
 
     $("caveats").innerHTML = outfit.caveats.map(c => `
-      <div class="caveat ${c.id === "carseat" ? "is-safety" : ""}">
+      <div class="caveat ${c.id === "carseat" ? "is-safety" : "cv-" + c.id}">
         <span class="cv-icon" aria-hidden="true">${c.icon}</span><span>${c.text}</span>
       </div>`).join("");
 

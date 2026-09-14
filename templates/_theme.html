@@ -55,6 +55,24 @@
 
     /* Minimum comfortable touch target. Everything tappable uses this. */
     --tap: 44px;
+
+    /* ── Fabrics ─────────────────────────────────────────
+       The garment colours for /clothes. Three values each, and the third is not
+       decoration: pastels on a white tile reach only ~1.5:1 (oat on white is 1.48),
+       so the -ink outline is what keeps a pale garment from dissolving. -wash is the
+       tile behind it. Every -ink clears 3:1 against both its own -fill and its -wash.
+
+       These live here rather than in clothes.html because the dashboard's weather
+       strip draws the same garments and has to resolve the same names. */
+    --fab-milk-wash:    #FBF6EE;  --fab-milk-fill:    #FFFFFF;  --fab-milk-ink:    #9A7A52;
+    --fab-butter-wash:  #FDF4DE;  --fab-butter-fill:  #FBE3A8;  --fab-butter-ink:  #A8781A;
+    --fab-rose-wash:    #FCEFEC;  --fab-rose-fill:    #F3C3B6;  --fab-rose-ink:    #B4604D;
+    --fab-sage-wash:    #EEF3E9;  --fab-sage-fill:    #C3D6B4;  --fab-sage-ink:    #5F8149;
+    --fab-sky-wash:     #E9F1F8;  --fab-sky-fill:     #B6D4EA;  --fab-sky-ink:     #4A7FA8;
+    --fab-indigo-wash:  #E7EAF3;  --fab-indigo-fill:  #7E93C4;  --fab-indigo-ink:  #3A4C86;
+    --fab-clay-wash:    #FBEDE4;  --fab-clay-fill:    #EBB794;  --fab-clay-ink:    #A85B32;
+    --fab-heather-wash: #F0EDF3;  --fab-heather-fill: #CDC5D8;  --fab-heather-ink: #6F6383;
+    --fab-clear-wash:   #EDF3F4;  --fab-clear-fill:   #E8F1F3;  --fab-clear-ink:   #5B7F88;
   }
 
   /* Dark, from the OS — unless the page has been explicitly set to light. */
@@ -73,6 +91,30 @@
       --flag:        #a98ad0;  --flag-a: rgba(169,138,208,.16);
       --shadow-card: 0 1px 3px rgba(0,0,0,.35), 0 6px 18px rgba(0,0,0,.40);
       --toast-bg: #0f0b08;  --toast-fg: #f0e6d8;
+    /* The sleep tint had no dark value, so the Tonight block was nearly
+       invisible over #1c1712 — it was inheriting a wash mixed for cream. */
+    --sleep-a: rgba(122,158,196,.16);
+    --fab-milk-wash: #2E251B;  --fab-milk-fill: #4A3E31;  --fab-milk-ink: #EFE2CE;
+    --fab-butter-wash: #2E2717;  --fab-butter-fill: #5A4A24;  --fab-butter-ink: #F0CE7C;
+    --fab-rose-wash: #31231E;  --fab-rose-fill: #5E3A31;  --fab-rose-ink: #F0AE9B;
+    --fab-sage-wash: #232B1F;  --fab-sage-fill: #3C4E33;  --fab-sage-ink: #AFCF9C;
+    --fab-sky-wash: #1D2733;  --fab-sky-fill: #2F4659;  --fab-sky-ink: #96C6E6;
+    --fab-indigo-wash: #1F2436;  --fab-indigo-fill: #38436B;  --fab-indigo-ink: #9FB0E4;
+    --fab-clay-wash: #32231A;  --fab-clay-fill: #5E3A25;  --fab-clay-ink: #EFA97C;
+    --fab-heather-wash: #29242F;  --fab-heather-fill: #453C53;  --fab-heather-ink: #C7BBD9;
+    --fab-clear-wash: #1F2729;  --fab-clear-fill: #2E3B3E;  --fab-clear-ink: #A9CBD2;
+      /* The sleep tint had no dark value, so the Tonight block was nearly
+         invisible over #1c1712 — it was inheriting a wash mixed for cream. */
+      --sleep-a: rgba(122,158,196,.16);
+      --fab-milk-wash: #2E251B;  --fab-milk-fill: #4A3E31;  --fab-milk-ink: #EFE2CE;
+      --fab-butter-wash: #2E2717;  --fab-butter-fill: #5A4A24;  --fab-butter-ink: #F0CE7C;
+      --fab-rose-wash: #31231E;  --fab-rose-fill: #5E3A31;  --fab-rose-ink: #F0AE9B;
+      --fab-sage-wash: #232B1F;  --fab-sage-fill: #3C4E33;  --fab-sage-ink: #AFCF9C;
+      --fab-sky-wash: #1D2733;  --fab-sky-fill: #2F4659;  --fab-sky-ink: #96C6E6;
+      --fab-indigo-wash: #1F2436;  --fab-indigo-fill: #38436B;  --fab-indigo-ink: #9FB0E4;
+      --fab-clay-wash: #32231A;  --fab-clay-fill: #5E3A25;  --fab-clay-ink: #EFA97C;
+      --fab-heather-wash: #29242F;  --fab-heather-fill: #453C53;  --fab-heather-ink: #C7BBD9;
+      --fab-clear-wash: #1F2729;  --fab-clear-fill: #2E3B3E;  --fab-clear-ink: #A9CBD2;
     }
   }
 
@@ -101,6 +143,12 @@
     --brown-deep: #cdbfae;
     --text-muted: #8f8271;
     --shadow-card: none;
+    --sleep-a:    rgba(110,140,175,.10);
+    /* One notch quieter than dark. The fills stay; only the outlines come down, so
+       the garments keep their hue without any of them glowing at 3am. */
+    --fab-milk-ink:    #C9BCA9;  --fab-butter-ink:  #C7AA64;  --fab-rose-ink:    #C88D7D;
+    --fab-sage-ink:    #90AB7F;  --fab-sky-ink:     #79A4C0;  --fab-indigo-ink:  #8391BC;
+    --fab-clay-ink:    #C68C66;  --fab-heather-ink: #A599B4;  --fab-clear-ink:   #8CA9AF;
   }
 
   /* ── Primitives ──────────────────────────────────── */

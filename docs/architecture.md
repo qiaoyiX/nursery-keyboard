@@ -389,7 +389,31 @@ It is built from four pieces:
   as good as that number.
 - Garment ids are shared between `clothing.py` and the `<symbol>` sprite in
   `templates/_clothes_icons.html`. Adding a garment means adding both, or the tile renders empty.
-- SVG styling in that sprite must use presentation attributes, not CSS classes: `<use>` clones a
-  symbol into a shadow tree that the page's stylesheet cannot reach, so a class-based rule paints
-  every garment default black. Everything is drawn in `currentColor` for the same reason —
-  inherited properties are what cross that boundary.
+- SVG styling in that sprite cannot use CSS class selectors: `<use>` clones a symbol into a
+  shadow tree that the page's stylesheet cannot reach, so a class-based rule paints every garment
+  default black. Only *inherited* values cross that boundary — `currentColor` and custom
+  properties.
+
+**Colour pass (2026-09-14).** The first version painted everything in one inherited
+`currentColor`, which made every garment and every weather icon the same brown. Colour now
+travels as custom properties set on the `<use>` host (`data-g="pants"` → `--g-fill` / `--g-ink` /
+`--g-trim`), and gradients live inside the symbol that uses them, because a gradient resolves
+custom properties where it is *defined* — a shared `<defs>` gradient would only ever see
+`:root`, and the weather colours are declared per sky class so one sun symbol can be amber at
+noon and gold at midnight. Two measurements drove the design:
+
+- **Weather icons need two palettes, not one.** The day skies span luminance 0.18-0.84 and the
+  night skies 0.02-0.13. Apple's own sun yellow scores **1.28:1** on our palest sky and a white
+  cloud **1.18:1** — both invisible on a sunny afternoon, which is exactly when this page gets
+  opened. So `.sky-day-*` and `.sky-night-*` each declare a full icon set, and `.sky-day-snow`,
+  the palest ground of all, overrides the cloud again.
+- **Fabrics need three values, not two.** Nursery pastels reach only 1.5-2.7:1 on a white tile
+  (oat is 1.48:1) while scoring 6-11:1 on the dark one. Each fabric therefore carries a `-fill`,
+  a `-wash` for the tile behind it, and a darker `-ink` for the outline, so legibility never
+  depends on how pale the fabric is.
+
+The same pass fixed two things the colour work exposed: the car-seat caveat was appended last and
+so rendered at the bottom of the stack despite being the only safety message (it is now sorted
+first, and is the one solid-filled element on the page, so it wins by mechanism rather than by
+hue — which still holds for a red-green colourblind reader), and `--sleep-a` had no dark
+override, leaving the Tonight block nearly invisible over `#1c1712`.

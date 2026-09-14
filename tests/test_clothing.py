@@ -73,7 +73,8 @@ def test_wet():
     check("rain is called out", "wet" in caveat_ids(rain))
     snow = clothing.outfit_for(30, 73)
     check("snow adds a cover too", "rain_cover" in ids(snow))
-    check("snow says snow", snow["caveats"][0]["text"].startswith("Snow"))
+    wet_chip = next(c for c in snow["caveats"] if c["id"] == "wet")
+    check("snow says snow", wet_chip["text"].startswith("Snow"))
     check("clear sky stays dry", "rain_cover" not in ids(clothing.outfit_for(60, 0)))
     check("thunder counts as wet", clothing.is_wet(95))
     check("fog does not", not clothing.is_wet(45))
@@ -99,6 +100,17 @@ def test_car_seat_warning():
     check("bunting warns", "carseat" in caveat_ids(clothing.outfit_for(38)))
     check("fleece warns", "carseat" in caveat_ids(clothing.outfit_for(50)))
     check("cardigan does not", "carseat" not in caveat_ids(clothing.outfit_for(60)))
+
+
+def test_safety_caveat_comes_first():
+    """It is the only caveat about harm rather than comfort, so it cannot sit last."""
+    print("the car-seat warning is read first")
+    # Freezing rain: wet, wind and carseat all fire at once.
+    out = clothing.outfit_for(30, 63, 22, 0, True)
+    ids = caveat_ids(out)
+    check("all three fire", set(ids) == {"wet", "wind", "carseat"}, ids)
+    check("safety is first", ids[0] == "carseat", ids)
+    check("the others keep their order", ids[1:] == ["wet", "wind"], ids)
 
 
 def test_missing_data():
@@ -143,6 +155,7 @@ def main():
     print("Clothing rules:")
     for fn in (test_bands, test_dressing_order, test_sun_and_night, test_wet,
                test_wind_is_not_double_counted, test_car_seat_warning,
+               test_safety_caveat_comes_first,
                test_missing_data, test_sleepwear, test_conditions):
         fn()
     print()

@@ -151,6 +151,10 @@ def outfit_for(feels_like_f, weather_code=None, wind_mph=0, uv=0, is_day=True):
         caveats.append({"id": "carseat", "icon": "🚗",
                         "text": "No puffy coat under the car-seat harness — buckle first, coat over the top."})
 
+    # The safety note is appended last but must be read first: it is the only caveat
+    # that is about harm rather than comfort.
+    caveats.sort(key=lambda c: 0 if c["id"] == "carseat" else 1)
+
     garments = order_garments(garments)
     return {
         "band": band_id,

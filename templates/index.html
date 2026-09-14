@@ -827,7 +827,13 @@
                font-variant-numeric: tabular-nums; }
     .wx-what { font-size: var(--t-sm); opacity: .9; }
     .wx-art  { margin-left: auto; display: flex; gap: 4px; }
-    .wx-art .ic { width: 26px; height: 26px; }
+    /* On the sky gradient rather than on a cream tile, so the garments drop their
+       fabric fills and draw as white line art — a pale fabric fill would disappear
+       into a day sky. Detail off at 26px, same as the hourly ribbon. */
+    .wx-art .ic {
+      width: 26px; height: 26px; --wx-detail: 0;
+      --g-fill: transparent; --g-ink: currentColor; --g-trim: currentColor;
+    }
   </style>
 </head>
 <body>
@@ -1979,7 +1985,7 @@
       document.getElementById("wxTemp").textContent = wx.feels_like + "\u00b0";
       document.getElementById("wxWhat").textContent = wx.headline;
       document.getElementById("wxArt").innerHTML = wx.garments.map(
-        id => `<svg class="ic" aria-hidden="true"><use href="#ic-${id}"></use></svg>`).join("");
+        id => `<svg class="ic" data-g="${id}" aria-hidden="true"><use href="#ic-${id}"></use></svg>`).join("");
       strip.setAttribute("aria-label", `Feels like ${wx.feels_like} degrees. ${wx.headline}.`);
     }
 

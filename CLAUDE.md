@@ -68,9 +68,16 @@ Three files form the core:
   clothesline, caveat chips (car-seat / rain / sun), an hourly ribbon you can tap to dress her for
   5pm, and tonight's sleep sack. The dashboard shows a one-line teaser of the same data.
 - Garment art is `templates/_clothes_icons.html`, a `<symbol>` sprite shared by both pages. Ids
-  match `clothing.py`'s `GARMENTS`. **Style it with presentation attributes, never CSS classes** —
-  `<use>` clones into a shadow tree the page stylesheet can't reach, which silently paints every
-  garment black. See ADR-011.
+  match `clothing.py`'s `GARMENTS`. **CSS class selectors cannot reach inside a `<symbol>`** —
+  `<use>` clones it into a shadow tree — so colour travels as *custom properties*, which do
+  inherit across that boundary. Every shape paints from `var(--g-fill/--g-ink/--g-trim, fallback)`
+  and the host element carries `data-g="<garment id>"`; `clothes.html` maps each id to a fabric.
+  Weather gradients live **inside** their own symbol (a shared `<defs>` gradient would only ever
+  see `:root`, and the weather colours are declared per sky class). `--wx-detail: 0` drops the
+  fine detail at the 26px ribbon/strip size. See ADR-011.
+- Fabric tokens (`--fab-*-wash/-fill/-ink`) live in `_theme.html` because the dashboard strip
+  resolves the same names. Three values per fabric, not two: pastels measure ~1.5:1 on a white
+  tile, so the `-ink` outline is what keeps a pale garment from dissolving.
 - Settings: `weather_latitude`, `weather_longitude`, `weather_place` (set from the page's location
   chip) and `nursery_temp_f` (drives the sleep-sack TOG — there is no nursery thermometer).
 
