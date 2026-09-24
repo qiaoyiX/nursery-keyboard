@@ -402,11 +402,15 @@
     $("skyWhen").textContent = atHour
       ? "Dressed for " + hourLabel(atHour.time)
       : (view.now.condition_label || "");
+    // The big number is the real temperature, as on every phone; feels-like only
+    // earns a line when it differs enough to change what she wears.
     const feels = atHour ? atHour.feels_like : view.now.feels_like;
-    $("skyTemp").innerHTML = (feels === null ? "—" : Math.round(feels)) + '<span class="deg">°</span>';
     const actual = atHour ? atHour.temp : view.now.temp;
-    $("skySub").textContent = actual === null ? "" :
-      `Feels like ${Math.round(feels)}° · actually ${Math.round(actual)}°`;
+    const big = actual === null ? feels : actual;
+    $("skyTemp").innerHTML = (big === null ? "—" : Math.round(big)) + '<span class="deg">°</span>';
+    $("skySub").textContent = (feels === null || actual === null
+      || Math.abs(Math.round(feels) - Math.round(actual)) < 3)
+      ? "" : `Feels like ${Math.round(feels)}°`;
 
     // Outfit
     $("outHeadline").textContent = outfit.headline;
@@ -425,13 +429,13 @@
       <button class="hour sky-${view.now.sky}" aria-pressed="${picked === null}" onclick="pick(null)">
         <span class="h-when">Now</span>
         ${icon(conditionIcon(view.now), "h-art")}
-        <span class="h-temp">${Math.round(view.now.feels_like)}°</span>
+        <span class="h-temp">${Math.round(view.now.temp ?? view.now.feels_like)}°</span>
       </button>` +
       view.hours.map((h, i) => `
       <button class="hour sky-${h.sky}" aria-pressed="${picked === i}" onclick="pick(${i})">
         <span class="h-when">${hourLabel(h.time)}</span>
         ${icon(conditionIcon(h), "h-art")}
-        <span class="h-temp">${Math.round(h.feels_like)}°</span>
+        <span class="h-temp">${Math.round(h.temp ?? h.feels_like)}°</span>
       </button>`).join("");
 
     // Tonight

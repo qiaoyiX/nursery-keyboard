@@ -35,7 +35,8 @@ STALE_AFTER_SECONDS = 90 * 60  # three missed refreshes = say so on screen
 cache_lock = threading.Lock()
 
 HOURLY_FIELDS = ("temperature_2m", "apparent_temperature", "precipitation_probability",
-                 "weather_code", "wind_speed_10m", "uv_index", "is_day")
+                 "weather_code", "wind_speed_10m", "uv_index", "is_day",
+                 "relative_humidity_2m")
 
 
 # ── Fetch ─────────────────────────────────────────────────────────────────────
@@ -46,7 +47,7 @@ def fetch(lat, lon):
         "latitude": lat,
         "longitude": lon,
         "current": "temperature_2m,apparent_temperature,precipitation,weather_code,"
-                   "wind_speed_10m,is_day",
+                   "wind_speed_10m,is_day,relative_humidity_2m",
         "hourly": ",".join(HOURLY_FIELDS),
         "daily": "temperature_2m_min,temperature_2m_max,sunrise,sunset",
         "temperature_unit": "fahrenheit",
@@ -178,6 +179,45 @@ def hourly_rows(payload):
             row[field] = series[i] if i < len(series) else None
         rows.append(row)
     return rows
+
+
+def feels_like(row):
+    """Feels-like °F the way the NWS — and so Apple and Google — compute it.
+
+    Open-Meteo's `apparent_temperature` (Steadman) subtracts wind at *every*
+    temperature, so a breezy 64°F afternoon came out as 58°F — 5–10° below what every
+    phone showed, on exactly the mild days that are hardest to dress for. The NWS only
+    applies wind chill at or below 50°F and heat index at or above 80°F; in between,
+    feels-like is the temperature.
+    """
+    t = row.get("temperature_2m")
+    if t is None:
+        return row.get("apparent_temperature")
+    wind = row.get("wind_speed_10m") or 0
+    if t <= 50 and wind >= 3:
+        v = wind ** 0.16
+        return round(35.74 + 0.6215 * t - 35.75 * v + 0.4275 * t * v, 1)
+    if t >= 80:
+        rh = row.get("relative_humidity_2m")
+        if rh is None:       # a cache written before humidity was fetched
+            return row.get("apparent_temperature", t)
+        return round(_heat_index(t, rh), 1)
+    return t
+
+
+def _heat_index(t, rh):
+    """NWS Rothfusz regression, with its two published adjustments."""
+    simple = 0.5 * (t + 61.0 + (t - 68.0) * 1.2 + rh * 0.094)
+    if (simple + t) / 2 < 80:
+        return simple
+    hi = (-42.379 + 2.04901523 * t + 10.14333127 * rh - 0.22475541 * t * rh
+          - 0.00683783 * t * t - 0.05481717 * rh * rh + 0.00122874 * t * t * rh
+          + 0.00085282 * t * rh * rh - 0.00000199 * t * t * rh * rh)
+    if rh < 13 and 80 <= t <= 112:
+        hi -= ((13 - rh) / 4) * ((17 - abs(t - 95)) / 17) ** 0.5
+    elif rh > 85 and 80 <= t <= 87:
+        hi += ((rh - 85) / 10) * ((87 - t) / 5)
+    return hi
 
 
 def overnight_low(payload, now=None):

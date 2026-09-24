@@ -209,13 +209,30 @@ def test_sky_keys():
     check("snow", weather.sky_key(73, True) == "day-snow")
 
 
+def test_feels_like_matches_nws():
+    print("feels-like (NWS)")
+    fl = weather.feels_like
+    # 2026-09-24, NYC: 64°F, 15 mph. Open-Meteo said 58; every phone said 64.
+    check("mild + windy is just the temperature",
+          fl({"temperature_2m": 64.2, "wind_speed_10m": 15, "apparent_temperature": 58.1}) == 64.2)
+    check("wind chill at 40°F / 15 mph ≈ 32", abs(fl({"temperature_2m": 40, "wind_speed_10m": 15}) - 31.8) < 0.5,
+          fl({"temperature_2m": 40, "wind_speed_10m": 15}))
+    check("no wind chill in calm air", fl({"temperature_2m": 40, "wind_speed_10m": 2}) == 40)
+    check("heat index at 90°F / 60% ≈ 100", abs(fl({"temperature_2m": 90, "relative_humidity_2m": 60}) - 100) < 1.5,
+          fl({"temperature_2m": 90, "relative_humidity_2m": 60}))
+    check("hot without humidity falls back to apparent",
+          fl({"temperature_2m": 90, "apparent_temperature": 95}) == 95)
+    check("no temperature falls back to apparent", fl({"apparent_temperature": 50}) == 50)
+
+
 def main():
     print("Weather cache:")
     original_file, original_fetch = weather.CACHE_FILE, weather.fetch
     try:
         for fn in (test_refresh_writes_then_reuses, test_ttl_and_moving,
                    test_failure_keeps_the_old_copy, test_cold_cache_and_corruption,
-                   test_memo_follows_the_file, test_cache_age, test_overnight_low, test_upcoming_hours, test_sky_keys):
+                   test_memo_follows_the_file, test_cache_age, test_overnight_low, test_upcoming_hours, test_sky_keys,
+                   test_feels_like_matches_nws):
             fn()
     finally:
         weather.CACHE_FILE, weather.fetch = original_file, original_fetch

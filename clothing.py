@@ -6,11 +6,11 @@ page can re-run it for any hour of the forecast, not just now.
 
 Two conventions drive the numbers:
 
-  * **Feels-like, never the raw temperature.** Open-Meteo's `apparent_temperature`
-    already folds in wind chill and humidity. Adding a separate wind penalty on top
-    would double-count it, which is how a 55°F breezy day ends up recommending a
-    snowsuit. Wind only earns a *caveat* here, plus a windbreak when she has no mid
-    layer at all.
+  * **Feels-like, never the raw temperature.** `weather.feels_like()` gives the NWS
+    number (wind chill ≤50°F, heat index ≥80°F), which already folds in the wind when it
+    matters. Adding a separate wind penalty on top would double-count it, which is how
+    a 55°F breezy day ends up recommending a snowsuit. Wind only earns a *caveat* here,
+    plus a windbreak when she has no mid layer at all.
   * **One more layer than a comfortable adult.** The standard infant rule: a baby
     cannot shiver efficiently, cannot move to warm up, and cannot tell you. The bands
     below are therefore shifted one layer warmer than what an adult would wear.

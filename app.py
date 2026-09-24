@@ -628,19 +628,19 @@ def clothes_view(now=None):
 
     is_day  = bool(current.get("is_day", 1))
     code    = current.get("weather_code")
-    feels   = current.get("apparent_temperature")
+    feels   = weather.feels_like(current)
 
     hours = []
     for row in weather.upcoming_hours(payload, count=8, now=now):
         hours.append({
             "time":       row["time"],
             "temp":       row.get("temperature_2m"),
-            "feels_like": row.get("apparent_temperature"),
+            "feels_like": weather.feels_like(row),
             "code":       row.get("weather_code"),
             "condition":  clothing.condition_for(row.get("weather_code")),
             "sky":        weather.sky_key(row.get("weather_code"), bool(row.get("is_day", 1))),
             "precip_probability": row.get("precipitation_probability"),
-            "outfit":     clothing.outfit_for(row.get("apparent_temperature"),
+            "outfit":     clothing.outfit_for(weather.feels_like(row),
                                               row.get("weather_code"),
                                               row.get("wind_speed_10m") or 0,
                                               row.get("uv_index") or 0,
@@ -692,7 +692,7 @@ def weather_teaser():
         if not entry:
             return None
         current = entry["payload"].get("current") or {}
-        feels = current.get("apparent_temperature")
+        feels = weather.feels_like(current)
         if feels is None:
             return None
         is_day = bool(current.get("is_day", 1))
@@ -701,6 +701,8 @@ def weather_teaser():
         age = weather.cache_age(entry)
         return {
             "feels_like": round(feels),
+            "temp":       None if current.get("temperature_2m") is None
+                          else round(current["temperature_2m"]),
             "condition":  clothing.condition_for(code),
             "sky":        weather.sky_key(code, is_day),
             "headline":   outfit["headline"],

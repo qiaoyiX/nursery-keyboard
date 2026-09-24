@@ -1955,11 +1955,11 @@
       if (!wx || wx.feels_like === null) { strip.hidden = true; return; }
       strip.hidden = false;
       strip.className = "wx-strip sky-" + wx.sky + (wx.stale ? " is-stale" : "");
-      document.getElementById("wxTemp").textContent = wx.feels_like + "\u00b0";
+      document.getElementById("wxTemp").textContent = (wx.temp ?? wx.feels_like) + "\u00b0";
       document.getElementById("wxWhat").textContent = wx.headline;
       document.getElementById("wxArt").innerHTML = wx.garments.map(
         id => `<svg class="ic" data-g="${id}" aria-hidden="true"><use href="#ic-${id}"></use></svg>`).join("");
-      strip.setAttribute("aria-label", `Feels like ${wx.feels_like} degrees. ${wx.headline}.`);
+      strip.setAttribute("aria-label", `${wx.temp ?? wx.feels_like} degrees. ${wx.headline}.`);
     }
 
     async function refresh() {
