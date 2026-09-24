@@ -147,7 +147,6 @@
       margin-bottom: 14px;
       background: var(--surface);
     }
-    .plan-empty { font-size: 0.85rem; color: var(--text-muted); padding: 4px 0 6px; }
     .plan-row {
       display: flex; align-items: baseline; gap: 10px;
       padding: 7px 0;
@@ -1170,29 +1169,14 @@
       if (!plan) return;
       body.replaceChildren();
 
-      if (!plan.morning_feed_iso) {
-        const p = document.createElement("div");
-        p.className = "plan-empty";
-        // No anchor is a real state, not an error: the chain is built from the morning
-        // feed, so before it is logged there is nothing honest to show.
-        p.textContent = "Log the morning feed to build today's plan.";
-        body.appendChild(p);
-        return;
-      }
-
       const clock = iso => new Date(iso).toLocaleTimeString("en-US",
         { hour: "numeric", minute: "2-digit" });
       const now = Date.now();
       const shiftStart = new Date(plan.shift_start_iso).getTime();
       const shiftEnd   = new Date(plan.shift_end_iso).getTime();
 
-      // The one row to look at. A nap in progress wins outright: its projected end may
-      // already have passed (she is sleeping longer than the median) and picking by time
-      // alone would dim the row while she is still asleep, then point "now" at a feed
-      // that cannot happen until she wakes.
-      const liveIdx = plan.items.findIndex(it => it.in_progress);
-      const nextIdx = liveIdx >= 0 ? liveIdx
-        : plan.items.findIndex(it => new Date(it.end_iso || it.iso).getTime() >= now);
+      // The one row to look at: the first that hasn't finished yet.
+      const nextIdx = plan.items.findIndex(it => new Date(it.end_iso || it.iso).getTime() >= now);
 
       let shiftOpened = false, shiftClosed = false;
       plan.items.forEach((it, i) => {
@@ -1201,7 +1185,7 @@
         if (!shiftClosed && t >= shiftEnd)   { body.appendChild(shiftRule("off"));     shiftClosed = true; }
 
         const row = document.createElement("div");
-        const done = !it.in_progress && new Date(it.end_iso || it.iso).getTime() < now;
+        const done = new Date(it.end_iso || it.iso).getTime() < now;
         row.className = "plan-row" + (i === nextIdx ? " is-now" : done ? " is-done" : "");
 
         const time = document.createElement("span");
@@ -1211,23 +1195,12 @@
 
         const label = document.createElement("span");
         label.className = "plan-label";
-        const napEnd = it.end_iso ? new Date(it.end_iso).getTime() : 0;
-        if (it.kind === "feed") {
-          label.textContent = "🍼 Feed";
-        } else if (it.in_progress) {
-          // Don't assert a projected end that has already gone by — say she is running
-          // long instead, which is the true and more useful statement.
-          label.textContent = napEnd >= now
-            ? `😴 Asleep now · likely until ${clock(it.end_iso)}`
-            : "😴 Asleep now · longer than her usual";
-        } else {
-          label.textContent = `😴 Nap window · until ${clock(it.end_iso)}`;
-        }
+        label.textContent = it.end_iso ? `${it.label} · until ${clock(it.end_iso)}` : it.label;
         row.appendChild(label);
 
         const note = document.createElement("span");
         note.className = "plan-note";
-        if (it.kind === "feed" && it.actual_iso) {
+        if (it.actual_iso) {
           const d = it.drift_minutes;
           note.append(`logged ${clock(it.actual_iso)}`);
           // Only call out drift worth noticing; a few minutes either way is just life.
