@@ -23,12 +23,19 @@ SLEEP_STATE_FILE = os.path.join(os.path.dirname(__file__), "sleep_state.json")
 FOODS_FILE       = os.path.join(os.path.dirname(__file__), "foods.json")
 SLEEP_TRUTH_FILE = os.path.join(os.path.dirname(__file__), "sleep_truth.json")
 CALIBRATE_FLAG   = os.path.join(os.path.dirname(__file__), "calibrate.flag")
+# The keypad's Sleep key, handed from app.py to sleep_monitor.py. Holds the press time
+# (ISO). A flag, not a direct write, because the monitor is the only writer of
+# sleep_sessions.json while it runs: two processes doing read-modify-write on one JSON
+# file lose updates, and sleep_lock only serialises threads within a process.
+SLEEP_KEY_FLAG   = os.path.join(os.path.dirname(__file__), "sleep_key.flag")
 
 # The loggable event types, in dashboard button order. Single source of truth: this
 # list was previously written out in eight places across app.py and the template, and
 # missing one failed silently — a type absent from the /history filter simply never
 # matched, with no error anywhere.
-EVENT_TYPES = ("Wet", "Dirty", "Play", "Feed", "Probiotic", "Solid")
+# Wet and Play no longer have a key or a button (2026-10-22) but stay here so their
+# history still renders, filters and counts.
+EVENT_TYPES = ("Wet", "Dirty", "Play", "Feed", "Medicine", "Probiotic", "Solid")
 
 DEFAULT_SETTINGS = {
     "feed_interval_minutes":    180,
@@ -43,8 +50,8 @@ DEFAULT_SETTINGS = {
     "sleep_wake_seconds":       20,   # short window for "life evidence" (probation/away override), NOT for waking a nap
     "sleep_wake_minutes":       3,    # sustained-motion minutes to END a sleep session; brief in-sleep arousals (startles, active-sleep squirms) below this are kept as sleep
     "sleep_max_session_hours":  14,    # sanity cap: force-end a sleep session open longer than this
-    "debounce_minutes":         {"Feed": 5, "Wet": 1, "Dirty": 1, "Play": 5, "Probiotic": 720,
-                                 "Solid": 5},  # discard repeat presses of a type within N min (0 = off)
+    "debounce_minutes":         {"Feed": 5, "Wet": 1, "Dirty": 1, "Play": 5, "Medicine": 30,
+                                 "Probiotic": 720, "Solid": 5},  # discard repeat presses of a type within N min (0 = off)
     "huckleberry_email":        "",
     "huckleberry_password":     "",
     "huckleberry_child_index":  0,
@@ -628,7 +635,7 @@ def get_sleep_truth():
         return _load_truth()
 
 
-def _json_start_sleep(start_time, detected_at=None):
+def _json_start_sleep(start_time, detected_at=None, source=None):
     with sleep_lock:
         sessions = _json_load_sleep()
         new_id = max((s["id"] for s in sessions), default=-1) + 1
@@ -640,6 +647,9 @@ def _json_start_sleep(start_time, detected_at=None):
             "start_detected_at": detected_at.isoformat() if detected_at else None,
             "end_detected_at": None,
             "end_reason": None,
+            # "manual" = opened by the keypad Sleep key: the camera may not end it.
+            # JSON-only — the Neon backup doesn't carry it.
+            "source": source,
         })
         _json_save_sleep_atomic(sessions)
     return new_id
@@ -705,11 +715,12 @@ def _json_get_open_sleep_session():
 
 # ── Public sleep API ──────────────────────────────────────────────────────────
 
-def start_sleep_session(start_time, detected_at=None):
+def start_sleep_session(start_time, detected_at=None, source=None):
     """start_time is backdated to when stillness began; detected_at is when the
-    monitor confirmed it. The gap between them is the detector's onset lag."""
+    monitor confirmed it. The gap between them is the detector's onset lag.
+    source="manual" marks a session the keypad Sleep key opened."""
     return (_pg_start_sleep(start_time, detected_at) if USE_DB
-            else _json_start_sleep(start_time, detected_at))
+            else _json_start_sleep(start_time, detected_at, source))
 
 
 def end_sleep_session(session_id, end_time, detected_at=None, reason=None):
@@ -727,6 +738,14 @@ def get_sleep_sessions_today():
 
 def get_sleep_sessions_range(days=7):
     return _pg_get_sleep_sessions_range(days) if USE_DB else _json_get_sleep_sessions_range(days)
+
+
+def write_sleep_key_flag(pressed_at):
+    """Atomic, so the monitor never reads a half-written timestamp."""
+    tmp = SLEEP_KEY_FLAG + ".tmp"
+    with open(tmp, "w") as f:
+        f.write(pressed_at.isoformat())
+    os.replace(tmp, SLEEP_KEY_FLAG)
 
 
 def get_open_sleep_session():

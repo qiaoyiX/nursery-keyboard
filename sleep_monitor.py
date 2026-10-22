@@ -31,6 +31,9 @@ that set the thresholds):
        footage; magnitude alone cannot separate them).
     3. Manual "📷 Crib is empty" button — saves reference, forces AWAY.
     4. sleep_max_session_hours cap — backstop force-end.
+    7. Keypad Sleep key (app.py → SLEEP_KEY_FLAG) — toggles: ends any open session, or
+       opens a "manual" one. A manual session is the parent's word, so the camera's
+       exits (1, 5, 6) are suspended until the next press; only 3 and 4 still end it.
 
   Plus two occupied-state exits that need no disturbance at all (2026-07-15/16 night
   incidents — gentle pickups peak at motion 0.13 and never reach the machinery):
@@ -97,6 +100,7 @@ import numpy as np
 from storage import (
     CALIBRATE_FLAG,
     DEFAULT_SETTINGS,
+    SLEEP_KEY_FLAG,
     append_sleep_event,
     end_sleep_session,
     get_open_sleep_session,
@@ -133,6 +137,10 @@ END_PROBATION_EMPTY_MATCH = "probation_empty_match"  # occupancy refuted mid-pro
 END_LIVENESS_TIMEOUT      = "liveness_timeout"       # no micro-motion — crib was empty
 END_MAX_SESSION_CAP       = "max_session_cap"        # detection loss; end_time is NOT backdated
 END_MANUAL_CALIBRATION    = "manual_calibration"
+END_MANUAL_KEY            = "manual_key"             # parent pressed the Sleep key: she's up
+
+SLEEP_KEY_MAX_AGE_SECONDS = 120  # an older flag outlived a dead monitor; acting on it now
+                                 # could fight a session app.py wrote directly meanwhile
 
 LIGHTING_CEILING     = 0.80   # frame-diff fraction above which per-frame motion is meaningless:
                               # an IR day/night toggle, a corrupt decode, OR a pickup whose whole
@@ -372,7 +380,7 @@ class SleepStateMachine:
                  on_sleep_event=None):
         self.cfg  = cfg
         self.log  = log
-        self.on_session_start  = on_session_start or (lambda t, detected_at: None)
+        self.on_session_start  = on_session_start or (lambda t, detected_at, source=None: None)
         self.on_session_end    = on_session_end or (lambda sid, t, detected_at, reason: None)
         self.on_reference_save = on_reference_save or (lambda ref, trusted: None)
         # Within-nap detail (arousals, wake attempts). Kept as a callback so the state
@@ -416,18 +424,43 @@ class SleepStateMachine:
         # True when a disturbance interrupted an ASLEEP nap: on settle-to-occupied the nap
         # resumes (arousal rescored as sleep) instead of the session ending.
         self.arousal_from_sleep = False
+        # The open session came from the keypad Sleep key: detection is suspended for it.
+        self.manual = False
 
     # ── external controls ─────────────────────────────────────────────────────
 
-    def resume_session(self, session_id, sleep_start, now):
+    def resume_session(self, session_id, sleep_start, now, manual=False):
         """Daemon restart/reconnect with an open session: resume ASLEEP, on probation
-        (we may have missed a pickup while offline)."""
+        (we may have missed a pickup while offline) — unless the parent opened it with
+        the Sleep key, in which case there is nothing for the camera to confirm."""
         self.state       = STATE_ASLEEP
         self.session_id  = session_id
         self.sleep_start = sleep_start
+        self.manual      = manual
+        if manual:
+            self.log.info("Resumed manual sleep session id=%s started %s", session_id, sleep_start)
+            return
         self._start_probation(now)
         self.log.info("Resumed open sleep session id=%s started %s (on probation until %s)",
                       session_id, sleep_start, self.probation_deadline.isoformat())
+
+    def sleep_key(self, at):
+        """Keypad Sleep key, pressed at `at`. Toggles against the open session — the
+        state the dashboard shows — so it can also end a camera-detected nap."""
+        if self.session_id is not None:
+            self._close_session(at, END_MANUAL_KEY, at)
+            self._to_away()     # an awake baby still in the crib is re-found by Path 2
+        else:
+            self._to_away()     # drop any half-built onset/probation the camera had
+            self.session_id  = self.on_session_start(at, at, source="manual")
+            self.sleep_start = at
+            self.state       = STATE_ASLEEP
+            self.manual      = True
+            self.log.info("ASLEEP — manual session %s started at %s (Sleep key)",
+                          self.session_id, at.isoformat())
+        # The press usually lands mid-visit: an in-flight settle would judge a scene the
+        # parent just told us about.
+        self._cancel_disturbance()
 
     def calibrate(self, curr_gray, now):
         """Manual 'Crib is empty': authoritative reference + forced AWAY."""
@@ -437,6 +470,11 @@ class SleepStateMachine:
         # Cancel any in-flight disturbance episode: the button is often pressed right
         # after walking away from the crib, and a pending settle evaluation against the
         # just-saved reference would immediately re-open probation over an empty crib.
+        self._cancel_disturbance()
+        self.prev = curr_gray
+        self.log.info("Reference frame saved manually — empty crib baseline updated")
+
+    def _cancel_disturbance(self):
         self.in_disturbance     = False
         self.disturb_times.clear()
         self.settle_quiet_since = None
@@ -444,8 +482,6 @@ class SleepStateMachine:
         self.disturbance_start  = None
         self.pending_guard      = None
         self.micro_suppress_until = None
-        self.prev = curr_gray
-        self.log.info("Reference frame saved manually — empty crib baseline updated")
 
     # ── internals ─────────────────────────────────────────────────────────────
 
@@ -469,6 +505,7 @@ class SleepStateMachine:
                           ": " + detail if detail else "", detected_at.isoformat())
         self.session_id  = None
         self.sleep_start = None
+        self.manual      = False
 
     def _to_away(self):
         self.state = STATE_AWAY
@@ -627,6 +664,19 @@ class SleepStateMachine:
 
         if self.prev is None:
             self.prev = curr_gray
+            return self.state
+
+        # A Sleep-key session is the parent's call, not a detection: nothing the camera
+        # sees ends it except the cap. Keep prev fresh so motion resumes cleanly after.
+        if self.manual:
+            self.prev = curr_gray
+            if (now - self.sleep_start).total_seconds() >= cfg["max_session_seconds"]:
+                self.log.warning("Manual session exceeded %.1fh cap — Sleep key never "
+                                 "pressed for wake; force-ending",
+                                 cfg["max_session_seconds"] / 3600)
+                self._close_session(now, END_MAX_SESSION_CAP, now)
+                self.state = STATE_AWAKE
+                self._reset_wake_epochs()
             return self.state
 
         # Scene-change guard: a near-total frame change (> LIGHTING_CEILING) is an IR
@@ -1070,6 +1120,7 @@ def run_state_machine(rtsp_url, cfg):
             open_session["id"],
             t if isinstance(t, datetime) else datetime.fromisoformat(str(t)),
             datetime.now(),
+            manual=open_session.get("source") == "manual",
         )
 
     try:
@@ -1089,6 +1140,21 @@ def run_state_machine(rtsp_url, cfg):
                     machine.calibrate(curr_gray, now)
                 except Exception as e:
                     logging.warning("Calibration error: %s", e)
+
+            if os.path.exists(SLEEP_KEY_FLAG):
+                try:
+                    try:
+                        with open(SLEEP_KEY_FLAG) as f:
+                            pressed_at = datetime.fromisoformat(f.read().strip())
+                    finally:
+                        os.remove(SLEEP_KEY_FLAG)   # an unreadable flag must not re-fire
+                    age = (now - pressed_at).total_seconds()
+                    if age > SLEEP_KEY_MAX_AGE_SECONDS:
+                        logging.warning("Sleep key flag is %.0fs old — ignored", age)
+                    else:
+                        machine.sleep_key(min(pressed_at, now))
+                except Exception as e:
+                    logging.warning("Sleep key error: %s", e)
 
             state = machine.step(curr_gray, now)
             write_sleep_heartbeat(state)

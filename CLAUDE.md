@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A Raspberry Pi baby-tracking app. A 4-key USB keypad (SayoDevice) is plugged into the Pi; pressing a key logs a diaper-change or feeding event to storage and the dashboard updates instantly. The dashboard is a mobile-first Flask web app served on port 8080.
+A Raspberry Pi baby-tracking app. A 4-key USB keypad (SayoDevice) is plugged into the Pi; pressing a key logs a diaper, feed or medicine event, or toggles sleep, to storage and the dashboard updates instantly. The dashboard is a mobile-first Flask web app served on port 8080.
 
 ## Running locally (dev machine, no Pi)
 
@@ -96,18 +96,22 @@ Three files form the core:
 
 | evdev key | Event type |
 |-----------|-----------|
-| KEY_SPACE  | Wet |
+| KEY_SPACE  | Medicine (single press) / Probiotic (double press within `MEDICINE_DOUBLE_PRESS_SECONDS` = 3s) |
 | KEY_PAGEUP | Dirty |
-| KEY_DOWN   | Play (single press) / Probiotic (double press within `PLAY_DOUBLE_PRESS_SECONDS` = 3s) |
+| KEY_DOWN   | Sleep — toggles the open sleep session (not a log entry) |
 | KEY_UP     | Feed |
 
-The Play key is overloaded (`handle_play_press()` in `app.py`): a first press arms a 3s timer; a second press within the window cancels it and logs Probiotic; otherwise the timer fires and logs Play — so single-press Play is timestamped up to 3s late. Both paths go through `log_keypad_event()` (debounce → `add_entry` → Huckleberry push).
+Wet and Play lost their keys and buttons on 2026-10-22 but stay in `EVENT_TYPES` so old entries render.
+
+The Medicine key is overloaded (`handle_medicine_press()` in `app.py`): a first press arms a 3s timer; a second press within the window cancels it and logs Probiotic; otherwise the timer fires and logs Medicine — so single-press Medicine is timestamped up to 3s late. Both paths go through `log_keypad_event()` (debounce → `add_entry` → Huckleberry push; Medicine has no Huckleberry mapping).
+
+The Sleep key (`handle_sleep_press()`) fires immediately. While the monitor is alive (fresh heartbeat) it only writes `SLEEP_KEY_FLAG`; `sleep_monitor.py` consumes it each frame and calls `SleepStateMachine.sleep_key()` — the monitor stays the single writer of `sleep_sessions.json`. Open session → closed with `end_reason="manual_key"`; none → a session with `source="manual"` opens, and the camera's exits are suspended for it (only the cap, "Crib is empty", or the next press end it). Monitor down → app.py writes the session directly; the monitor resumes a `source="manual"` session without probation. Flags older than 120s are ignored.
 
 To add or rename an event type, update `KEYPAD_KEYS`, the validation list in `log_event()`, the counts dicts in all three stat helpers, the `TYPES` array and `COLORS` object in `index.html`, and the CSS color rules (`.type-*`, `.btn-*`, `.count-card.*`).
 
 ## Debounce
 
-`is_debounced()` in `app.py` drops a repeat press of the same type within a per-type window, before `add_entry()`/`push_event()`. It guards both the keypad path (`log_keypad_event`) and the `/log` route (which returns `{"ok": true, "discarded": true}`). Windows are in `settings.json` `debounce_minutes` (minutes; `0` = off), default `{"Feed": 5, "Wet": 1, "Dirty": 1, "Play": 5, "Probiotic": 720}`. For the overloaded Play key, debounce runs at fire time — after the double-press window resolves which event it is.
+`is_debounced()` in `app.py` drops a repeat press of the same type within a per-type window, before `add_entry()`/`push_event()`. It guards both the keypad path (`log_keypad_event`) and the `/log` route (which returns `{"ok": true, "discarded": true}`). Windows are in `settings.json` `debounce_minutes` (minutes; `0` = off), default `{"Feed": 5, "Wet": 1, "Dirty": 1, "Play": 5, "Medicine": 30, "Probiotic": 720, "Solid": 5}`. For the overloaded Medicine key, debounce runs at fire time — after the double-press window resolves which event it is.
 
 ## Storage: local-first, Neon as snapshot backup
 

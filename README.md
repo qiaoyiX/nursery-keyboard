@@ -74,7 +74,7 @@ Unplug and replug the keypad after it finishes.
 # Confirm the keypad is detected by the app
 bash find_device.sh
 
-# Watch live logs — press a key on the pad and you should see "Logged: Wet" etc.
+# Watch live logs — press a key on the pad and you should see "Logged: Feed" etc.
 sudo journalctl -u nursery-tracker -f
 ```
 
@@ -92,14 +92,17 @@ Bookmark it to your home screen for one-tap access.
 
 | Key | Mapped to | Action |
 |-----|-----------|--------|
-| 1   | Space     | Wet    |
+| 1   | Space     | Medicine (press once) / Probiotic (press twice within 3s) |
 | 2   | PageUp    | Dirty  |
-| 3   | Down ↓    | Play (press once) / Probiotic (press twice within 3s) |
+| 3   | Down ↓    | Sleep / wake toggle |
 | 4   | Up ↑      | Feed   |
 
-A single Play press is logged ~3 seconds after the press (the app waits to see if a
-second press turns it into Probiotic). The on-screen buttons also work as a backup if
-the keypad isn't nearby.
+A single Medicine press is logged ~3 seconds after the press (the app waits to see if a
+second press turns it into Probiotic). The Sleep key toggles whatever the dashboard shows:
+asleep → ends the nap now, awake → starts one now. A nap started with the key is yours —
+the camera won't end it; press again when she's up. The on-screen buttons also work as a
+backup if the keypad isn't nearby. (Wet and Play were retired 2026-10-22; old entries
+still show in History.)
 
 ---
 

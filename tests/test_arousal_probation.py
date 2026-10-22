@@ -44,6 +44,12 @@ Scenarios H–K lock the 2026-07-15/16 night incidents (night_0715.log):
      motion is an intruder, not evidence; probation must expire and close at the pickup
   K  slow put-back (04:41: one isolated 0.849 frame, other ≥0.30 frames 14–17s apart) →
      the solo-frame rule opens the disturbance and the put-down is recorded
+
+Scenarios L–N lock the keypad Sleep key (2026-10-22):
+  L  key-opened session survives what would end a camera one (an empty crib, no
+     micro-motion for 30 min); the second press closes it at the press time
+  M  a press over a camera-detected nap ends it — the key toggles the shown state
+  N  a manual session the parent never closes still hits the max-session cap
 """
 
 import logging
@@ -58,6 +64,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from sleep_monitor import (  # noqa: E402
     DISTURBANCE_SOLO_FRACTION,
     END_LIVENESS_TIMEOUT,
+    END_MANUAL_KEY,
+    END_MAX_SESSION_CAP,
     END_PROBATION_EMPTY_MATCH,
     END_PROBATION_EXPIRED,
     END_SETTLED_EMPTY,
@@ -207,9 +215,9 @@ class Driver:
         self.m.prev = EMPTY.copy()
         self.t = datetime(2026, 7, 7, 12, 0, 0)
 
-    def _start(self, t, detected_at):
+    def _start(self, t, detected_at, source=None):
         self.sessions.append({"start": t, "end": None, "detected": detected_at,
-                              "end_detected": None, "reason": None})
+                              "end_detected": None, "reason": None, "source": source})
         return len(self.sessions) - 1
 
     def _event(self, session_start, at, kind, duration_s, settled_back):
@@ -528,6 +536,52 @@ def scenario_k(cfg):
     print("  K slow put-back: solo frame opened the disturbance, session recorded  ✓")
 
 
+def scenario_l(cfg):
+    """Sleep key over a crib the camera reads as empty and lifeless: every camera exit
+    (liveness, silent departure, probation) would fire here. The parent's word holds."""
+    d = Driver(cfg)
+    d.m.reference_trusted = True         # arm the silent-departure close too
+    d.still(EMPTY, 30)
+    down_at = d.t
+    d.m.sleep_key(down_at)
+    assert d.m.state == STATE_ASLEEP and d.sessions[0]["source"] == "manual"
+    d.still(EMPTY, 30 * 60)              # > sleep_liveness_minutes, trusted-empty match
+    assert d.sessions[0]["end"] is None, f"camera ended a manual session: {d.sessions[0]}"
+    up_at = d.t
+    d.m.sleep_key(up_at)
+    s = d.sessions[0]
+    assert s["start"] == down_at and s["end"] == up_at and s["reason"] == END_MANUAL_KEY
+    assert d.m.state == STATE_AWAY and not d.m.manual
+    d.still(EMPTY, 60)
+    assert len(d.sessions) == 1, "camera reopened a session after the wake press"
+    print("  L Sleep key: manual session immune to camera exits, closed at the press  ✓")
+
+
+def scenario_m(cfg):
+    """A press while the camera has a nap open ends that nap — no second session."""
+    d = Driver(cfg)
+    settle_into_sleep(d)
+    up_at = d.t
+    d.m.sleep_key(up_at)
+    s = d.sessions[0]
+    assert len(d.sessions) == 1 and s["end"] == up_at and s["reason"] == END_MANUAL_KEY
+    assert d.m.state == STATE_AWAY
+    print("  M Sleep key over a camera nap: ended it at the press  ✓")
+
+
+def scenario_n(cfg):
+    """Forgotten wake press: the cap still closes a manual session."""
+    cfg = dict(cfg, max_session_seconds=3600)
+    d = Driver(cfg)
+    d.still(BABY, 5)
+    d.m.sleep_key(d.t)
+    d.still(BABY, 3601)
+    s = d.sessions[0]
+    assert s["reason"] == END_MAX_SESSION_CAP, f"reason={s['reason']!r}"
+    assert not d.m.manual and d.m.state != STATE_ASLEEP
+    print("  N forgotten wake press: cap closed the manual session  ✓")
+
+
 def main():
     cfg = build_cfg({})   # storage.DEFAULT_SETTINGS
     cfg["crib_roi"] = [0, 0, 1, 1]
@@ -544,6 +598,9 @@ def main():
     scenario_i(cfg)
     scenario_j(cfg)
     scenario_k(cfg)
+    scenario_l(cfg)
+    scenario_m(cfg)
+    scenario_n(cfg)
     print("All scenarios pass.")
 
 

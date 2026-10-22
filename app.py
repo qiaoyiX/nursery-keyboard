@@ -15,7 +15,8 @@ from storage import (
     get_entries, add_entry, clear_today, delete_entry, update_entry,
     load_settings, update_setting,
     get_sleep_sessions_today, get_sleep_sessions_range, get_open_sleep_session,
-    read_sleep_status,
+    start_sleep_session, end_sleep_session,
+    read_sleep_status, write_sleep_key_flag,
     add_food, set_food_reaction, get_foods,
     set_sleep_verdict, add_missed_sleep, delete_missed_sleep, get_sleep_truth,
     set_phone_verdict,
@@ -25,7 +26,7 @@ import clothing
 import weather
 
 try:
-    from huckleberry_sync import push_event, test_connection
+    from huckleberry_sync import push_event, push_sleep, test_connection
     HUCKLEBERRY_AVAILABLE = True
 except Exception:
     HUCKLEBERRY_AVAILABLE = False
@@ -45,14 +46,16 @@ except ImportError:
 
 app = Flask(__name__)
 
+# Wet and Play were dropped from the pad 2026-10-22: Wet → Medicine, Play → Sleep.
 KEYPAD_KEYS = {
-    "KEY_SPACE":  "Wet",
+    "KEY_SPACE":  "Medicine",
     "KEY_PAGEUP": "Dirty",
-    "KEY_DOWN":   "Play",
+    "KEY_DOWN":   "Sleep",
     "KEY_UP":     "Feed",
 }
 
-PLAY_DOUBLE_PRESS_SECONDS = 3.0   # second Play press within this window = Probiotic
+MEDICINE_DOUBLE_PRESS_SECONDS = 3.0   # second Medicine press within this window = Probiotic
+SLEEP_KEY_BOUNCE_SECONDS      = 5.0   # repeat Sleep presses inside this are switch bounce
 
 
 # ── Keypad listener ───────────────────────────────────────────────────────────
@@ -71,36 +74,73 @@ def log_keypad_event(label):
         logging.error("DB write failed for %s: %s — event dropped", label, db_err)
 
 
-# The 4-key pad has no free key for Probiotic, so Play is overloaded: a single
-# press logs Play (deferred by the double-press window, so its timestamp lands up
-# to PLAY_DOUBLE_PRESS_SECONDS late), a second press within the window logs
-# Probiotic instead. The lock is required: key events arrive on one thread per
-# SayoDevice interface and the deferred fire runs on a Timer thread.
-_play_timer = None
-_play_timer_lock = threading.Lock()
+# The 4-key pad has no free key for Probiotic, so Medicine is overloaded: a single
+# press logs Medicine (deferred by the double-press window, so its timestamp lands up
+# to MEDICINE_DOUBLE_PRESS_SECONDS late — harmless for a dose), a second press within
+# the window logs Probiotic instead. The lock is required: key events arrive on one
+# thread per SayoDevice interface and the deferred fire runs on a Timer thread.
+_medicine_timer = None
+_medicine_timer_lock = threading.Lock()
 
 
-def handle_play_press():
-    global _play_timer
-    with _play_timer_lock:
-        if _play_timer is not None:           # second press → Probiotic
-            _play_timer.cancel()
-            _play_timer = None
+def handle_medicine_press():
+    global _medicine_timer
+    with _medicine_timer_lock:
+        if _medicine_timer is not None:       # second press → Probiotic
+            _medicine_timer.cancel()
+            _medicine_timer = None
             probiotic = True
         else:                                 # first press → hold for the window
-            _play_timer = threading.Timer(PLAY_DOUBLE_PRESS_SECONDS, _fire_play)
-            _play_timer.daemon = True
-            _play_timer.start()
+            _medicine_timer = threading.Timer(MEDICINE_DOUBLE_PRESS_SECONDS, _fire_medicine)
+            _medicine_timer.daemon = True
+            _medicine_timer.start()
             probiotic = False
     if probiotic:
         log_keypad_event("Probiotic")
 
 
-def _fire_play():
-    global _play_timer
-    with _play_timer_lock:
-        _play_timer = None
-    log_keypad_event("Play")
+def _fire_medicine():
+    global _medicine_timer
+    with _medicine_timer_lock:
+        _medicine_timer = None
+    log_keypad_event("Medicine")
+
+
+# The Sleep key toggles against whatever session is open — the state the dashboard
+# shows — so a press over a camera-invented nap ends it, and the next press starts a
+# real one. It fires immediately: put-down and pickup times are the whole point.
+_last_sleep_press = None
+_sleep_press_lock = threading.Lock()
+
+
+def handle_sleep_press(now=None):
+    global _last_sleep_press
+    now = now or datetime.now()
+    with _sleep_press_lock:
+        if (_last_sleep_press is not None
+                and (now - _last_sleep_press).total_seconds() < SLEEP_KEY_BOUNCE_SECONDS):
+            logging.info("Sleep key bounce — discarded")
+            return
+        _last_sleep_press = now
+    try:
+        if read_sleep_status() != "unknown":
+            # Monitor alive: it owns sleep_sessions.json, so hand it the press.
+            write_sleep_key_flag(now)
+            logging.info("Sleep key → handed to sleep monitor")
+            return
+        # Monitor down (no heartbeat for 60s): nothing else is writing, so act directly.
+        # It picks the session up on restart — source="manual" tells it not to judge it.
+        open_session = get_open_sleep_session()
+        if open_session:
+            end_sleep_session(open_session["id"], now, detected_at=now, reason="manual_key")
+            logging.info("Sleep key: ended session %s (monitor offline)", open_session["id"])
+            if HUCKLEBERRY_AVAILABLE:
+                push_sleep(datetime.fromisoformat(str(open_session["start_time"])), now)
+        else:
+            sid = start_sleep_session(now, detected_at=now, source="manual")
+            logging.info("Sleep key: started session %s (monitor offline)", sid)
+    except Exception as e:
+        logging.error("Sleep key failed: %s — press dropped", e)
 
 def find_all_sayodevices():
     devices = []
@@ -134,8 +174,10 @@ def listen_one_interface(dev):
                                 key_name = key_name[0]
                             logging.info("[%s] Key event raw: %s", dev.path, key_name)
                             label = KEYPAD_KEYS.get(key_name)
-                            if label == "Play":
-                                handle_play_press()
+                            if label == "Medicine":
+                                handle_medicine_press()
+                            elif label == "Sleep":
+                                handle_sleep_press()
                             elif label:
                                 log_keypad_event(label)
             finally:
@@ -781,7 +823,7 @@ def history():
 
     Query params (both optional):
       date — YYYY-MM-DD, matches the entry's local date
-      type — one of Wet/Dirty/Play/Feed
+      type — one of EVENT_TYPES
     Returns newest-first, capped to HISTORY_LIMIT.
     """
     HISTORY_LIMIT = 200
