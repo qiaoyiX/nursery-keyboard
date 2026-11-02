@@ -369,6 +369,8 @@
     .btn-probiotic { background: linear-gradient(155deg, #d27aae 0%, #a8447e 100%); }
     .btn-medicine { background: linear-gradient(155deg, #9fae3c 0%, #74821f 100%); }
     .btn-solid { background: linear-gradient(155deg, #3fb3a3 0%, #268276 100%); }
+    .btn-sleep { background: linear-gradient(155deg, #7b9cc0 0%, #4d6f94 100%); }
+    .btn-sleep:disabled { opacity: .7; cursor: default; }
 
     /* ── Maintenance actions (bottom of page) ── */
     .maintenance {
@@ -886,6 +888,9 @@
     <button class="action-btn btn-medicine" onclick="logEvent('Medicine')">💉 Medicine<span class="btn-ago" data-ago="Medicine"></span></button>
     <button class="action-btn btn-probiotic" onclick="logEvent('Probiotic')">💊 Probiotic<span class="btn-ago" data-ago="Probiotic"></span></button>
     <button class="action-btn btn-solid" onclick="logEvent('Solid')">🥄 Solids<span class="btn-ago" data-ago="Solid"></span></button>
+    <!-- Same toggle as the keypad's Sleep key: ends the open session, or opens a
+         manual one the camera won't end. Label follows data.sleep. -->
+    <button class="action-btn btn-sleep" id="btnSleep" onclick="toggleSleep()"><span id="btnSleepLabel">😴 Sleep</span><span class="btn-ago" id="btnSleepSub"></span></button>
   </div>
 
   <!-- Foods is a permanent record, not a daily one: what she has tried and when
@@ -1704,6 +1709,34 @@
       }
     }
 
+    function updateSleepButton(sleep) {
+      const open = (sleep.sessions_today || []).find(s => s.is_open);
+      document.getElementById("btnSleepLabel").textContent = open ? "🌅 Wake up" : "😴 Sleep";
+      document.getElementById("btnSleepSub").textContent = open
+        ? "asleep " + fmtInterval(Math.max(0, Math.round((Date.now() - new Date(open.start_iso)) / 60000)))
+        : "start a nap";
+    }
+
+    async function toggleSleep() {
+      if (navigator.vibrate) navigator.vibrate(15);
+      const btn = document.getElementById("btnSleep");
+      btn.disabled = true;
+      try {
+        const res  = await fetch("/sleep/toggle", { method: "POST" });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || res.status);
+        showToast(data.result === "started" ? "😴 Sleep started"
+                : data.result === "ended"   ? "🌅 Sleep ended"
+                : "Already toggled a moment ago — not toggled again");
+        // The monitor applies the press on its next frame (~1s); give it a beat.
+        setTimeout(refresh, 1500);
+      } catch (e) {
+        showToast("Error toggling sleep");
+      } finally {
+        setTimeout(() => { btn.disabled = false; }, 1500);
+      }
+    }
+
     async function calibrateSleep() {
       await fetch("/sleep/calibrate", { method: "POST" });
       showToast("Reference frame saved — crib baseline updated");
@@ -1931,6 +1964,7 @@
       }
       for (const el of document.querySelectorAll(".btn-ago")) {
         const t = el.dataset.ago;
+        if (!t) continue;            // the Sleep button fills its own
         el.textContent = latest[t] ? shortAgo(latest[t]) : "—";
       }
     }
@@ -1984,6 +2018,7 @@
         updateCharts(data);
         if (data.sleep) {
           updateSleepCard(data.sleep);
+          updateSleepButton(data.sleep);
           updateSleepTimeline(data.sleep.sessions_today || []);
           updateNapList(data.sleep.sessions_today || []);
         }

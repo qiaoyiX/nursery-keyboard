@@ -105,7 +105,7 @@ Wet and Play lost their keys and buttons on 2026-10-22 but stay in `EVENT_TYPES`
 
 The Medicine key is overloaded (`handle_medicine_press()` in `app.py`): a first press arms a 3s timer; a second press within the window cancels it and logs Probiotic; otherwise the timer fires and logs Medicine — so single-press Medicine is timestamped up to 3s late. Both paths go through `log_keypad_event()` (debounce → `add_entry` → Huckleberry push; Medicine has no Huckleberry mapping).
 
-The Sleep key (`handle_sleep_press()`) fires immediately. While the monitor is alive (fresh heartbeat) it only writes `SLEEP_KEY_FLAG`; `sleep_monitor.py` consumes it each frame and calls `SleepStateMachine.sleep_key()` — the monitor stays the single writer of `sleep_sessions.json`. Open session → closed with `end_reason="manual_key"`; none → a session with `source="manual"` opens, and the camera's exits are suspended for it (only the cap, "Crib is empty", or the next press end it). Monitor down → app.py writes the session directly; the monitor resumes a `source="manual"` session without probation. Flags older than 120s are ignored.
+The Sleep key (`handle_sleep_press()`) fires immediately. While the monitor is alive (fresh heartbeat) it only writes `SLEEP_KEY_FLAG`; `sleep_monitor.py` consumes it each frame and calls `SleepStateMachine.sleep_key()` — the monitor stays the single writer of `sleep_sessions.json`. Open session → closed with `end_reason="manual_key"`; none → a session with `source="manual"` opens, and the camera's exits are suspended for it (only the cap, "Crib is empty", or the next press end it). Monitor down → app.py writes the session directly; the monitor resumes a `source="manual"` session without probation. Flags older than 120s are ignored. The dashboard's 😴 Sleep / 🌅 Wake up button (last in the log-button grid, label from `data.sleep.sessions_today`'s open session) POSTs `/sleep/toggle`, which calls the same function — so it shares the key's 5s bounce window.
 
 To add or rename an event type, update `KEYPAD_KEYS`, the validation list in `log_event()`, the counts dicts in all three stat helpers, the `TYPES` array and `COLORS` object in `index.html`, and the CSS color rules (`.type-*`, `.btn-*`, `.count-card.*`).
 
@@ -227,6 +227,7 @@ Independent pipeline (does not touch the crib monitor): records the `NANNY_CAM_*
 | GET | `/clothes/data` | JSON: weather now, next 8 hours, tonight's sleepwear, each with an outfit. 503 until the first fetch succeeds |
 | POST | `/clothes/location` | Set `{"latitude", "longitude", "place"?, "nursery_temp_f"?}`, refetch, return the new view |
 | GET | `/clothes/search` | `?q=` place-name lookup, proxied to Open-Meteo's geocoder |
+| POST | `/sleep/toggle` | Dashboard Sleep button — same as the Sleep key (`handle_sleep_press()`); returns `{"result": "started\|ended\|bounce"}` |
 | POST | `/sleep/calibrate` | Save current frame as empty-crib reference baseline (crib must be empty) |
 | GET | `/devices` | Debug: list input devices (only with `NURSERY_DEBUG=1`) |
 

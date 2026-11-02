@@ -114,33 +114,38 @@ _sleep_press_lock = threading.Lock()
 
 
 def handle_sleep_press(now=None):
+    """Returns "started", "ended", "bounce" or "error" — the key ignores it, the
+    dashboard button toasts it. With the monitor alive the press is only handed
+    off, so "started"/"ended" is what the monitor is about to do, not what it did."""
     global _last_sleep_press
     now = now or datetime.now()
     with _sleep_press_lock:
         if (_last_sleep_press is not None
                 and (now - _last_sleep_press).total_seconds() < SLEEP_KEY_BOUNCE_SECONDS):
             logging.info("Sleep key bounce — discarded")
-            return
+            return "bounce"
         _last_sleep_press = now
     try:
+        open_session = get_open_sleep_session()
         if read_sleep_status() != "unknown":
             # Monitor alive: it owns sleep_sessions.json, so hand it the press.
             write_sleep_key_flag(now)
             logging.info("Sleep key → handed to sleep monitor")
-            return
+            return "ended" if open_session else "started"
         # Monitor down (no heartbeat for 60s): nothing else is writing, so act directly.
         # It picks the session up on restart — source="manual" tells it not to judge it.
-        open_session = get_open_sleep_session()
         if open_session:
             end_sleep_session(open_session["id"], now, detected_at=now, reason="manual_key")
             logging.info("Sleep key: ended session %s (monitor offline)", open_session["id"])
             if HUCKLEBERRY_AVAILABLE:
                 push_sleep(datetime.fromisoformat(str(open_session["start_time"])), now)
-        else:
-            sid = start_sleep_session(now, detected_at=now, source="manual")
-            logging.info("Sleep key: started session %s (monitor offline)", sid)
+            return "ended"
+        sid = start_sleep_session(now, detected_at=now, source="manual")
+        logging.info("Sleep key: started session %s (monitor offline)", sid)
+        return "started"
     except Exception as e:
         logging.error("Sleep key failed: %s — press dropped", e)
+        return "error"
 
 def find_all_sayodevices():
     devices = []
@@ -1078,6 +1083,15 @@ def review_missed_delete():
     if not removed:
         return jsonify({"error": "not found"}), 404
     return jsonify({"ok": True})
+
+
+@app.route("/sleep/toggle", methods=["POST"])
+def sleep_toggle():
+    # The dashboard's Sleep button is the Sleep key: same handoff, same bounce window.
+    result = handle_sleep_press()
+    if result == "error":
+        return jsonify({"error": "sleep toggle failed"}), 500
+    return jsonify({"ok": True, "result": result})
 
 
 @app.route("/sleep/calibrate", methods=["POST"])
