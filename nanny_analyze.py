@@ -127,6 +127,8 @@ RETRY_BASE_S      = 30      # doubled per attempt when the server suggests nothi
 MAX_RETRY_SLEEP_S = 300
 MAX_PACE_SLEEP_S  = 300
 MIN_REQUEST_GAP_S = 10      # never fire two video calls closer than this
+# Capacity errors: retry as-is, never read as "this model rejects our config".
+OVERLOADED_RE = re.compile(r"high demand|overloaded|UNAVAILABLE|RESOURCE_EXHAUSTED", re.I)
 MIN_PIECE_SECONDS = 30      # shorter tail pieces aren't worth a request
 
 # 408/429 + 5xx are what the SDK itself considers retryable; 409 is a transient
@@ -733,7 +735,12 @@ def analyze_with_retries(client, model, pacer, *args, **kwargs):
             return parsed, usage, None if parsed is not None else "unparseable_json"
         except Exception as e:
             code = status_code(e)
-            if code in (500, 503):
+            if code == 500 and not OVERLOADED_RE.search(str(e)):
+                # Only a 500 INTERNAL can be a disguised video_metadata
+                # rejection. A 503 UNAVAILABLE ("high demand") is Google's
+                # capacity, not our request — counting it here used to drop
+                # the fps optimisation on busy days and send the retry at 4x
+                # the tokens, straight into the TPM limit (2026-11-03).
                 server_errors += 1
             if daily_quota_exhausted(e):
                 # A per-DAY quota does not recover in the next 30 seconds.

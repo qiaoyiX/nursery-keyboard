@@ -426,6 +426,31 @@ def test_server_errors_drop_fps():
         nanny_analyze.analyze_video = orig
 
 
+def test_overload_keeps_fps():
+    print("503 high demand is retried at the custom fps, never at 4x the tokens")
+    seen = []
+    errors = [FakeAPIError(503, message="This model is currently experiencing high demand. UNAVAILABLE"),
+              FakeAPIError(503, message="This model is currently experiencing high demand. UNAVAILABLE"),
+              FakeAPIError(500, message="The model is overloaded")]
+
+    def fake_analyze(client, model, *args, extras=True, with_fps=True, **kw):
+        seen.append(with_fps)
+        if errors:
+            raise errors.pop(0)
+        return {"ok": True}, {"input_tokens": 10}
+
+    orig = nanny_analyze.analyze_video
+    try:
+        nanny_analyze.analyze_video = fake_analyze
+        parsed, usage, err = nanny_analyze.analyze_with_retries(
+            None, "m", _NullPacer(), "/tmp/x.mp4", "kitchen",
+            datetime(2026, 11, 3, 12, 0), 60, {})
+        check("every attempt kept the custom fps", seen == [True] * 4, str(seen))
+        check("and the segment succeeds", parsed == {"ok": True} and err is None)
+    finally:
+        nanny_analyze.analyze_video = orig
+
+
 def test_daily_quota_ends_the_run():
     print("a per-day 429 stops the run; a per-minute one retries")
     per_day = FakeAPIError(429, {"error": {"details": [
@@ -666,7 +691,8 @@ def main():
                test_env_knobs, test_sample_fps, test_downsample_uses_configured_fps,
                test_fps_rejection_falls_back, test_household_context,
                test_failed_piece_records_its_range, test_notable_events_get_clips,
-               test_server_errors_drop_fps, test_daily_quota_ends_the_run,
+               test_server_errors_drop_fps, test_overload_keeps_fps,
+               test_daily_quota_ends_the_run,
                test_poll_schedule_is_cheap, test_key_moment_clipping,
                test_key_moment_validation, test_phone_prompt_requires_active_use,
                test_phone_events_have_a_duration_floor,
